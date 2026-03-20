@@ -1,0 +1,1368 @@
+/**
+ * Dynamic Clinic Operations Admin — with Role-Based Access + Comments
+ * File: src/admin/routes/provider-settings/page.tsx
+ */
+
+import { useState, useEffect } from "react"
+
+// ── Types ──────────────────────────────────────────────────────────────────
+interface Clinic {
+  id: string
+  name: string
+  slug: string
+  domains: string[]
+  contact_email: string
+  is_active: boolean
+  logo_url: string
+  brand_color: string
+  api_client_id: string
+  api_client_secret: string
+  api_env: "test" | "prod"
+  api_base_url_test: string
+  api_base_url_prod: string
+  connect_env: "test" | "prod"
+  connect_url_test: string
+  connect_url_prod: string
+  redirect_url: string
+  stripe_secret_key: string
+  stripe_publishable_key: string
+  publishable_api_key: string
+  sales_channel_id: string
+  pharmacy_staff_id: string
+}
+
+interface Staff { id: string; email: string; full_name: string; role: string }
+interface Treatment { id: number; name: string }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean }
+interface Product { id: string; title: string }
+interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
+interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
+interface Comment { id: string; user_name: string; user_email: string; role: string; comment: string; created_at: string }
+interface CurrentUser { id: string; email: string; first_name: string; last_name: string }
+interface StaffRecord { clinic_id: string; role: string; full_name: string; email: string; tenant_domain: string }
+
+interface NavLink { label: string; url: string; open_new_tab?: boolean }
+interface UiConfig {
+  tenant_domain: string
+  nav_links: NavLink[]
+  footer_links: NavLink[]
+  logo_url: string
+  get_started_url: string
+}
+
+// ── Auth Helper ───────────────────────────────────────────────────────────
+function adminHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { ...extra }
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────
+const BLANK_CLINIC: Partial<Clinic> = {
+  name: "", slug: "", domains: [], contact_email: "",
+  is_active: true, brand_color: "#111111",
+  api_env: "test",
+  api_base_url_test: "https://api-dev.healthcoversonline.com/endpoint/v2",
+  api_base_url_prod: "https://api.healthcoversonline.com/endpoint/v2",
+  connect_env: "test",
+  connect_url_test: "https://app.healthcoversonline.com/connect/patient",
+  connect_url_prod: "https://app.healthcoversonline.com/connect/patient",
+}
+
+const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
+  awaiting_provider_review: { label: "Awaiting Provider",  color: "#92400e", bg: "#fef3c7" },
+  provider_approved:        { label: "Provider Approved",  color: "#065f46", bg: "#d1fae5" },
+  provider_deferred:        { label: "MD Review Needed",   color: "#7c3aed", bg: "#ede9fe" },
+  pending_provider:         { label: "Pending Provider",   color: "#92400e", bg: "#fef3c7" },
+  processing_pharmacy:      { label: "Processing",         color: "#1e40af", bg: "#dbeafe" },
+  md_approved:              { label: "MD Approved",        color: "#065f46", bg: "#d1fae5" },
+  md_denied:                { label: "MD Denied",          color: "#991b1b", bg: "#fee2e2" },
+  sent_to_pharmacy:         { label: "Sent to Pharmacy",   color: "#1e40af", bg: "#dbeafe" },
+  pharmacy_processing:      { label: "Processing",         color: "#1e40af", bg: "#dbeafe" },
+  shipped:                  { label: "Shipped",            color: "#065f46", bg: "#d1fae5" },
+  refund_issued:            { label: "Refund Issued",      color: "#991b1b", bg: "#fee2e2" },
+}
+
+const ROLE_LABELS: Record<string, string> = {
+  clinic_admin: "Clinic Admin",
+  medical_director: "Medical Director",
+  pharmacist: "Pharmacist",
+  super_admin: "Super Admin",
+}
+
+// ── Root ───────────────────────────────────────────────────────────────────
+export default function ClinicOpsPage() {
+  const [clinics, setClinics] = useState<Clinic[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [showNewForm, setShowNewForm] = useState(false)
+  const [newClinic, setNewClinic] = useState<Partial<Clinic>>(BLANK_CLINIC)
+  const [creating, setCreating] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [myStaffRecord, setMyStaffRecord] = useState<StaffRecord | null>(null)
+  const [userLoading, setUserLoading] = useState(true)
+
+  // Fetch current user on mount
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const res = await fetch("/admin/users/me", { credentials: "include" })
+        if (res.ok) {
+          const data = await res.json()
+          setCurrentUser(data.user)
+        }
+      } catch {}
+      finally { setUserLoading(false) }
+    }
+    fetchUser()
+  }, [])
+
+  useEffect(() => { loadClinics() }, [])
+
+  const loadClinics = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch("/admin/clinics", { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      const allClinics = data.clinics || []
+      setClinics(allClinics)
+      if (allClinics.length > 0 && !selectedId) {
+        setSelectedId(allClinics[0].id)
+      }
+    } catch {}
+    finally { setLoading(false) }
+  }
+
+  // Once we have both user and clinics, find their staff record
+  useEffect(() => {
+    if (!currentUser || clinics.length === 0) return
+    const findStaffRecord = async () => {
+      for (const clinic of clinics) {
+        try {
+          const res = await fetch(`/admin/clinics/${clinic.id}/staff`, { credentials: "include" })
+          const data = await res.json()
+          const match = (data.staff || []).find((s: any) => s.email === currentUser.email)
+          if (match) {
+            setMyStaffRecord({ ...match, clinic_id: clinic.id })
+            setSelectedId(clinic.id) // auto-select their clinic
+            return
+          }
+        } catch {}
+      }
+      // Not found in any clinic = super admin
+      setMyStaffRecord(null)
+    }
+    findStaffRecord()
+  }, [currentUser, clinics.length])
+
+  const isSuperAdmin = !userLoading && currentUser && !myStaffRecord
+  const myRole = myStaffRecord?.role || (isSuperAdmin ? "super_admin" : null)
+
+  // Filter clinics visible to this user
+  const visibleClinics = isSuperAdmin
+    ? clinics
+    : clinics.filter(c =>
+        c.id === myStaffRecord?.clinic_id ||
+        (myStaffRecord?.tenant_domain && (c.domains || []).includes(myStaffRecord.tenant_domain))
+      )
+
+  const createClinic = async () => {
+    if (!newClinic.name || !newClinic.slug) return
+    setCreating(true)
+    try {
+      const res = await fetch("/admin/clinics", {
+        method: "POST",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(newClinic),
+      })
+      const data = await res.json()
+      setClinics(prev => [...prev, data.clinic])
+      setSelectedId(data.clinic.id)
+      setShowNewForm(false)
+      setNewClinic(BLANK_CLINIC)
+    } catch {}
+    finally { setCreating(false) }
+  }
+
+  const selectedClinic = visibleClinics.find(c => c.id === selectedId) ?? null
+
+  if (userLoading) {
+    return <div style={{ padding: 32, color: "#9ca3af" }}>Loading…</div>
+  }
+
+  return (
+    <div style={s.root}>
+      {/* Sidebar */}
+      <div style={s.sidebar}>
+        <div style={s.sidebarHeader}>
+          <span style={s.sidebarTitle}>Clinics</span>
+          {isSuperAdmin && (
+            <button onClick={() => setShowNewForm(p => !p)} style={s.addBtn} title="Add clinic">+</button>
+          )}
+        </div>
+
+        {/* Current user badge */}
+        {currentUser && (
+          <div style={{ padding: "8px 16px", borderBottom: "1px solid #f3f4f6", fontSize: 11, color: "#6b7280" }}>
+            <div style={{ fontWeight: 600, color: "#111" }}>{currentUser.first_name} {currentUser.last_name}</div>
+            <div style={{ color: myRole ? roleColor(myRole) : "#6b7280", fontWeight: 500 }}>
+              {ROLE_LABELS[myRole || ""] || "Super Admin"}
+            </div>
+          </div>
+        )}
+
+        {/* New clinic form — super admin only */}
+        {showNewForm && isSuperAdmin && (
+          <div style={s.newForm}>
+            <input style={s.sidebarInput} placeholder="Clinic name *"
+              value={newClinic.name || ""}
+              onChange={e => {
+                const name = e.target.value
+                const slug = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
+                setNewClinic(p => ({ ...p, name, slug }))
+              }} />
+            <input style={s.sidebarInput} placeholder="slug (auto-filled)"
+              value={newClinic.slug || ""}
+              onChange={e => setNewClinic(p => ({ ...p, slug: e.target.value }))} />
+            <input style={s.sidebarInput} placeholder="domain (e.g. spaderx.com)"
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  const val = (e.target as HTMLInputElement).value.trim()
+                  if (val) {
+                    setNewClinic(p => ({ ...p, domains: [...(p.domains || []), val] }))
+                    ;(e.target as HTMLInputElement).value = ""
+                  }
+                }
+              }} />
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: -4 }}>Press Enter to add domain</div>
+            {(newClinic.domains || []).length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                {(newClinic.domains || []).map(d => (
+                  <span key={d} style={s.domainTag}>
+                    {d}
+                    <button onClick={() => setNewClinic(p => ({ ...p, domains: p.domains?.filter(x => x !== d) }))}
+                      style={s.domainRemove}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <button onClick={createClinic} disabled={creating || !newClinic.name}
+              style={{ ...s.createBtn, opacity: !newClinic.name ? 0.5 : 1 }}>
+              {creating ? "Creating…" : "Create Clinic"}
+            </button>
+          </div>
+        )}
+
+        {/* Clinic list */}
+        {loading ? (
+          <div style={{ padding: 16, color: "#9ca3af", fontSize: 13 }}>Loading…</div>
+        ) : visibleClinics.length === 0 ? (
+          <div style={{ padding: 16, color: "#9ca3af", fontSize: 13 }}>No clinics</div>
+        ) : (
+          visibleClinics.map(c => (
+            <button key={c.id} onClick={() => setSelectedId(c.id)}
+              style={{ ...s.clinicItem, ...(selectedId === c.id ? s.clinicItemActive : {}) }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: c.is_active ? "#10b981" : "#d1d5db", flexShrink: 0 }} />
+                <div style={{ textAlign: "left" }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: selectedId === c.id ? "#94a3b8" : "#9ca3af" }}>
+                    {c.domains?.[0] || c.slug}
+                  </div>
+                </div>
+              </div>
+            </button>
+          ))
+        )}
+      </div>
+
+      {/* Main area */}
+      <div style={s.main}>
+        {!selectedClinic ? (
+          <div style={s.empty}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🏥</div>
+            <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>No clinic selected</div>
+            <div style={{ color: "#9ca3af" }}>Select a clinic from the sidebar</div>
+          </div>
+        ) : (
+          <ClinicDetail
+            clinic={selectedClinic}
+            onUpdated={loadClinics}
+            role={myRole || "super_admin"}
+            currentUser={currentUser}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function roleColor(role: string): string {
+  const map: Record<string, string> = {
+    super_admin: "#111",
+    clinic_admin: "#374151",
+    medical_director: "#7c3aed",
+    pharmacist: "#1e40af",
+  }
+  return map[role] || "#6b7280"
+}
+
+// ── Clinic Detail ──────────────────────────────────────────────────────────
+function ClinicDetail({
+  clinic, onUpdated, role, currentUser
+}: {
+  clinic: Clinic
+  onUpdated: () => void
+  role: string
+  currentUser: CurrentUser | null
+}) {
+  // MD and Pharmacist go straight to orders tab
+  const defaultTab = (role === "medical_director" || role === "pharmacist") ? "orders" : "details"
+  const [activeTab, setActiveTab] = useState<"details" | "api" | "staff" | "mappings" | "orders" | "uiconfig">(defaultTab as any)
+
+  // Tabs visible per role
+  const visibleTabs = (() => {
+    if (role === "medical_director" || role === "pharmacist") return ["orders"]
+    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig"]
+    return ["details", "api", "staff", "mappings", "orders", "uiconfig"] // super_admin
+  })()
+
+  const TAB_LABELS: Record<string, string> = {
+    details: "🏥 Details",
+    api: "🔌 API & Credentials",
+    staff: "👥 Staff",
+    mappings: "💊 Product Mapping",
+    orders: "📋 Orders",
+    uiconfig: "🎨 Storefront UI",
+  }
+
+  // Default filter per role
+  const defaultOrderFilter = role === "medical_director"
+    ? "provider_deferred"
+    : role === "pharmacist"
+    ? "processing_pharmacy"
+    : ""
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <div style={s.detailHeader}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 10,
+            background: clinic.brand_color || "#111",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "#fff", fontWeight: 700, fontSize: 16,
+          }}>
+            {clinic.name[0]}
+          </div>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 18 }}>{clinic.name}</div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>{clinic.domains?.join(", ") || clinic.slug}</div>
+          </div>
+        </div>
+        <span style={{
+          padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600,
+          background: clinic.is_active ? "#d1fae5" : "#f3f4f6",
+          color: clinic.is_active ? "#065f46" : "#6b7280",
+        }}>
+          {clinic.is_active ? "Active" : "Inactive"}
+        </span>
+      </div>
+
+      {visibleTabs.length > 1 && (
+        <div style={s.tabBar}>
+          {visibleTabs.map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab as any)}
+              style={{ ...s.tab, ...(activeTab === tab ? s.tabActive : {}) }}>
+              {TAB_LABELS[tab]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+        {activeTab === "details"  && <DetailsTab  clinic={clinic} onUpdated={onUpdated} />}
+        {activeTab === "api"      && <ApiTab       clinic={clinic} onUpdated={onUpdated} />}
+        {activeTab === "staff"    && <StaffTab     clinic={clinic} onUpdated={onUpdated} />}
+        {activeTab === "mappings" && <MappingsTab  clinic={clinic} />}
+        {activeTab === "orders"   && (
+          <OrdersTab
+            clinic={clinic}
+            role={role}
+            currentUser={currentUser}
+            defaultFilter={defaultOrderFilter}
+          />
+        )}
+        {activeTab === "uiconfig" && <UiConfigTab clinic={clinic} />}
+      </div>
+    </div>
+  )
+}
+
+// ── Details Tab ────────────────────────────────────────────────────────────
+function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+  const [form, setForm] = useState({ ...clinic, domains: clinic.domains || [] })
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState("")
+  const [domainInput, setDomainInput] = useState("")
+
+  useEffect(() => { setForm({ ...clinic, domains: clinic.domains || [] }) }, [clinic.id])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}`, {
+        method: "POST", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(form),
+      })
+      setStatus(res.ok ? "saved" : "error")
+      if (res.ok) onUpdated()
+    } catch { setStatus("error") }
+    finally { setSaving(false) }
+  }
+
+  const addDomain = () => {
+    const d = domainInput.trim()
+    if (d && !form.domains.includes(d)) {
+      setForm(p => ({ ...p, domains: [...p.domains, d] }))
+      setDomainInput("")
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={s.grid2}>
+        <Field label="Clinic Name">
+          <input style={s.input} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+        </Field>
+        <Field label="Slug">
+          <input style={s.input} value={form.slug} onChange={e => setForm(p => ({ ...p, slug: e.target.value }))} />
+        </Field>
+        <Field label="Contact Email">
+          <input style={s.input} value={form.contact_email || ""} onChange={e => setForm(p => ({ ...p, contact_email: e.target.value }))} />
+        </Field>
+        <Field label="Brand Color">
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="color" value={form.brand_color || "#111111"}
+              onChange={e => setForm(p => ({ ...p, brand_color: e.target.value }))}
+              style={{ width: 40, height: 38, border: "1px solid #e5e7eb", borderRadius: 8, cursor: "pointer" }} />
+            <input style={s.input} value={form.brand_color || ""} onChange={e => setForm(p => ({ ...p, brand_color: e.target.value }))} />
+          </div>
+        </Field>
+        <Field label="Logo URL">
+          <input style={s.input} value={form.logo_url || ""} onChange={e => setForm(p => ({ ...p, logo_url: e.target.value }))} placeholder="https://..." />
+        </Field>
+        <Field label="Publishable API Key (Medusa)">
+          <input style={s.input} value={form.publishable_api_key || ""} onChange={e => setForm(p => ({ ...p, publishable_api_key: e.target.value }))} placeholder="pk_..." />
+        </Field>
+      </div>
+      <Field label="Domains">
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <input style={{ ...s.input, flex: 1 }} value={domainInput}
+            onChange={e => setDomainInput(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && addDomain()}
+            placeholder="e.g. spaderx.com" />
+          <button onClick={addDomain} style={s.btnOutline}>Add</button>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {form.domains.map(d => (
+            <span key={d} style={s.domainTag}>
+              {d}
+              <button onClick={() => setForm(p => ({ ...p, domains: p.domains.filter(x => x !== d) }))} style={s.domainRemove}>×</button>
+            </span>
+          ))}
+        </div>
+      </Field>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div onClick={() => setForm(p => ({ ...p, is_active: !p.is_active }))} style={{
+          width: 40, height: 22, borderRadius: 11, background: form.is_active ? "#10b981" : "#d1d5db",
+          position: "relative", cursor: "pointer", transition: "background 0.2s",
+        }}>
+          <div style={{
+            position: "absolute", top: 3, left: form.is_active ? 21 : 3,
+            width: 16, height: 16, borderRadius: "50%", background: "#fff",
+            transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+          }} />
+        </div>
+        <span style={{ fontSize: 13 }}>Clinic {form.is_active ? "Active" : "Inactive"}</span>
+      </div>
+      <SaveBar saving={saving} status={status} onSave={save} />
+    </div>
+  )
+}
+
+// ── API Tab ────────────────────────────────────────────────────────────────
+function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+  const [form, setForm] = useState({ ...clinic })
+  const [showSecret, setShowSecret] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [status, setStatus] = useState("")
+
+  useEffect(() => { setForm({ ...clinic }); setTestResult(null) }, [clinic.id])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}`, {
+        method: "POST", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(form),
+      })
+      setStatus(res.ok ? "saved" : "error")
+      if (res.ok) onUpdated()
+    } catch { setStatus("error") }
+    finally { setSaving(false) }
+  }
+
+  const testConnection = async () => {
+    setTesting(true)
+    await save()
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/test-connection`, {
+        method: "POST", credentials: "include", headers: adminHeaders(),
+      })
+      setTestResult(await res.json())
+    } catch { setTestResult({ success: false, message: "Network error" }) }
+    finally { setTesting(false) }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={s.grid2}>
+        <Field label="Client ID">
+          <input style={s.input} value={form.api_client_id || ""} onChange={e => setForm(p => ({ ...p, api_client_id: e.target.value }))} placeholder="Enter client ID" />
+        </Field>
+        <Field label="Client Secret">
+          <div style={{ position: "relative" }}>
+            <input style={{ ...s.input, paddingRight: 52 }} type={showSecret ? "text" : "password"}
+              value={form.api_client_secret || ""} onChange={e => setForm(p => ({ ...p, api_client_secret: e.target.value }))} placeholder="Enter secret" />
+            <button onClick={() => setShowSecret(p => !p)} style={s.showBtn}>{showSecret ? "Hide" : "Show"}</button>
+          </div>
+        </Field>
+        <Field label="API Environment">
+          <select style={s.input} value={form.api_env} onChange={e => setForm(p => ({ ...p, api_env: e.target.value as "test" | "prod" }))}>
+            <option value="test">Test / Dev</option>
+            <option value="prod">Production</option>
+          </select>
+        </Field>
+        <Field label="API Base URL (Test)">
+          <input style={{ ...s.input, fontSize: 12 }} value={form.api_base_url_test || ""} onChange={e => setForm(p => ({ ...p, api_base_url_test: e.target.value }))} />
+        </Field>
+        <Field label="API Base URL (Production)">
+          <input style={{ ...s.input, fontSize: 12 }} value={form.api_base_url_prod || ""} onChange={e => setForm(p => ({ ...p, api_base_url_prod: e.target.value }))} />
+        </Field>
+        <Field label="Patient Connect Environment">
+          <select style={s.input} value={form.connect_env} onChange={e => setForm(p => ({ ...p, connect_env: e.target.value as "test" | "prod" }))}>
+            <option value="test">Test</option>
+            <option value="prod">Production</option>
+          </select>
+        </Field>
+        <Field label="Connect URL (Test)">
+          <input style={{ ...s.input, fontSize: 12 }} value={form.connect_url_test || ""} onChange={e => setForm(p => ({ ...p, connect_url_test: e.target.value }))} />
+        </Field>
+        <Field label="Connect URL (Production)">
+          <input style={{ ...s.input, fontSize: 12 }} value={form.connect_url_prod || ""} onChange={e => setForm(p => ({ ...p, connect_url_prod: e.target.value }))} />
+        </Field>
+        <Field label="Post-Call Redirect URL">
+          <input style={s.input} value={form.redirect_url || ""} onChange={e => setForm(p => ({ ...p, redirect_url: e.target.value }))}
+            placeholder={`https://${clinic.domains?.[0] || "your-domain.com"}/order-status`} />
+        </Field>
+      </div>
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 20, marginTop: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 14 }}>💳 Stripe Payment Keys</div>
+        <div style={s.grid2}>
+          <Field label="Stripe Publishable Key">
+            <input style={s.input} value={form.stripe_publishable_key || ""} onChange={e => setForm(p => ({ ...p, stripe_publishable_key: e.target.value }))} placeholder="pk_live_... or pk_test_..." />
+          </Field>
+          <Field label="Stripe Secret Key">
+            <div style={{ position: "relative" }}>
+              <input style={{ ...s.input, paddingRight: 52 }} type={showSecret ? "text" : "password"}
+                value={form.stripe_secret_key || ""} onChange={e => setForm(p => ({ ...p, stripe_secret_key: e.target.value }))} placeholder="sk_live_... or sk_test_..." />
+              <button onClick={() => setShowSecret(p => !p)} style={s.showBtn}>{showSecret ? "Hide" : "Show"}</button>
+            </div>
+          </Field>
+        </div>
+      </div>
+      {testResult && (
+        <div style={{
+          padding: "10px 16px", borderRadius: 8,
+          background: testResult.success ? "#f0fdf4" : "#fef2f2",
+          border: `1px solid ${testResult.success ? "#bbf7d0" : "#fecaca"}`,
+          color: testResult.success ? "#15803d" : "#dc2626", fontSize: 13,
+        }}>
+          {testResult.success ? "✓" : "✗"} {testResult.message}
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <button onClick={testConnection} disabled={testing || !form.api_client_id}
+          style={{ ...s.btnOutline, opacity: !form.api_client_id ? 0.5 : 1 }}>
+          {testing ? "Testing…" : "Test Connection"}
+        </button>
+        <SaveBar saving={saving} status={status} onSave={save} inline />
+      </div>
+    </div>
+  )
+}
+
+// ── Staff Tab ──────────────────────────────────────────────────────────────
+function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+  const [staff, setStaff] = useState<Staff[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ email: "", full_name: "", role: "pharmacist" })
+  const [adding, setAdding] = useState(false)
+
+  useEffect(() => { loadStaff() }, [clinic.id])
+
+  const loadStaff = async () => {
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/staff`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setStaff(data.staff || [])
+    } catch {}
+  }
+
+  const addStaff = async () => {
+    setAdding(true)
+    try {
+      await fetch(`/admin/clinics/${clinic.id}/staff`, {
+        method: "POST", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ user_id: form.email, email: form.email, full_name: form.full_name, role: form.role }),
+      })
+      setForm({ email: "", full_name: "", role: "pharmacist" })
+      setShowForm(false)
+      loadStaff()
+    } catch {}
+    finally { setAdding(false) }
+  }
+
+  const roleColors: Record<string, { bg: string; color: string }> = {
+    medical_director: { bg: "#ede9fe", color: "#7c3aed" },
+    pharmacist:       { bg: "#dbeafe", color: "#1e40af" },
+    clinic_admin:     { bg: "#f3f4f6", color: "#374151" },
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
+        <button onClick={() => setShowForm(p => !p)} style={s.btnPrimary}>{showForm ? "Cancel" : "+ Add Staff"}</button>
+      </div>
+      {showForm && (
+        <div style={{ ...s.formBox, marginBottom: 20 }}>
+          <div style={s.grid2}>
+            <Field label="Full Name">
+              <input style={s.input} value={form.full_name} onChange={e => setForm(p => ({ ...p, full_name: e.target.value }))} placeholder="Dr. Jane Smith" />
+            </Field>
+            <Field label="Email">
+              <input style={s.input} value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} placeholder="jane@clinic.com" />
+            </Field>
+            <Field label="Role">
+              <select style={s.input} value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}>
+                <option value="clinic_admin">Clinic Admin</option>
+                <option value="medical_director">Medical Director</option>
+                <option value="pharmacist">Pharmacist</option>
+              </select>
+            </Field>
+          </div>
+          <button onClick={addStaff} disabled={adding || !form.email} style={s.btnPrimary}>
+            {adding ? "Adding…" : "Add Staff Member"}
+          </button>
+        </div>
+      )}
+      {staff.length === 0 ? (
+        <EmptyState icon="👥" message="No staff assigned to this clinic yet" />
+      ) : (
+        <table style={s.table}>
+          <thead>
+            <tr>{["Name", "Email", "Role", ""].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {staff.map(m => {
+              const rc = roleColors[m.role] || roleColors.clinic_admin
+              return (
+                <tr key={m.id}>
+                  <td style={s.td}>{m.full_name || "—"}</td>
+                  <td style={s.td}>{m.email}</td>
+                  <td style={s.td}>
+                    <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, ...rc }}>
+                      {m.role.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())}
+                    </span>
+                  </td>
+                  <td style={s.td}>
+                    <button onClick={async () => {
+                      await fetch(`/admin/clinics/${clinic.id}/staff/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
+                      loadStaff()
+                    }} style={s.btnDanger}>Remove</button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
+// ── Mappings Tab ───────────────────────────────────────────────────────────
+function MappingsTab({ clinic }: { clinic: Clinic }) {
+  const [mappings, setMappings] = useState<Mapping[]>([])
+  const [treatments, setTreatments] = useState<Treatment[]>([])
+  const [products, setProducts] = useState<Product[]>([])
+  const [form, setForm] = useState({ product_id: "", treatment_id: 0 })
+  const [loadingTreatments, setLoadingTreatments] = useState(false)
+
+  useEffect(() => { loadMappings(); loadProducts() }, [clinic.id])
+
+  const loadMappings = async () => {
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/product-mappings`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setMappings(data.mappings || [])
+    } catch {}
+  }
+
+  const loadProducts = async () => {
+    try {
+      // Filter products by clinic's sales channel if available
+      const scFilter = clinic.sales_channel_id
+        ? `&sales_channel_id[]=${clinic.sales_channel_id}`
+        : ""
+      const res = await fetch(`/admin/products?limit=100${scFilter}`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setProducts((data.products || []).map((p: any) => ({ id: p.id, title: p.title })))
+    } catch {}
+  }
+
+  const loadTreatments = async () => {
+    setLoadingTreatments(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/treatments`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setTreatments(data.treatments || [])
+    } catch {}
+    finally { setLoadingTreatments(false) }
+  }
+
+  const addMapping = async () => {
+    if (!form.product_id || !form.treatment_id) return
+    const product = products.find(p => p.id === form.product_id)
+    const treatment = treatments.find(t => t.id === form.treatment_id)
+    await fetch(`/admin/clinics/${clinic.id}/product-mappings`, {
+      method: "POST", credentials: "include",
+      headers: adminHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        tenant_domain: clinic.domains?.[0] || clinic.slug,
+        product_id: form.product_id,
+        product_title: product?.title || "",
+        treatment_id: form.treatment_id,
+        treatment_name: treatment?.name || "",
+        requires_eligibility: true,
+      }),
+    })
+    setForm({ product_id: "", treatment_id: 0 })
+    loadMappings()
+  }
+
+  return (
+    <div>
+      {mappings.length > 0 && (
+        <table style={{ ...s.table, marginBottom: 24 }}>
+          <thead>
+            <tr>{["Product", "Treatment", "Eligibility Required", ""].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {mappings.map(m => (
+              <tr key={m.id}>
+                <td style={s.td}>{m.product_title || m.product_id}</td>
+                <td style={s.td}>{m.treatment_name || m.treatment_id}</td>
+                <td style={s.td}>
+                  <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: m.requires_eligibility ? "#dbeafe" : "#f3f4f6", color: m.requires_eligibility ? "#1e40af" : "#6b7280" }}>
+                    {m.requires_eligibility ? "Yes" : "No"}
+                  </span>
+                </td>
+                <td style={s.td}>
+                  <button onClick={async () => {
+                    await fetch(`/admin/clinics/${clinic.id}/product-mappings/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
+                    loadMappings()
+                  }} style={s.btnDanger}>Remove</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={s.formBox}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Add Product → Treatment Mapping</div>
+        {treatments.length === 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <button onClick={loadTreatments} disabled={loadingTreatments} style={s.btnOutline}>
+              {loadingTreatments ? "Loading…" : "Load Treatments from API"}
+            </button>
+            <span style={{ fontSize: 12, color: "#9ca3af", marginLeft: 8 }}>Requires valid API credentials</span>
+          </div>
+        )}
+        <div style={s.grid2}>
+          <Field label="Product">
+            <select style={s.input} value={form.product_id} onChange={e => setForm(p => ({ ...p, product_id: e.target.value }))}>
+              <option value="">Select product…</option>
+              {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+            </select>
+          </Field>
+          <Field label="Treatment">
+            <select style={s.input} value={form.treatment_id} onChange={e => setForm(p => ({ ...p, treatment_id: Number(e.target.value) }))}>
+              <option value={0}>Select treatment…</option>
+              {treatments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </Field>
+        </div>
+        <button onClick={addMapping} disabled={!form.product_id || !form.treatment_id}
+          style={{ ...s.btnPrimary, marginTop: 12, opacity: (!form.product_id || !form.treatment_id) ? 0.5 : 1 }}>
+          + Add Mapping
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Orders Tab ─────────────────────────────────────────────────────────────
+function OrdersTab({
+  clinic, role, currentUser, defaultFilter
+}: {
+  clinic: Clinic
+  role: string
+  currentUser: CurrentUser | null
+  defaultFilter: string
+}) {
+  const [orders, setOrders] = useState<Order[]>([])
+  const [filterStatus, setFilterStatus] = useState(defaultFilter)
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
+  const [mdNotes, setMdNotes] = useState("")
+  const [tracking, setTracking] = useState({ number: "", carrier: "UPS" })
+  const [processing, setProcessing] = useState(false)
+  const [orderToDelete, setOrderToDelete] = useState<Order | null>(null)
+  const [commentOrder, setCommentOrder] = useState<Order | null>(null)
+
+  useEffect(() => { loadOrders() }, [clinic.id, filterStatus])
+
+  const loadOrders = async () => {
+    try {
+      const url = `/admin/clinics/${clinic.id}/orders${filterStatus ? `?status=${filterStatus}` : ""}`
+      const res = await fetch(url, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setOrders(data.orders || [])
+    } catch {}
+  }
+
+  const mdDecision = async (decision: "approved" | "denied") => {
+    if (!selectedOrder) return
+    setProcessing(true)
+    try {
+      await fetch(`/admin/clinics/${clinic.id}/orders/${selectedOrder.order_id}/md-decision`, {
+        method: "POST", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ decision, notes: mdNotes, md_user_id: currentUser?.id || "unknown" }),
+      })
+      setSelectedOrder(null); setMdNotes(""); loadOrders()
+    } catch {}
+    finally { setProcessing(false) }
+  }
+
+  const markShipped = async () => {
+    if (!selectedOrder || !tracking.number) return
+    setProcessing(true)
+    try {
+      await fetch(`/admin/clinics/${clinic.id}/orders/${selectedOrder.order_id}/ship`, {
+        method: "POST", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ tracking_number: tracking.number, carrier: tracking.carrier, pharmacist_user_id: currentUser?.id || "unknown" }),
+      })
+      setSelectedOrder(null); setTracking({ number: "", carrier: "UPS" }); loadOrders()
+    } catch {}
+    finally { setProcessing(false) }
+  }
+
+  const deleteOrder = async () => {
+    if (!orderToDelete) return
+    setProcessing(true)
+    try {
+      await fetch(`/admin/orders/${orderToDelete.order_id}/cancel`, { method: "POST", credentials: "include", headers: adminHeaders() })
+      await fetch(`/admin/clinics/${clinic.id}/orders/${orderToDelete.order_id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
+      setOrderToDelete(null)
+      loadOrders()
+    } catch {}
+    finally { setProcessing(false) }
+  }
+
+  const canDelete = role === "super_admin" || role === "clinic_admin"
+  const canMdReview = role === "super_admin" || role === "medical_director"
+  const canShip = role === "super_admin" || role === "pharmacist"
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
+        <select style={{ ...s.input, width: "auto", minWidth: 200 }}
+          value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+          <option value="">All Orders</option>
+          {Object.entries(STATUS_META).map(([val, info]) => (
+            <option key={val} value={val}>{info.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {orders.length === 0 ? (
+        <EmptyState icon="📋" message="No orders found for this filter" />
+      ) : (
+        <table style={s.table}>
+          <thead>
+            <tr>
+              {["Order #", "Patient", "Status", "Provider", "Date", "Actions"].map(h => <th key={h} style={s.th}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map(o => {
+              const si = STATUS_META[o.status] || { label: o.status, color: "#374151", bg: "#f3f4f6" }
+              return (
+                <tr key={o.id}>
+                  <td style={{ ...s.td, fontWeight: 600 }}>#{o.display_id || o.order_id?.slice(0, 8)}</td>
+                  <td style={s.td}>{o.patient_name?.trim() || o.patient_email || "—"}</td>
+                  <td style={s.td}>
+                    <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: si.bg, color: si.color }}>
+                      {si.label}
+                    </span>
+                  </td>
+                  <td style={s.td}>{o.provider_name || "—"}</td>
+                  <td style={s.td}>{o.created_at ? new Date(o.created_at).toLocaleDateString() : "—"}</td>
+                  <td style={{ ...s.td, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    {canMdReview && o.status === "provider_deferred" && (
+                      <button onClick={() => { setSelectedOrder(o); setMdNotes("") }} style={s.btnAction}>MD Review</button>
+                    )}
+                    {canShip && (o.status === "sent_to_pharmacy" || o.status === "pharmacy_processing" || o.status === "processing_pharmacy") && (
+                      <button onClick={() => { setSelectedOrder(o); setTracking({ number: "", carrier: "UPS" }) }} style={s.btnAction}>Ship</button>
+                    )}
+                    {o.status === "shipped" && o.tracking_number && (
+                      <span style={{ fontSize: 11, color: "#6b7280" }}>{o.carrier}: {o.tracking_number}</span>
+                    )}
+                    {/* Comment button — all roles */}
+                    <button onClick={() => setCommentOrder(o)} style={{ ...s.btnAction, color: "#6b7280" }} title="Add comment">💬</button>
+                    {canDelete && (
+                      <button onClick={() => setOrderToDelete(o)} style={{ ...s.btnDanger, padding: "4px 8px" }} title="Delete">🗑</button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {/* Comment Modal */}
+      {commentOrder && (
+        <CommentModal
+          clinic={clinic}
+          order={commentOrder}
+          currentUser={currentUser}
+          role={role}
+          onClose={() => setCommentOrder(null)}
+        />
+      )}
+
+      {/* Delete Modal */}
+      {orderToDelete && (
+        <Modal onClose={() => setOrderToDelete(null)}>
+          <h3 style={s.modalTitle}>Delete Order</h3>
+          <p style={s.modalSubtitle}>This will cancel and permanently remove this order.</p>
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, color: "#dc2626" }}>
+              <strong>Order:</strong> {orderToDelete.order_id?.slice(0, 20)}…<br />
+              <strong>Status:</strong> {STATUS_META[orderToDelete.status]?.label || orderToDelete.status}
+            </div>
+          </div>
+          <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 16 }}>⚠️ This cannot be undone.</p>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={deleteOrder} disabled={processing} style={{ ...s.btnPrimary, background: "#dc2626" }}>
+              {processing ? "Deleting…" : "🗑 Yes, Delete"}
+            </button>
+            <button onClick={() => setOrderToDelete(null)} style={s.btnOutline}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* MD Review Modal */}
+      {selectedOrder?.status === "provider_deferred" && (
+        <Modal onClose={() => setSelectedOrder(null)}>
+          <h3 style={s.modalTitle}>Medical Director Review</h3>
+          <p style={s.modalSubtitle}>Order {selectedOrder.order_id?.slice(0, 14)}… — Patient #{selectedOrder.patient_id}</p>
+          {selectedOrder.provider_name && (
+            <div style={{ fontSize: 13, marginBottom: 12 }}>Deferred by: <strong>{selectedOrder.provider_name}</strong></div>
+          )}
+          {selectedOrder.treatment_dosages && selectedOrder.treatment_dosages.length > 0 && (
+            <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "#9a3412", marginBottom: 8 }}>💊 Proposed Dosages</div>
+              {selectedOrder.treatment_dosages.map((td, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
+                  <span style={{ fontSize: 13 }}>{td.treatmentName}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#9a3412" }}>{td.dosage || "—"}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <Field label="Review Notes (optional)">
+            <textarea style={{ ...s.input, height: 80, resize: "vertical" }}
+              value={mdNotes} onChange={e => setMdNotes(e.target.value)} placeholder="Add notes…" />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button onClick={() => mdDecision("approved")} disabled={processing} style={{ ...s.btnPrimary, background: "#10b981" }}>✓ Approve → Pharmacy</button>
+            <button onClick={() => mdDecision("denied")} disabled={processing} style={{ ...s.btnPrimary, background: "#ef4444" }}>✗ Deny → Refund</button>
+            <button onClick={() => setSelectedOrder(null)} style={s.btnOutline}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Ship Modal */}
+      {selectedOrder && (selectedOrder.status === "sent_to_pharmacy" || selectedOrder.status === "pharmacy_processing" || selectedOrder.status === "processing_pharmacy") && (
+        <Modal onClose={() => setSelectedOrder(null)}>
+          <h3 style={s.modalTitle}>Mark as Shipped</h3>
+          <p style={s.modalSubtitle}>Order {selectedOrder.order_id?.slice(0, 14)}… — Patient #{selectedOrder.patient_id}</p>
+          {selectedOrder.treatment_dosages && selectedOrder.treatment_dosages.length > 0 && (
+            <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "#166534", marginBottom: 8 }}>💊 Provider-Approved Dosages</div>
+              {selectedOrder.treatment_dosages.map((td, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < selectedOrder.treatment_dosages!.length - 1 ? "1px solid #d1fae5" : "none" }}>
+                  <span style={{ fontSize: 13 }}>{td.treatmentName}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#166534", background: "#dcfce7", padding: "2px 10px", borderRadius: 12 }}>{td.dosage || "No dosage specified"}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={s.grid2}>
+            <Field label="Carrier">
+              <select style={s.input} value={tracking.carrier} onChange={e => setTracking(p => ({ ...p, carrier: e.target.value }))}>
+                {["UPS","FedEx","USPS","DHL"].map(c => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Tracking Number">
+              <input style={s.input} value={tracking.number} onChange={e => setTracking(p => ({ ...p, number: e.target.value }))} placeholder="Tracking number" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button onClick={markShipped} disabled={processing || !tracking.number} style={{ ...s.btnPrimary, opacity: !tracking.number ? 0.5 : 1 }}>Confirm Shipment</button>
+            <button onClick={() => setSelectedOrder(null)} style={s.btnOutline}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+// ── Comment Modal ──────────────────────────────────────────────────────────
+function CommentModal({
+  clinic, order, currentUser, role, onClose
+}: {
+  clinic: Clinic
+  order: Order
+  currentUser: CurrentUser | null
+  role: string
+  onClose: () => void
+}) {
+  const [comments, setComments] = useState<Comment[]>([])
+  const [newComment, setNewComment] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => { loadComments() }, [])
+
+  const loadComments = async () => {
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/orders/${order.order_id}/comments`, {
+        credentials: "include", headers: adminHeaders()
+      })
+      const data = await res.json()
+      setComments(data.comments || [])
+    } catch {}
+    finally { setLoading(false) }
+  }
+
+  const addComment = async () => {
+    if (!newComment.trim()) return
+    setSaving(true)
+    try {
+      await fetch(`/admin/clinics/${clinic.id}/orders/${order.order_id}/comments`, {
+        method: "POST", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          comment: newComment,
+          user_id: currentUser?.id || "unknown",
+          user_email: currentUser?.email || "",
+          user_name: `${currentUser?.first_name || ""} ${currentUser?.last_name || ""}`.trim(),
+          role,
+        }),
+      })
+      setNewComment("")
+      loadComments()
+    } catch {}
+    finally { setSaving(false) }
+  }
+
+  const roleColors: Record<string, string> = {
+    super_admin: "#111",
+    clinic_admin: "#374151",
+    medical_director: "#7c3aed",
+    pharmacist: "#1e40af",
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 style={s.modalTitle}>💬 Order Comments</h3>
+      <p style={s.modalSubtitle}>Order {order.order_id?.slice(0, 14)}… — Patient #{order.patient_id}</p>
+
+      {/* Comments list */}
+      <div style={{ maxHeight: 300, overflowY: "auto", marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        {loading ? (
+          <div style={{ color: "#9ca3af", fontSize: 13, textAlign: "center", padding: 16 }}>Loading…</div>
+        ) : comments.length === 0 ? (
+          <div style={{ color: "#9ca3af", fontSize: 13, textAlign: "center", padding: 16 }}>No comments yet</div>
+        ) : comments.map(c => (
+          <div key={c.id} style={{ background: "#f9fafb", borderRadius: 8, padding: "10px 12px", border: "1px solid #f3f4f6" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{c.user_name || c.user_email}</span>
+                <span style={{
+                  padding: "1px 8px", borderRadius: 10, fontSize: 10, fontWeight: 600,
+                  background: c.role === "medical_director" ? "#ede9fe" : c.role === "pharmacist" ? "#dbeafe" : "#f3f4f6",
+                  color: roleColors[c.role] || "#374151",
+                }}>
+                  {ROLE_LABELS[c.role] || c.role}
+                </span>
+              </div>
+              <span style={{ fontSize: 11, color: "#9ca3af" }}>
+                {new Date(c.created_at).toLocaleString()}
+              </span>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{c.comment}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* New comment input */}
+      <Field label="Add Comment">
+        <textarea
+          style={{ ...s.input, height: 80, resize: "vertical" }}
+          value={newComment}
+          onChange={e => setNewComment(e.target.value)}
+          placeholder="Write a comment…"
+        />
+      </Field>
+      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+        <button onClick={addComment} disabled={saving || !newComment.trim()}
+          style={{ ...s.btnPrimary, opacity: !newComment.trim() ? 0.5 : 1 }}>
+          {saving ? "Saving…" : "Add Comment"}
+        </button>
+        <button onClick={onClose} style={s.btnOutline}>Close</button>
+      </div>
+    </Modal>
+  )
+}
+
+// ── UI Config Tab ─────────────────────────────────────────────────────────
+function UiConfigTab({ clinic }: { clinic: Clinic }) {
+  const BLANK_LINK: NavLink = { label: "", url: "", open_new_tab: false }
+  const blankConfig = (): UiConfig => ({
+    tenant_domain: clinic.domains?.[0] || clinic.slug,
+    nav_links: [],
+    footer_links: [],
+    logo_url: "",
+    get_started_url: "",
+  })
+
+  const [config, setConfig] = useState<UiConfig>(blankConfig())
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState("")
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    // Reset form immediately when clinic changes
+    setConfig(blankConfig())
+    setStatus("")
+    setLoading(true)
+
+    fetch(`/admin/clinics/${clinic.id}/ui-config`, { credentials: "include" })
+      .then(r => r.json())
+      .then(d => {
+        if (d.config) {
+          setConfig({
+            tenant_domain: clinic.domains?.[0] || clinic.slug,
+            nav_links: d.config.nav_links || [],
+            footer_links: d.config.footer_links || [],
+            logo_url: d.config.logo_url || "",
+            get_started_url: d.config.get_started_url || "",
+          })
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [clinic.id])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/ui-config`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      })
+      setStatus(res.ok ? "saved" : "error")
+    } catch { setStatus("error") }
+    finally { setSaving(false) }
+  }
+
+  const updateLink = (section: "nav_links" | "footer_links", idx: number, field: keyof NavLink, val: any) => {
+    setConfig(p => {
+      const links = [...p[section]]
+      links[idx] = { ...links[idx], [field]: val }
+      return { ...p, [section]: links }
+    })
+  }
+
+  const addLink = (section: "nav_links" | "footer_links") =>
+    setConfig(p => ({ ...p, [section]: [...p[section], { ...BLANK_LINK }] }))
+
+  const removeLink = (section: "nav_links" | "footer_links", idx: number) =>
+    setConfig(p => ({ ...p, [section]: p[section].filter((_, i) => i !== idx) }))
+
+  const renderLinkSection = (section: "nav_links" | "footer_links", title: string) => (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111" }}>{title}</div>
+        <button onClick={() => addLink(section)} style={s.btnOutline}>+ Add Link</button>
+      </div>
+      {config[section].length === 0 ? (
+        <div style={{ fontSize: 13, color: "#9ca3af", padding: "12px 0" }}>No links added yet</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {config[section].map((link, idx) => (
+            <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, alignItems: "center" }}>
+              <input style={s.input} placeholder="Label (e.g. Home)"
+                value={link.label} onChange={e => updateLink(section, idx, "label", e.target.value)} />
+              <input style={s.input} placeholder="URL (e.g. https://...)"
+                value={link.url} onChange={e => updateLink(section, idx, "url", e.target.value)} />
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
+                <input type="checkbox" checked={!!link.open_new_tab}
+                  onChange={e => updateLink(section, idx, "open_new_tab", e.target.checked)} />
+                New tab
+              </label>
+              <button onClick={() => removeLink(section, idx)} style={s.btnDanger}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+
+  if (loading) return <div style={{ color: "#9ca3af", padding: 24 }}>Loading…</div>
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#0369a1" }}>
+        💡 Define the navigation and footer links for <strong>{clinic.name}</strong>'s storefront.
+        These are served via <code>/store/clinics/ui-config</code> and rendered by the storefront automatically.
+      </div>
+      <div style={s.grid2}>
+        <Field label="Logo URL">
+          <input style={s.input} value={config.logo_url} placeholder="https://..."
+            onChange={e => setConfig(p => ({ ...p, logo_url: e.target.value }))} />
+        </Field>
+        <Field label="Get Started URL">
+          <input style={s.input} value={config.get_started_url} placeholder="https://..."
+            onChange={e => setConfig(p => ({ ...p, get_started_url: e.target.value }))} />
+        </Field>
+      </div>
+      {renderLinkSection("nav_links", "🔗 Navigation Links")}
+      {renderLinkSection("footer_links", "📎 Footer Links")}
+      <SaveBar saving={saving} status={status} onSave={save} />
+    </div>
+  )
+}
+
+// ── Helper Components ──────────────────────────────────────────────────────
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label style={s.label}>{label}</label>
+      {children}
+    </div>
+  )
+}
+
+function SaveBar({ saving, status, onSave, inline }: { saving: boolean; status: string; onSave: () => void; inline?: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, justifyContent: inline ? "flex-end" : "space-between" }}>
+      {status === "saved" && <span style={{ fontSize: 13, color: "#10b981" }}>✓ Saved</span>}
+      {status === "error" && <span style={{ fontSize: 13, color: "#dc2626" }}>Save failed</span>}
+      <button onClick={onSave} disabled={saving} style={s.btnPrimary}>{saving ? "Saving…" : "Save Changes"}</button>
+    </div>
+  )
+}
+
+function EmptyState({ icon, message }: { icon: string; message: string }) {
+  return (
+    <div style={{ textAlign: "center", padding: "48px 0", color: "#9ca3af" }}>
+      <div style={{ fontSize: 36, marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 14 }}>{message}</div>
+    </div>
+  )
+}
+
+function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div style={s.modalOverlay} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={s.modalBox}>{children}</div>
+    </div>
+  )
+}
+
+// ── Styles ─────────────────────────────────────────────────────────────────
+const s: Record<string, React.CSSProperties> = {
+  root: { display: "flex", height: "100vh", fontFamily: "'DM Sans', system-ui, sans-serif", background: "#f9fafb" },
+  sidebar: { width: 220, background: "#fff", borderRight: "1px solid #e5e7eb", display: "flex", flexDirection: "column", flexShrink: 0 },
+  sidebarHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 16px 12px", borderBottom: "1px solid #f3f4f6" },
+  sidebarTitle: { fontWeight: 700, fontSize: 13, color: "#111", textTransform: "uppercase", letterSpacing: "0.05em" },
+  addBtn: { width: 26, height: 26, borderRadius: 6, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", color: "#374151" },
+  newForm: { padding: 12, borderBottom: "1px solid #f3f4f6", display: "flex", flexDirection: "column", gap: 8 },
+  sidebarInput: { width: "100%", padding: "7px 10px", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 12, boxSizing: "border-box" },
+  createBtn: { padding: "7px 12px", background: "#111", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer" },
+  clinicItem: { width: "100%", padding: "10px 16px", border: "none", background: "transparent", cursor: "pointer", borderLeft: "3px solid transparent", transition: "all 0.15s" },
+  clinicItemActive: { background: "#f0f9ff", borderLeft: "3px solid #111", color: "#111" },
+  domainTag: { display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: "#f3f4f6", borderRadius: 4, fontSize: 11 },
+  domainRemove: { background: "none", border: "none", cursor: "pointer", color: "#9ca3af", padding: 0, fontSize: 12, lineHeight: 1 },
+  main: { flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" },
+  empty: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#9ca3af" },
+  detailHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px", borderBottom: "1px solid #e5e7eb", background: "#fff" },
+  tabBar: { display: "flex", borderBottom: "2px solid #e5e7eb", background: "#fff", paddingLeft: 8 },
+  tab: { padding: "10px 16px", border: "none", background: "transparent", fontSize: 12, fontWeight: 500, color: "#6b7280", cursor: "pointer", borderBottom: "2px solid transparent", marginBottom: -2 },
+  tabActive: { color: "#111", fontWeight: 700, borderBottom: "2px solid #111" },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 },
+  label: { display: "block", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#6b7280", marginBottom: 6 },
+  input: { width: "100%", padding: "9px 12px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, color: "#111", background: "#fff", outline: "none", boxSizing: "border-box" },
+  showBtn: { position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 12, padding: 0 },
+  btnPrimary: { padding: "9px 20px", borderRadius: 8, border: "none", background: "#111", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  btnOutline: { padding: "8px 16px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer", color: "#374151" },
+  btnDanger: { padding: "4px 12px", borderRadius: 6, border: "1px solid #fecaca", background: "#fef2f2", fontSize: 12, color: "#dc2626", cursor: "pointer" },
+  btnAction: { padding: "5px 12px", borderRadius: 6, border: "1px solid #e5e7eb", background: "#fff", fontSize: 12, color: "#111", cursor: "pointer", fontWeight: 500 },
+  table: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
+  th: { textAlign: "left", padding: "8px 12px", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#9ca3af", borderBottom: "1px solid #f3f4f6" },
+  td: { padding: "12px 12px", borderBottom: "1px solid #f9fafb", color: "#374151", verticalAlign: "middle" },
+  formBox: { background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8, padding: 16 },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 },
+  modalBox: { background: "#fff", borderRadius: 12, padding: 28, width: 560, maxWidth: "90vw", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" },
+  modalTitle: { margin: "0 0 4px", fontSize: 16, fontWeight: 700 },
+  modalSubtitle: { margin: "0 0 16px", fontSize: 13, color: "#6b7280" },
+}
+
+import { defineRouteConfig } from "@medusajs/admin-sdk"
+
+export const config = defineRouteConfig({
+  label: "Clinic Operations",
+})

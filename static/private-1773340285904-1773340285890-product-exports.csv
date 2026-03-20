@@ -1,0 +1,3 @@
+Product Id,Product Handle,Product Title,Product Status,Product Thumbnail,Product Sales Channel 1,Variant Id,Product Sales Channel 2,Product Sales Channel 3,Product Sales Channel 4
+prod_01KKA1HP0WRK7VEF7S7DVHPS56,semglutide,Semglutide,published,http://localhost:9000/static/1773084923907-ConSemaglutide.png,sc_01KK9YY8G9J9QA3HEYMHBT6468,variant_01KKA1HP3PQKDV5GWNDAA9E07T,,,
+prod_01KKDH5RDMT95812S5PVQ3F3QM,nad,NAD+,published,,sc_01KK9YY8G9J9QA3HEYMHBT6468,variant_01KKDH5RSCZ0XKBDDP0T42Q53Y,sc_01KKAAT2FM8ZDCYQ24GY15ZXCH,sc_01KKAAVSGAPXDK7FYEFSRMZKH5,sc_01KKAAXQ67JYJZQW3V8H6JQ3V9
