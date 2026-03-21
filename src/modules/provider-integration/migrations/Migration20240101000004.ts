@@ -22,3 +22,5 @@ export class Migration20240101000004 extends Migration {
     `)
   }
 }
+
+export default Migration20240101000004

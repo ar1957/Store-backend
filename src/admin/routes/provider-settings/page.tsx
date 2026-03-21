@@ -62,6 +62,30 @@ function adminHeaders(extra: Record<string, string> = {}): Record<string, string
   return { ...extra }
 }
 
+// Resolve the current user's role, cached in sessionStorage keyed by email.
+async function resolveMyRole(): Promise<string> {
+  try {
+    const { user } = await fetch("/admin/users/me", { credentials: "include" }).then(r => r.json())
+    if (!user?.email) return "super_admin"
+
+    const cacheKey = `mhc_role_${user.email}`
+    const cached = sessionStorage.getItem(cacheKey)
+    if (cached) return cached
+
+    const { clinics } = await fetch("/admin/clinics", { credentials: "include" }).then(r => r.json())
+    for (const clinic of (clinics || [])) {
+      const { staff } = await fetch(`/admin/clinics/${clinic.id}/staff`, { credentials: "include" }).then(r => r.json())
+      const match = (staff || []).find((s: any) => s.email === user.email)
+      if (match?.role) {
+        sessionStorage.setItem(cacheKey, match.role)
+        return match.role
+      }
+    }
+    sessionStorage.setItem(cacheKey, "super_admin")
+  } catch {}
+  return "super_admin"
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const BLANK_CLINIC: Partial<Clinic> = {
   name: "", slug: "", domains: [], contact_email: "",
@@ -162,6 +186,43 @@ export default function ClinicOpsPage() {
 
   const isSuperAdmin = !userLoading && currentUser && !myStaffRecord
   const myRole = myStaffRecord?.role || (isSuperAdmin ? "super_admin" : null)
+
+  // Hide Settings nav immediately on mount, reveal only for super_admin once role resolves
+  useEffect(() => {
+    resolveMyRole().then(role => {
+      document.getElementById("mhc-nav-restrictions")?.remove()
+      document.getElementById("mhc-hide-settings")?.remove()
+
+      const s = document.createElement("style")
+      s.id = "mhc-nav-restrictions"
+
+      if (role === "medical_director" || role === "pharmacist") {
+        s.textContent = `
+          a[href="/app/orders"],
+          a[href="/app/products"],
+          a[href="/app/inventory"],
+          a[href="/app/customers"],
+          a[href="/app/promotions"],
+          a[href="/app/price-lists"],
+          a[href="/app/reservations"],
+          a[href="/app/settings"],
+          a[href^="/app/settings/"],
+          a[href="/app/provider-settings"] { display: none !important; }
+        `
+      } else if (role === "clinic_admin") {
+        s.textContent = `
+          a[href="/app/orders"],
+          a[href="/app/settings"],
+          a[href^="/app/settings/"] { display: none !important; }
+        `
+      } else {
+        // super_admin: hide only standard orders (replaced by clinic-orders)
+        s.textContent = `a[href="/app/orders"] { display: none !important; }`
+      }
+
+      document.head.appendChild(s)
+    })
+  }, [])
 
   // Filter clinics visible to this user
   const visibleClinics = isSuperAdmin
@@ -389,7 +450,7 @@ function ClinicDetail({
       <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
         {activeTab === "details"  && <DetailsTab  clinic={clinic} onUpdated={onUpdated} />}
         {activeTab === "api"      && <ApiTab       clinic={clinic} onUpdated={onUpdated} />}
-        {activeTab === "staff"    && <StaffTab     clinic={clinic} onUpdated={onUpdated} />}
+        {activeTab === "staff"    && <StaffTab     clinic={clinic} onUpdated={onUpdated} role={role} />}
         {activeTab === "mappings" && <MappingsTab  clinic={clinic} />}
         {activeTab === "orders"   && (
           <OrdersTab
@@ -614,11 +675,15 @@ function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }
 }
 
 // ── Staff Tab ──────────────────────────────────────────────────────────────
-function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+function StaffTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => void; role: string }) {
   const [staff, setStaff] = useState<Staff[]>([])
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ email: "", full_name: "", role: "pharmacist" })
   const [adding, setAdding] = useState(false)
+  const [pwTarget, setPwTarget] = useState<Staff | null>(null)
+  const [newPw, setNewPw] = useState("")
+  const [pwSaving, setPwSaving] = useState(false)
+  const [pwMsg, setPwMsg] = useState<{ text: string; ok: boolean } | null>(null)
 
   useEffect(() => { loadStaff() }, [clinic.id])
 
@@ -645,18 +710,43 @@ function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void
     finally { setAdding(false) }
   }
 
+  const setPassword = async () => {
+    if (!pwTarget || newPw.length < 8) return
+    setPwSaving(true)
+    setPwMsg(null)
+    try {
+      const res = await fetch("/admin/set-user-password", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: pwTarget.email, password: newPw }),
+      })
+      const d = await res.json()
+      if (res.ok) {
+        setPwMsg({ text: "Password updated", ok: true })
+        setNewPw("")
+        setTimeout(() => { setPwTarget(null); setPwMsg(null) }, 1500)
+      } else {
+        setPwMsg({ text: d.message || "Failed", ok: false })
+      }
+    } catch (e: any) {
+      setPwMsg({ text: e.message || "Error", ok: false })
+    } finally { setPwSaving(false) }
+  }
+
   const roleColors: Record<string, { bg: string; color: string }> = {
     medical_director: { bg: "#ede9fe", color: "#7c3aed" },
     pharmacist:       { bg: "#dbeafe", color: "#1e40af" },
     clinic_admin:     { bg: "#f3f4f6", color: "#374151" },
   }
 
+  const canManage = role === "super_admin" || role === "clinic_admin"
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
-        <button onClick={() => setShowForm(p => !p)} style={s.btnPrimary}>{showForm ? "Cancel" : "+ Add Staff"}</button>
+        {canManage && <button onClick={() => setShowForm(p => !p)} style={s.btnPrimary}>{showForm ? "Cancel" : "+ Add Staff"}</button>}
       </div>
-      {showForm && (
+      {showForm && canManage && (
         <div style={{ ...s.formBox, marginBottom: 20 }}>
           <div style={s.grid2}>
             <Field label="Full Name">
@@ -678,6 +768,50 @@ function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void
           </button>
         </div>
       )}
+
+      {/* Set Password modal */}
+      {pwTarget && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 12, padding: 28, width: 380,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+          }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Set Password</div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 20 }}>{pwTarget.full_name || pwTarget.email}</div>
+            <Field label="New Password">
+              <input
+                style={s.input} type="password" placeholder="Minimum 8 characters"
+                value={newPw} onChange={e => setNewPw(e.target.value)}
+                autoFocus autoComplete="new-password"
+              />
+            </Field>
+            {pwMsg && (
+              <div style={{
+                marginTop: 12, padding: "8px 12px", borderRadius: 8, fontSize: 13,
+                background: pwMsg.ok ? "#f0fdf4" : "#fef2f2",
+                color: pwMsg.ok ? "#15803d" : "#dc2626",
+                border: `1px solid ${pwMsg.ok ? "#bbf7d0" : "#fecaca"}`,
+              }}>
+                {pwMsg.ok ? "✓" : "✗"} {pwMsg.text}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={setPassword} disabled={pwSaving || newPw.length < 8} style={{
+                ...s.btnPrimary, opacity: newPw.length < 8 ? 0.5 : 1,
+              }}>
+                {pwSaving ? "Saving…" : "Update Password"}
+              </button>
+              <button onClick={() => { setPwTarget(null); setNewPw(""); setPwMsg(null) }} style={s.btnOutline}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {staff.length === 0 ? (
         <EmptyState icon="👥" message="No staff assigned to this clinic yet" />
       ) : (
@@ -697,11 +831,19 @@ function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void
                       {m.role.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())}
                     </span>
                   </td>
-                  <td style={s.td}>
-                    <button onClick={async () => {
-                      await fetch(`/admin/clinics/${clinic.id}/staff/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
-                      loadStaff()
-                    }} style={s.btnDanger}>Remove</button>
+                  <td style={{ ...s.td, display: "flex", gap: 8 }}>
+                    {canManage && (
+                      <button onClick={() => { setPwTarget(m); setNewPw(""); setPwMsg(null) }}
+                        style={{ ...s.btnOutline, fontSize: 12 }}>
+                        🔒 Set Password
+                      </button>
+                    )}
+                    {canManage && (
+                      <button onClick={async () => {
+                        await fetch(`/admin/clinics/${clinic.id}/staff/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
+                        loadStaff()
+                      }} style={s.btnDanger}>Remove</button>
+                    )}
                   </td>
                 </tr>
               )

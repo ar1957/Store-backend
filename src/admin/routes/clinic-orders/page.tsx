@@ -170,89 +170,67 @@ function StatusBadge({ status }: { status: WorkflowStatus | null }) {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const RESTRICTED_ROLES = ["medical_director", "pharmacist"]
-const BLOCKED_PATHS = [
-  "/app/products", "/app/inventory", "/app/customers",
-  "/app/promotions", "/app/price-lists", "/app/reservations",
-  "/app/provider-settings",
-]
 
-function injectStyle(id: string, css: string) {
-  if (typeof document === "undefined") return
-  if (document.getElementById(id)) return
-  const style = document.createElement("style")
-  style.id = id
-  style.textContent = css
-  document.head.appendChild(style)
+// Resolve the current user's role across all clinics.
+// Returns the role string, "clinic_admin", or "super_admin".
+async function resolveMyRole(): Promise<string> {
+  try {
+    const { user } = await fetch("/admin/users/me", { credentials: "include" }).then(r => r.json())
+    if (!user?.email) return "super_admin"
+
+    // Cache keyed by email so switching users never returns stale data
+    const cacheKey = `mhc_role_${user.email}`
+    const cached = sessionStorage.getItem(cacheKey)
+    if (cached) return cached
+
+    const { clinics } = await fetch("/admin/clinics", { credentials: "include" }).then(r => r.json())
+    for (const clinic of (clinics || [])) {
+      const { staff } = await fetch(`/admin/clinics/${clinic.id}/staff`, { credentials: "include" }).then(r => r.json())
+      const match = (staff || []).find((s: any) => s.email === user.email)
+      if (match?.role) {
+        sessionStorage.setItem(cacheKey, match.role)
+        return match.role
+      }
+    }
+    sessionStorage.setItem(cacheKey, "super_admin")
+  } catch {}
+  return "super_admin"
 }
 
-async function applyNavRestrictions() {
-  if ((window as any).__mhcNavDone) return
-  ;(window as any).__mhcNavDone = true
+function applyNavForRole(role: string) {
+  document.getElementById("mhc-nav-restrictions")?.remove()
+  document.getElementById("mhc-hide-settings")?.remove()
 
-  try {
-    const userRes = await fetch("/admin/users/me", { credentials: "include" })
-    if (!userRes.ok) return
-    const { user } = await userRes.json()
-    if (!user?.email) return
+  const s = document.createElement("style")
+  s.id = "mhc-nav-restrictions"
 
-    const clinicsRes = await fetch("/admin/clinics", { credentials: "include" })
-    if (!clinicsRes.ok) return
-    const { clinics } = await clinicsRes.json()
+  if (role === "medical_director" || role === "pharmacist") {
+    // Only clinic-orders visible
+    s.textContent = `
+      a[href="/app/orders"],
+      a[href="/app/products"],
+      a[href="/app/inventory"],
+      a[href="/app/customers"],
+      a[href="/app/promotions"],
+      a[href="/app/price-lists"],
+      a[href="/app/reservations"],
+      a[href="/app/settings"],
+      a[href^="/app/settings/"],
+      a[href="/app/provider-settings"] { display: none !important; }
+    `
+  } else if (role === "clinic_admin") {
+    // Hide settings + standard orders (use clinic-orders instead)
+    s.textContent = `
+      a[href="/app/orders"],
+      a[href="/app/settings"],
+      a[href^="/app/settings/"] { display: none !important; }
+    `
+  } else {
+    // super_admin: hide only the standard orders link (replaced by clinic-orders)
+    s.textContent = `a[href="/app/orders"] { display: none !important; }`
+  }
 
-    let isRestricted = false
-    for (const clinic of (clinics || [])) {
-      const staffRes = await fetch(`/admin/clinics/${clinic.id}/staff`, { credentials: "include" })
-      if (!staffRes.ok) continue
-      const { staff } = await staffRes.json()
-      const match = (staff || []).find((s: any) => s.email === user.email)
-      if (match && RESTRICTED_ROLES.includes(match.role)) {
-        isRestricted = true
-        break
-      }
-    }
-
-    if (!isRestricted) return
-
-    // Only hide nav for restricted roles (MD, Pharmacist)
-    injectStyle("mhc-hide-nav-restricted", `
-      a[href="/app/orders"] { display: none !important; }
-      a[href="/app/products"] { display: none !important; }
-      a[href="/app/inventory"] { display: none !important; }
-      a[href="/app/customers"] { display: none !important; }
-      a[href="/app/promotions"] { display: none !important; }
-      a[href="/app/price-lists"] { display: none !important; }
-      a[href="/app/reservations"] { display: none !important; }
-      a[href*="provider-settings"] { display: none !important; }
-    `)
-
-    // Keep hidden after React re-renders
-    if (!(window as any).__mhcObserver) {
-      ;(window as any).__mhcObserver = true
-      const obs = new MutationObserver(() => {
-        document.querySelectorAll([
-          'a[href="/app/orders"]',
-          'a[href="/app/products"]', 'a[href="/app/inventory"]',
-          'a[href="/app/customers"]', 'a[href="/app/promotions"]',
-          'a[href="/app/price-lists"]', 'a[href="/app/reservations"]',
-          'a[href*="provider-settings"]',
-        ].join(", ")).forEach(el => ((el as HTMLElement).style.display = "none"))
-      })
-      obs.observe(document.body, { childList: true, subtree: true })
-    }
-
-    // Patch pushState so navigating to blocked pages redirects back
-    if (!(window as any).__mhcPatched) {
-      ;(window as any).__mhcPatched = true
-      const orig = window.history.pushState.bind(window.history)
-      window.history.pushState = function(state, title, url) {
-        const path = String(url || "")
-        if (path === "/app/orders" || BLOCKED_PATHS.some(p => path.startsWith(p))) {
-          return orig(state, title, "/app/clinic-orders")
-        }
-        return orig(state, title, url)
-      }
-    }
-  } catch {}
+  document.head.appendChild(s)
 }
 
 export default function ClinicOrdersPage() {
@@ -298,9 +276,15 @@ export default function ClinicOrdersPage() {
     }
   }, [page, search])
 
-  // Apply nav restrictions on mount — runs every time clinic-orders loads
+  // Apply nav restrictions on mount + redirect /app/orders to here for restricted roles
   useEffect(() => {
-    applyNavRestrictions()
+    resolveMyRole().then(role => {
+      applyNavForRole(role)
+      // If a restricted user somehow lands on /app/orders, redirect them here
+      if (RESTRICTED_ROLES.includes(role) && window.location.pathname === "/app/orders") {
+        navigate("/clinic-orders", { replace: true })
+      }
+    })
   }, [])
 
   useEffect(() => {
