@@ -1,34 +1,35 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 
 const CLINIC_MODULE = "clinic"
-const PROVIDER_INTEGRATION_MODULE = "providerIntegration"
 
 // GET /admin/clinics/:id
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
     const svc = req.scope.resolve(CLINIC_MODULE) as any
-    const clinicOpsService = req.scope.resolve(PROVIDER_INTEGRATION_MODULE) as any
-    
+    const pg = req.scope.resolve("__pg_connection__") as any
+
     const clinic = await svc.getClinicById(req.params.id)
     if (!clinic) return res.status(404).json({ message: "Clinic not found" })
 
-    // Fetch associated UI configuration using the clinic's slug/name
-    const uiConfig = await clinicOpsService.getUiConfigByTenant(clinic.slug || clinic.name)
+    const tenantDomain = clinic.domains?.[0] || clinic.slug
+    const uiResult = await pg.raw(
+      `SELECT * FROM clinic_ui_config WHERE clinic_id = ? OR tenant_domain = ? ORDER BY clinic_id NULLS LAST LIMIT 1`,
+      [req.params.id, tenantDomain]
+    )
 
     return res.json({ 
       clinic,
-      clinic_ui_config: uiConfig 
+      clinic_ui_config: uiResult.rows[0] || null
     })
   } catch (err: unknown) {
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })
   }
 }
 
-// POST /admin/clinics/:id — update clinic & UI config
+// POST /admin/clinics/:id — update clinic core fields only
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
-    const clinicOpsService = req.scope.resolve(PROVIDER_INTEGRATION_MODULE) as any
     const { id: clinicId } = req.params
     const body = req.body as any
 
@@ -51,11 +52,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     for (const key of ALLOWED) {
       if (key in body) {
         if (key === "domains") {
+          // Serialize JS array to PostgreSQL array literal: '{val1,val2}'
+          const arr = Array.isArray(body[key]) ? body[key] : []
+          const pgArray = `{${arr.map((v: string) => `"${String(v).replace(/"/g, '\\"')}"`).join(",")}}`
           sets.push(`"${key}" = ?::text[]`)
+          values.push(pgArray)
         } else {
           sets.push(`"${key}" = ?`)
+          values.push(body[key])
         }
-        values.push(body[key])
       }
     }
 
@@ -71,29 +76,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       updatedClinic = current.rows[0]
     }
 
-    // 2. Handle UI Configuration Upsert
-    const uiFields = ["nav_links", "footer_links", "logo_url", "get_started_url"]
-    const hasUiUpdates = uiFields.some(field => field in body)
-
-    let updatedUiConfig = null
-    const tenantDomain = updatedClinic.slug || updatedClinic.name
-
-    if (hasUiUpdates) {
-      updatedUiConfig = await clinicOpsService.upsertUiConfig({
-        tenant_domain: tenantDomain,
-        nav_links: body.nav_links,
-        footer_links: body.footer_links,
-        logo_url: body.logo_url,
-        get_started_url: body.get_started_url
-      })
-    } else {
-      updatedUiConfig = await clinicOpsService.getUiConfigByTenant(tenantDomain)
-    }
-
-    return res.json({ 
-      clinic: updatedClinic,
-      clinic_ui_config: updatedUiConfig
-    })
+    return res.json({ clinic: updatedClinic })
   } catch (err: unknown) {
     console.error("[Clinic Update] Error:", err)
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })

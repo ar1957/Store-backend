@@ -15,6 +15,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const host = (
       req.headers["x-forwarded-host"] ||
+      req.headers["x-tenant-domain"] ||
       req.headers["host"] ||
       ""
     ) as string

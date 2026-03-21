@@ -4,6 +4,13 @@
  */
 
 import { useState, useEffect } from "react"
+import { defineRouteConfig } from "@medusajs/admin-sdk"
+import { BuildingStorefront } from "@medusajs/icons"
+
+export const config = defineRouteConfig({
+  label: "Clinic Operations",
+  icon: BuildingStorefront,
+})
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Clinic {
@@ -1661,9 +1668,3 @@ const s: Record<string, React.CSSProperties> = {
   modalTitle: { margin: "0 0 4px", fontSize: 16, fontWeight: 700 },
   modalSubtitle: { margin: "0 0 16px", fontSize: 13, color: "#6b7280" },
 }
-
-import { defineRouteConfig } from "@medusajs/admin-sdk"
-
-export const config = defineRouteConfig({
-  label: "Clinic Operations",
-})

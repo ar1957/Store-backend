@@ -44,7 +44,11 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       [clinic.id]
     )
 
-    return res.json({ config: result.rows[0] || null })
+    const row = result.rows[0] || {}
+    // brand_color comes from the clinic record itself (already fetched above)
+    row.brand_color = clinic.brand_color || null
+
+    return res.json({ config: row })
   } catch (err: unknown) {
     console.error("[Store UI Config] Error:", err)
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })

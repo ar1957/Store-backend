@@ -1,5 +1,12 @@
 import { useEffect, useState, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
+import { defineRouteConfig } from "@medusajs/admin-sdk"
+import { ShoppingCart } from "@medusajs/icons"
+
+export const config = defineRouteConfig({
+  label: "Clinic Orders",
+  icon: ShoppingCart,
+})
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
