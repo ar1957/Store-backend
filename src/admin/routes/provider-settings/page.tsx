@@ -41,13 +41,20 @@ interface Comment { id: string; user_name: string; user_email: string; role: str
 interface CurrentUser { id: string; email: string; first_name: string; last_name: string }
 interface StaffRecord { clinic_id: string; role: string; full_name: string; email: string; tenant_domain: string }
 
-interface NavLink { label: string; url: string; open_new_tab?: boolean }
+interface NavLink { label: string; url: string; open_new_tab?: boolean; children?: NavLink[] }
+interface SocialLink { platform: string; url: string }
 interface UiConfig {
   tenant_domain: string
   nav_links: NavLink[]
   footer_links: NavLink[]
+  bottom_links: NavLink[]
   logo_url: string
   get_started_url: string
+  contact_phone: string
+  contact_email: string
+  contact_address: string
+  social_links: SocialLink[]
+  certification_image_url: string
 }
 
 // ── Auth Helper ───────────────────────────────────────────────────────────
@@ -1173,8 +1180,14 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
     tenant_domain: clinic.domains?.[0] || clinic.slug,
     nav_links: [],
     footer_links: [],
+    bottom_links: [],
     logo_url: "",
     get_started_url: "",
+    contact_phone: "",
+    contact_email: "",
+    contact_address: "",
+    social_links: [],
+    certification_image_url: "",
   })
 
   const [config, setConfig] = useState<UiConfig>(blankConfig())
@@ -1196,8 +1209,14 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
             tenant_domain: clinic.domains?.[0] || clinic.slug,
             nav_links: d.config.nav_links || [],
             footer_links: d.config.footer_links || [],
+            bottom_links: d.config.bottom_links || [],
             logo_url: d.config.logo_url || "",
             get_started_url: d.config.get_started_url || "",
+            contact_phone: d.config.contact_phone || "",
+            contact_email: d.config.contact_email || "",
+            contact_address: d.config.contact_address || "",
+            social_links: d.config.social_links || [],
+            certification_image_url: d.config.certification_image_url || "",
           })
         }
       })
@@ -1232,6 +1251,29 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
   const removeLink = (section: "nav_links" | "footer_links", idx: number) =>
     setConfig(p => ({ ...p, [section]: p[section].filter((_, i) => i !== idx) }))
 
+  const addChildLink = (section: "nav_links" | "footer_links", parentIdx: number) =>
+    setConfig(p => {
+      const links = [...p[section]]
+      links[parentIdx] = { ...links[parentIdx], children: [...(links[parentIdx].children || []), { ...BLANK_LINK }] }
+      return { ...p, [section]: links }
+    })
+
+  const updateChildLink = (section: "nav_links" | "footer_links", parentIdx: number, childIdx: number, field: keyof NavLink, val: any) =>
+    setConfig(p => {
+      const links = [...p[section]]
+      const children = [...(links[parentIdx].children || [])]
+      children[childIdx] = { ...children[childIdx], [field]: val }
+      links[parentIdx] = { ...links[parentIdx], children }
+      return { ...p, [section]: links }
+    })
+
+  const removeChildLink = (section: "nav_links" | "footer_links", parentIdx: number, childIdx: number) =>
+    setConfig(p => {
+      const links = [...p[section]]
+      links[parentIdx] = { ...links[parentIdx], children: (links[parentIdx].children || []).filter((_, i) => i !== childIdx) }
+      return { ...p, [section]: links }
+    })
+
   const renderLinkSection = (section: "nav_links" | "footer_links", title: string) => (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -1241,19 +1283,42 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
       {config[section].length === 0 ? (
         <div style={{ fontSize: 13, color: "#9ca3af", padding: "12px 0" }}>No links added yet</div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {config[section].map((link, idx) => (
-            <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, alignItems: "center" }}>
-              <input style={s.input} placeholder="Label (e.g. Home)"
-                value={link.label} onChange={e => updateLink(section, idx, "label", e.target.value)} />
-              <input style={s.input} placeholder="URL (e.g. https://...)"
-                value={link.url} onChange={e => updateLink(section, idx, "url", e.target.value)} />
-              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
-                <input type="checkbox" checked={!!link.open_new_tab}
-                  onChange={e => updateLink(section, idx, "open_new_tab", e.target.checked)} />
-                New tab
-              </label>
-              <button onClick={() => removeLink(section, idx)} style={s.btnDanger}>×</button>
+            <div key={idx} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 10, background: "#fafafa" }}>
+              {/* Parent row */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto auto", gap: 8, alignItems: "center" }}>
+                <input style={s.input} placeholder="Label (e.g. About)"
+                  value={link.label} onChange={e => updateLink(section, idx, "label", e.target.value)} />
+                <input style={s.input} placeholder="URL (leave blank if dropdown only)"
+                  value={link.url} onChange={e => updateLink(section, idx, "url", e.target.value)} />
+                <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!link.open_new_tab}
+                    onChange={e => updateLink(section, idx, "open_new_tab", e.target.checked)} />
+                  New tab
+                </label>
+                <button onClick={() => addChildLink(section, idx)} style={{ ...s.btnOutline, fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }} title="Add child link">+ Child</button>
+                <button onClick={() => removeLink(section, idx)} style={s.btnDanger}>×</button>
+              </div>
+              {/* Child links */}
+              {(link.children || []).length > 0 && (
+                <div style={{ marginTop: 8, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 6, borderLeft: "2px solid #e5e7eb" }}>
+                  {(link.children || []).map((child, ci) => (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, alignItems: "center" }}>
+                      <input style={{ ...s.input, fontSize: 12 }} placeholder="Child label"
+                        value={child.label} onChange={e => updateChildLink(section, idx, ci, "label", e.target.value)} />
+                      <input style={{ ...s.input, fontSize: 12 }} placeholder="Child URL"
+                        value={child.url} onChange={e => updateChildLink(section, idx, ci, "url", e.target.value)} />
+                      <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!child.open_new_tab}
+                          onChange={e => updateChildLink(section, idx, ci, "open_new_tab", e.target.checked)} />
+                        New tab
+                      </label>
+                      <button onClick={() => removeChildLink(section, idx, ci)} style={s.btnDanger}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1263,12 +1328,16 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
 
   if (loading) return <div style={{ color: "#9ca3af", padding: 24 }}>Loading…</div>
 
+  const SOCIAL_PLATFORMS = ["Facebook", "Instagram", "TikTok", "Twitter/X", "YouTube", "LinkedIn", "Pinterest", "Snapchat"]
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#0369a1" }}>
         💡 Define the navigation and footer links for <strong>{clinic.name}</strong>'s storefront.
         These are served via <code>/store/clinics/ui-config</code> and rendered by the storefront automatically.
       </div>
+
+      {/* Branding */}
       <div style={s.grid2}>
         <Field label="Logo URL">
           <input style={s.input} value={config.logo_url} placeholder="https://..."
@@ -1279,8 +1348,98 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
             onChange={e => setConfig(p => ({ ...p, get_started_url: e.target.value }))} />
         </Field>
       </div>
+
+      {/* Contact Info */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 12 }}>📞 Contact Information</div>
+        <div style={s.grid2}>
+          <Field label="Phone">
+            <input style={s.input} value={config.contact_phone} placeholder="(956) 766-0051"
+              onChange={e => setConfig(p => ({ ...p, contact_phone: e.target.value }))} />
+          </Field>
+          <Field label="Email">
+            <input style={s.input} value={config.contact_email} placeholder="support@yourclinic.com"
+              onChange={e => setConfig(p => ({ ...p, contact_email: e.target.value }))} />
+          </Field>
+        </div>
+        <Field label="Address (use line breaks for multi-line)">
+          <textarea style={{ ...s.input, height: 72, resize: "vertical", fontFamily: "inherit" }}
+            value={config.contact_address} placeholder={"1907 N. Veterans Blvd.\nPharr, Texas 78577\nSuite B"}
+            onChange={e => setConfig(p => ({ ...p, contact_address: e.target.value }))} />
+        </Field>
+      </div>
+
+      {/* Social Links */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#111" }}>🌐 Social Media Links</div>
+          <button onClick={() => setConfig(p => ({ ...p, social_links: [...p.social_links, { platform: "Facebook", url: "" }] }))} style={s.btnOutline}>+ Add Social</button>
+        </div>
+        {config.social_links.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#9ca3af", padding: "8px 0" }}>No social links added yet</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {config.social_links.map((sl, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "160px 1fr auto", gap: 8, alignItems: "center" }}>
+                <select style={s.input} value={sl.platform}
+                  onChange={e => setConfig(p => { const sl2 = [...p.social_links]; sl2[i] = { ...sl2[i], platform: e.target.value }; return { ...p, social_links: sl2 } })}>
+                  {SOCIAL_PLATFORMS.map(pl => <option key={pl}>{pl}</option>)}
+                </select>
+                <input style={s.input} placeholder="https://facebook.com/yourclinic" value={sl.url}
+                  onChange={e => setConfig(p => { const sl2 = [...p.social_links]; sl2[i] = { ...sl2[i], url: e.target.value }; return { ...p, social_links: sl2 } })} />
+                <button onClick={() => setConfig(p => ({ ...p, social_links: p.social_links.filter((_, j) => j !== i) }))} style={s.btnDanger}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Certification Image */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 12 }}>🏅 Certification / Badge Image</div>
+        <Field label="Image URL (shown below contact info in footer)">
+          <input style={s.input} value={config.certification_image_url} placeholder="https://... (e.g. compounded-in-usa badge)"
+            onChange={e => setConfig(p => ({ ...p, certification_image_url: e.target.value }))} />
+        </Field>
+        {config.certification_image_url && (
+          <img src={config.certification_image_url} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
+        )}
+      </div>
+
       {renderLinkSection("nav_links", "🔗 Navigation Links")}
       {renderLinkSection("footer_links", "📎 Footer Links")}
+
+      {/* Bottom Bar Links */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#111" }}>📋 Bottom Bar Links</div>
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>Shown in the thin bar at the very bottom of the footer (e.g. Terms, Privacy, Consent)</div>
+          </div>
+          <button onClick={() => setConfig(p => ({ ...p, bottom_links: [...p.bottom_links, { ...BLANK_LINK }] }))} style={s.btnOutline}>+ Add Link</button>
+        </div>
+        {config.bottom_links.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#9ca3af", padding: "8px 0" }}>No bottom links added yet</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {config.bottom_links.map((link, idx) => (
+              <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, alignItems: "center" }}>
+                <input style={s.input} placeholder="Label (e.g. Privacy Policy)"
+                  value={link.label} onChange={e => setConfig(p => { const bl = [...p.bottom_links]; bl[idx] = { ...bl[idx], label: e.target.value }; return { ...p, bottom_links: bl } })} />
+                <input style={s.input} placeholder="URL"
+                  value={link.url} onChange={e => setConfig(p => { const bl = [...p.bottom_links]; bl[idx] = { ...bl[idx], url: e.target.value }; return { ...p, bottom_links: bl } })} />
+                <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!link.open_new_tab}
+                    onChange={e => setConfig(p => { const bl = [...p.bottom_links]; bl[idx] = { ...bl[idx], open_new_tab: e.target.checked }; return { ...p, bottom_links: bl } })} />
+                  New tab
+                </label>
+                <button onClick={() => setConfig(p => ({ ...p, bottom_links: p.bottom_links.filter((_, i) => i !== idx) }))} style={s.btnDanger}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <SaveBar saving={saving} status={status} onSave={save} />
     </div>
   )

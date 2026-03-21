@@ -36,7 +36,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     console.log("[Store UI Config] Found clinic:", clinic.name, clinic.id)
 
     const result = await pg.raw(
-      `SELECT nav_links, footer_links, logo_url, get_started_url
+      `SELECT nav_links, footer_links, bottom_links, logo_url, get_started_url,
+              contact_phone, contact_email, contact_address, social_links, certification_image_url
        FROM clinic_ui_config
        WHERE clinic_id = ?
        LIMIT 1`,

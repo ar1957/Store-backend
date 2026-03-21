@@ -1,6 +1,5 @@
 /**
  * GET/POST /admin/clinics/:id/ui-config
- * File: src/api/admin/clinics/[id]/ui-config/route.ts
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 
@@ -17,7 +16,6 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const tenantDomain = clinic.domains?.[0] || clinic.slug
 
-    // Try by clinic_id first, fallback to tenant_domain for old records
     const result = await pg.raw(
       `SELECT * FROM clinic_ui_config 
        WHERE clinic_id = ? OR tenant_domain = ?
@@ -45,12 +43,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const tenantDomain = clinic.domains?.[0] || clinic.slug
     const body = req.body as any
 
-    const navLinks = JSON.stringify(body.nav_links || [])
-    const footerLinks = JSON.stringify(body.footer_links || [])
-    const logoUrl = body.logo_url || null
-    const getStartedUrl = body.get_started_url || null
+    const navLinks             = JSON.stringify(body.nav_links || [])
+    const footerLinks          = JSON.stringify(body.footer_links || [])
+    const bottomLinks          = JSON.stringify(body.bottom_links || [])
+    const socialLinks          = JSON.stringify(body.social_links || [])
+    const logoUrl              = body.logo_url || null
+    const getStartedUrl        = body.get_started_url || null
+    const contactPhone         = body.contact_phone || null
+    const contactEmail         = body.contact_email || null
+    const contactAddress       = body.contact_address || null
+    const certificationImageUrl = body.certification_image_url || null
 
-    // Check by clinic_id OR tenant_domain to catch old records
     const existing = await pg.raw(
       `SELECT id FROM clinic_ui_config 
        WHERE clinic_id = ? OR tenant_domain = ?
@@ -60,28 +63,49 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     let result
     if (existing.rows.length > 0) {
-      // Update and set clinic_id to fix old records
       result = await pg.raw(
         `UPDATE clinic_ui_config
-         SET clinic_id = ?,
-             nav_links = ?::jsonb,
-             footer_links = ?::jsonb,
-             logo_url = ?,
-             get_started_url = ?,
-             tenant_domain = ?,
-             updated_at = NOW()
+         SET clinic_id               = ?,
+             nav_links               = ?::jsonb,
+             footer_links            = ?::jsonb,
+             bottom_links            = ?::jsonb,
+             social_links            = ?::jsonb,
+             logo_url                = ?,
+             get_started_url         = ?,
+             contact_phone           = ?,
+             contact_email           = ?,
+             contact_address         = ?,
+             certification_image_url = ?,
+             tenant_domain           = ?,
+             updated_at              = NOW()
          WHERE id = ?
          RETURNING *`,
-        [clinicId, navLinks, footerLinks, logoUrl, getStartedUrl, tenantDomain, existing.rows[0].id]
+        [
+          clinicId,
+          navLinks, footerLinks, bottomLinks, socialLinks,
+          logoUrl, getStartedUrl,
+          contactPhone, contactEmail, contactAddress, certificationImageUrl,
+          tenantDomain,
+          existing.rows[0].id,
+        ]
       )
     } else {
       const id = `cuicfg_${Date.now()}`
       result = await pg.raw(
         `INSERT INTO clinic_ui_config
-           (id, clinic_id, tenant_domain, nav_links, footer_links, logo_url, get_started_url, created_at, updated_at)
-         VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, NOW(), NOW())
+           (id, clinic_id, tenant_domain,
+            nav_links, footer_links, bottom_links, social_links,
+            logo_url, get_started_url,
+            contact_phone, contact_email, contact_address, certification_image_url,
+            created_at, updated_at)
+         VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?, NOW(), NOW())
          RETURNING *`,
-        [id, clinicId, tenantDomain, navLinks, footerLinks, logoUrl, getStartedUrl]
+        [
+          id, clinicId, tenantDomain,
+          navLinks, footerLinks, bottomLinks, socialLinks,
+          logoUrl, getStartedUrl,
+          contactPhone, contactEmail, contactAddress, certificationImageUrl,
+        ]
       )
     }
 
