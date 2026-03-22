@@ -23,13 +23,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     ) as string
     const domain = host.split(":")[0]
     const clinic = await clinicSvc.getClinicByDomain(host) || await clinicSvc.getClinicByDomain(domain)
-    const allowedDomains: string[] = clinic?.domains ?? []
 
-    if (allowedDomains.length === 0) {
+    if (!clinic) {
       return res.status(404).json({ message: "No orders found" })
     }
 
-    const domainPlaceholders = allowedDomains.map(() => "?").join(", ")
+    // Scope by sales_channel_id (most reliable) or fall back to domain matching
+    const salesChannelId = clinic.sales_channel_id
+    const allowedDomains: string[] = clinic?.domains ?? []
+    if (clinic.slug) allowedDomains.push(clinic.slug)
 
     let orderRows: any[] = []
 
@@ -42,6 +44,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           ow.id as workflow_id,
           ow.gfe_id,
           ow.status,
+          ow.virtual_room_url,
           ow.provider_name,
           ow.tracking_number,
           ow.carrier,
@@ -50,9 +53,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         FROM "order" o
         LEFT JOIN order_workflow ow ON ow.order_id = o.id
         WHERE (o.id = ? OR o.display_id::text = ?)
-          AND ow.tenant_domain IN (${domainPlaceholders})
+          AND (
+            o.sales_channel_id = ?
+            OR ow.tenant_domain = ANY(?)
+            OR o.metadata->>'tenant_domain' = ANY(?)
+          )
         LIMIT 10
-      `, [orderId, orderId, ...allowedDomains])
+      `, [orderId, orderId, salesChannelId, allowedDomains, allowedDomains])
       orderRows = result.rows
     } else if (email) {
       const result = await pgConnection.raw(`
@@ -63,6 +70,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           ow.id as workflow_id,
           ow.gfe_id,
           ow.status,
+          ow.virtual_room_url,
           ow.provider_name,
           ow.tracking_number,
           ow.carrier,
@@ -71,14 +79,19 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         FROM "order" o
         LEFT JOIN order_workflow ow ON ow.order_id = o.id
         WHERE LOWER(o.email) = LOWER(?)
-          AND ow.tenant_domain IN (${domainPlaceholders})
+          AND (
+            o.sales_channel_id = ?
+            OR ow.tenant_domain = ANY(?)
+            OR o.metadata->>'tenant_domain' = ANY(?)
+          )
         ORDER BY o.created_at DESC
         LIMIT 20
-      `, [email, ...allowedDomains])
+      `, [email, salesChannelId, allowedDomains, allowedDomains])
       orderRows = result.rows
     }
 
     if (!orderRows.length) {
+      console.log(`[Order Lookup] No orders found. clinic=${clinic.id} sales_channel=${salesChannelId} domains=${JSON.stringify(allowedDomains)} query=${JSON.stringify({ email, orderId })}`)
       return res.status(404).json({ message: "No orders found" })
     }
 
@@ -97,6 +110,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       status: row.status || "pending_provider",
       statusLabel: statusLabels[row.status] || row.status || "Pending",
       providerName: row.provider_name,
+      virtualRoomUrl: row.virtual_room_url || null,
       tracking: row.tracking_number ? {
         trackingNumber: row.tracking_number,
         carrier: row.carrier,

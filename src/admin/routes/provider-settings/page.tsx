@@ -492,21 +492,73 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState("")
   const [domainInput, setDomainInput] = useState("")
+  const [salesChannels, setSalesChannels] = useState<{ id: string; name: string }[]>([])
+  const [loadingPubKey, setLoadingPubKey] = useState(false)
 
   useEffect(() => { setForm({ ...clinic, domains: clinic.domains || [] }) }, [clinic.id])
 
+  // Load sales channels on mount
+  useEffect(() => {
+    fetch("/admin/sales-channels?limit=100", { credentials: "include", headers: adminHeaders() })
+      .then(r => r.json())
+      .then(d => setSalesChannels((d.sales_channels || []).map((sc: any) => ({ id: sc.id, name: sc.name }))))
+      .catch(() => {})
+  }, [])
+
+  const handleSalesChannelChange = async (scId: string) => {
+    setForm(p => ({ ...p, sales_channel_id: scId } as any))
+    if (!scId) return
+
+    // Fetch the publishable API key for this sales channel
+    setLoadingPubKey(true)
+    try {
+      const res = await fetch(`/admin/api-keys?limit=100`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      // Find a publishable key linked to this sales channel
+      const keys: any[] = data.api_keys || []
+      const match = keys.find((k: any) =>
+        k.type === "publishable" &&
+        (k.sales_channels || []).some((sc: any) => sc.id === scId)
+      )
+      if (match) {
+        setForm(p => ({ ...p, publishable_api_key: match.token, sales_channel_id: scId } as any))
+      }
+    } catch {}
+    finally { setLoadingPubKey(false) }
+  }
+
   const save = async () => {
     setSaving(true)
+    setStatus("")
     try {
+      const payload = {
+        name: form.name,
+        slug: form.slug,
+        contact_email: form.contact_email,
+        brand_color: form.brand_color,
+        logo_url: form.logo_url,
+        publishable_api_key: form.publishable_api_key,
+        sales_channel_id: (form as any).sales_channel_id || null,
+        domains: form.domains,
+        is_active: form.is_active,
+      }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
         headers: adminHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       })
-      setStatus(res.ok ? "saved" : "error")
-      if (res.ok) onUpdated()
-    } catch { setStatus("error") }
-    finally { setSaving(false) }
+      if (res.ok) {
+        setStatus("saved")
+        onUpdated()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        console.error("[DetailsTab save]", res.status, err)
+        setStatus("error")
+      }
+    } catch (e) {
+      console.error("[DetailsTab save] network error", e)
+      setStatus("error")
+    } finally { setSaving(false) }
   }
 
   const addDomain = () => {
@@ -540,8 +592,20 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
         <Field label="Logo URL">
           <input style={s.input} value={form.logo_url || ""} onChange={e => setForm(p => ({ ...p, logo_url: e.target.value }))} placeholder="https://..." />
         </Field>
-        <Field label="Publishable API Key (Medusa)">
-          <input style={s.input} value={form.publishable_api_key || ""} onChange={e => setForm(p => ({ ...p, publishable_api_key: e.target.value }))} placeholder="pk_..." />
+        <Field label="Sales Channel">
+          <select
+            style={s.input}
+            value={(form as any).sales_channel_id || ""}
+            onChange={e => handleSalesChannelChange(e.target.value)}
+          >
+            <option value="">Select sales channel…</option>
+            {salesChannels.map(sc => (
+              <option key={sc.id} value={sc.id}>{sc.name}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label={loadingPubKey ? "Publishable API Key (loading…)" : "Publishable API Key (Medusa)"}>
+          <input style={s.input} value={form.publishable_api_key || ""} onChange={e => setForm(p => ({ ...p, publishable_api_key: e.target.value }))} placeholder="pk_… (auto-filled when channel selected)" />
         </Field>
       </div>
       <Field label="Domains">
@@ -579,6 +643,7 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
   )
 }
 
+
 // ── API Tab ────────────────────────────────────────────────────────────────
 function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
   const [form, setForm] = useState({ ...clinic })
@@ -592,16 +657,39 @@ function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }
 
   const save = async () => {
     setSaving(true)
+    setStatus("")
     try {
+      const payload = {
+        api_client_id: form.api_client_id,
+        api_client_secret: form.api_client_secret,
+        api_env: form.api_env,
+        api_base_url_test: form.api_base_url_test,
+        api_base_url_prod: form.api_base_url_prod,
+        connect_env: form.connect_env,
+        connect_url_test: form.connect_url_test,
+        connect_url_prod: form.connect_url_prod,
+        redirect_url: form.redirect_url,
+        stripe_publishable_key: form.stripe_publishable_key,
+        stripe_secret_key: form.stripe_secret_key,
+        pharmacy_staff_id: form.pharmacy_staff_id,
+      }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
         headers: adminHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       })
-      setStatus(res.ok ? "saved" : "error")
-      if (res.ok) onUpdated()
-    } catch { setStatus("error") }
-    finally { setSaving(false) }
+      if (res.ok) {
+        setStatus("saved")
+        onUpdated()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        console.error("[ApiTab save]", res.status, err)
+        setStatus("error")
+      }
+    } catch (e) {
+      console.error("[ApiTab save] network error", e)
+      setStatus("error")
+    } finally { setSaving(false) }
   }
 
   const testConnection = async () => {

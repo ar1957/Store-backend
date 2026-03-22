@@ -58,13 +58,12 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     const domain = host.split(":")[0]
     const clinic = await clinicSvc.getClinicByDomain(host) || await clinicSvc.getClinicByDomain(domain)
     const allowedDomains: string[] = clinic?.domains ?? []
+    if (clinic?.slug) allowedDomains.push(clinic.slug)
 
     // Build tenant filter — if we can't resolve a clinic, deny
-    if (allowedDomains.length === 0) {
+    if (!clinic) {
       return res.status(404).json({ message: "Order not found" })
     }
-
-    const domainPlaceholders = allowedDomains.map(() => "?").join(", ")
 
     const result = await pgConnection.raw(`
       SELECT
@@ -78,9 +77,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         created_at, updated_at
       FROM order_workflow
       WHERE (gfe_id = ? OR id = ?)
-        AND tenant_domain IN (${domainPlaceholders})
+        AND (
+          tenant_domain = ANY(?)
+          OR order_id IN (
+            SELECT id FROM "order" WHERE sales_channel_id = ?
+          )
+        )
       LIMIT 1
-    `, [gfeId, gfeId, ...allowedDomains])
+    `, [gfeId, gfeId, allowedDomains, clinic.sales_channel_id])
 
     if (!result.rows.length) {
       return res.status(404).json({ message: "Order not found" })
