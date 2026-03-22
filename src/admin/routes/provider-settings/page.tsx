@@ -199,9 +199,20 @@ export default function ClinicOpsPage() {
     resolveMyRole().then(role => {
       document.getElementById("mhc-nav-restrictions")?.remove()
       document.getElementById("mhc-hide-settings")?.remove()
+      document.getElementById("mhc-search-hide")?.remove()
 
       const s = document.createElement("style")
       s.id = "mhc-nav-restrictions"
+
+      // Hide search bar for all non-super-admin roles
+      if (role !== "super_admin") {
+        const sh = document.createElement("style")
+        sh.id = "mhc-search-hide"
+        sh.textContent = `
+          button.bg-ui-bg-subtle.gap-x-2\\.5 { display: none !important; }
+        `
+        document.head.appendChild(sh)
+      }
 
       if (role === "medical_director" || role === "pharmacist") {
         s.textContent = `
@@ -219,6 +230,8 @@ export default function ClinicOpsPage() {
       } else if (role === "clinic_admin") {
         s.textContent = `
           a[href="/app/orders"],
+          a[href="/app/customers"],
+          a[href="/app/promotions"],
           a[href="/app/settings"],
           a[href^="/app/settings/"] { display: none !important; }
         `

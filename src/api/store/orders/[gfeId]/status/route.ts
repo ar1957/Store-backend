@@ -45,7 +45,26 @@ function extractDosages(treatments: any[]): { treatmentId: number; treatmentName
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pgConnection = req.scope.resolve("__pg_connection__") as any
+    const clinicSvc = req.scope.resolve("clinic") as any
     const { gfeId } = req.params
+
+    // Resolve the requesting clinic's domains for tenant scoping
+    const host = (
+      req.headers["x-forwarded-host"] ||
+      req.headers["x-tenant-domain"] ||
+      req.headers["host"] ||
+      ""
+    ) as string
+    const domain = host.split(":")[0]
+    const clinic = await clinicSvc.getClinicByDomain(host) || await clinicSvc.getClinicByDomain(domain)
+    const allowedDomains: string[] = clinic?.domains ?? []
+
+    // Build tenant filter — if we can't resolve a clinic, deny
+    if (allowedDomains.length === 0) {
+      return res.status(404).json({ message: "Order not found" })
+    }
+
+    const domainPlaceholders = allowedDomains.map(() => "?").join(", ")
 
     const result = await pgConnection.raw(`
       SELECT
@@ -58,9 +77,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         refund_issued_at, refunded_at,
         created_at, updated_at
       FROM order_workflow
-      WHERE gfe_id = ? OR id = ?
+      WHERE (gfe_id = ? OR id = ?)
+        AND tenant_domain IN (${domainPlaceholders})
       LIMIT 1
-    `, [gfeId, gfeId])
+    `, [gfeId, gfeId, ...allowedDomains])
 
     if (!result.rows.length) {
       return res.status(404).json({ message: "Order not found" })

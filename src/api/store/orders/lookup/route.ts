@@ -2,22 +2,38 @@ import { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 
 /**
  * GET /store/orders/lookup?email=...&orderId=...
- * Patient self-service order lookup — no auth required
- * Finds orders by email OR order ID, returns workflow statuses
+ * Patient self-service order lookup — scoped to the requesting clinic's tenant domain
  */
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pgConnection = req.scope.resolve("__pg_connection__") as any
+    const clinicSvc = req.scope.resolve("clinic") as any
     const { email, orderId } = req.query as { email?: string; orderId?: string }
 
     if (!email && !orderId) {
       return res.status(400).json({ message: "Provide an email or order ID" })
     }
 
+    // Resolve tenant — only return orders belonging to this clinic
+    const host = (
+      req.headers["x-forwarded-host"] ||
+      req.headers["x-tenant-domain"] ||
+      req.headers["host"] ||
+      ""
+    ) as string
+    const domain = host.split(":")[0]
+    const clinic = await clinicSvc.getClinicByDomain(host) || await clinicSvc.getClinicByDomain(domain)
+    const allowedDomains: string[] = clinic?.domains ?? []
+
+    if (allowedDomains.length === 0) {
+      return res.status(404).json({ message: "No orders found" })
+    }
+
+    const domainPlaceholders = allowedDomains.map(() => "?").join(", ")
+
     let orderRows: any[] = []
 
     if (orderId) {
-      // Lookup by order ID directly
       const result = await pgConnection.raw(`
         SELECT
           o.id as order_id,
@@ -33,12 +49,12 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           ow.created_at
         FROM "order" o
         LEFT JOIN order_workflow ow ON ow.order_id = o.id
-        WHERE o.id = ? OR o.display_id::text = ?
+        WHERE (o.id = ? OR o.display_id::text = ?)
+          AND ow.tenant_domain IN (${domainPlaceholders})
         LIMIT 10
-      `, [orderId, orderId])
+      `, [orderId, orderId, ...allowedDomains])
       orderRows = result.rows
     } else if (email) {
-      // Lookup by email — return all orders for this email
       const result = await pgConnection.raw(`
         SELECT
           o.id as order_id,
@@ -55,9 +71,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         FROM "order" o
         LEFT JOIN order_workflow ow ON ow.order_id = o.id
         WHERE LOWER(o.email) = LOWER(?)
+          AND ow.tenant_domain IN (${domainPlaceholders})
         ORDER BY o.created_at DESC
         LIMIT 20
-      `, [email])
+      `, [email, ...allowedDomains])
       orderRows = result.rows
     }
 
