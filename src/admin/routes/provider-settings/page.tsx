@@ -37,6 +37,9 @@ interface Clinic {
   publishable_api_key: string
   sales_channel_id: string
   pharmacy_staff_id: string
+  from_email: string
+  from_name: string
+  reply_to: string
 }
 
 interface Staff { id: string; email: string; full_name: string; role: string }
@@ -518,6 +521,9 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
         sales_channel_id: (form as any).sales_channel_id || null,
         domains: form.domains,
         is_active: form.is_active,
+        from_email: (form as any).from_email || null,
+        from_name: (form as any).from_name || null,
+        reply_to: (form as any).reply_to || null,
       }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
@@ -569,6 +575,30 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
         <Field label="Logo URL">
           <input style={s.input} value={form.logo_url || ""} onChange={e => setForm(p => ({ ...p, logo_url: e.target.value }))} placeholder="https://..." />
         </Field>
+      </div>
+
+      {/* ── Per-clinic email sending ── */}
+      <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 16 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#6b7280", letterSpacing: "0.05em", marginBottom: 12 }}>
+          📧 Email Sending (Resend)
+        </div>
+        <div style={s.grid2}>
+          <Field label="From Email">
+            <input style={s.input} value={(form as any).from_email || ""} onChange={e => setForm(p => ({ ...p, from_email: e.target.value } as any))} placeholder="noreply@yourclinic.com" />
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Must be a verified sender in Resend</div>
+          </Field>
+          <Field label="From Name">
+            <input style={s.input} value={(form as any).from_name || ""} onChange={e => setForm(p => ({ ...p, from_name: e.target.value } as any))} placeholder="Spaderx Clinic" />
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Display name shown to patients</div>
+          </Field>
+          <Field label="Reply-To Email">
+            <input style={s.input} value={(form as any).reply_to || ""} onChange={e => setForm(p => ({ ...p, reply_to: e.target.value } as any))} placeholder="support@yourclinic.com" />
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Optional — where patient replies go</div>
+          </Field>
+        </div>
+      </div>
+
+      <div style={s.grid2}>
         <Field label="Sales Channel">
           <select
             style={s.input}

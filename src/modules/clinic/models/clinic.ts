@@ -45,6 +45,11 @@ const Clinic = model.define("clinic", {
 
   // Pharmacy
   pharmacy_staff_id: model.text().nullable(),
+
+  // Per-clinic email sending (Resend)
+  from_email: model.text().nullable(),
+  from_name: model.text().nullable(),
+  reply_to: model.text().nullable(),
 })
 
 export default Clinic

@@ -45,6 +45,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       "connect_env", "connect_url_test", "connect_url_prod",
       "redirect_url", "publishable_api_key", "sales_channel_id",
       "stripe_publishable_key", "stripe_secret_key", "pharmacy_staff_id",
+      "from_email", "from_name", "reply_to",
     ]
 
     const sets: string[] = []
