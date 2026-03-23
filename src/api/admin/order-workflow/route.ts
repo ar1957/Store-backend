@@ -146,7 +146,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
        LEFT JOIN "customer" c         ON c.id  = o.customer_id
        LEFT JOIN "order_address" oa   ON oa.id = o.shipping_address_id
        LEFT JOIN "sales_channel" sc   ON sc.id = o.sales_channel_id
-       LEFT JOIN "order_summary" os   ON os.order_id = o.id AND os.deleted_at IS NULL
+       LEFT JOIN LATERAL (
+         SELECT totals FROM "order_summary"
+         WHERE order_id = o.id AND deleted_at IS NULL
+         ORDER BY created_at DESC LIMIT 1
+       ) os ON true
        INNER JOIN "order_workflow" wf  ON wf.order_id = o.id AND wf.deleted_at IS NULL
        WHERE o.deleted_at IS NULL
          AND o.is_draft_order = false

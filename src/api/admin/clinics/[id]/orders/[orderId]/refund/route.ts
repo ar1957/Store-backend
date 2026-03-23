@@ -1,131 +1,165 @@
-import { 
-  defineMiddlewares, 
-  MedusaNextFunction, 
-  MedusaRequest, 
-  MedusaResponse 
-} from "@medusajs/framework/http"
+/**
+ * POST /admin/clinics/:id/orders/:orderId/refund
+ *
+ * Issues a real payment refund via Medusa's refundPaymentWorkflow
+ * (which calls Stripe / the payment provider), then updates the
+ * order_workflow status to 'refund_issued'.
+ */
+import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { refundPaymentWorkflow } from "@medusajs/core-flows"
+import { Modules } from "@medusajs/framework/utils"
+import { INotificationModuleService } from "@medusajs/framework/types"
 
-// Routes to block ONLY for medical_director and pharmacist
-const BLOCK_FOR_RESTRICTED = [
-  "/admin/products",
-  "/admin/inventory",
-  "/admin/customers",
-  "/admin/promotions",
-  "/admin/price-lists",
-  "/admin/collections",
-  "/admin/categories",
-]
-
-const TRULY_RESTRICTED_ROLES = ["medical_director", "pharmacist"]
-
-// ── Middleware 1: Block restricted roles from non-order routes ─────────────
-
-async function rbacMiddleware(
-  req: MedusaRequest,
-  res: MedusaResponse,
-  next: MedusaNextFunction
-) {
+export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
-    if (req.method === "OPTIONS") return next()
-
-    const fullPath = req.originalUrl || req.url || ""
-    const isProductsPath = fullPath.startsWith("/admin/products")
-
-    const shouldBlock = BLOCK_FOR_RESTRICTED.some(p => fullPath.startsWith(p))
-    if (!shouldBlock) return next()
-
-    const actorId = (req as any).session?.auth_context?.actor_id
-    if (!actorId) return next()
-
     const pg = req.scope.resolve("__pg_connection__") as any
+    const { orderId } = req.params
+    const { reason } = req.body as any
 
-    const userResult = await pg.raw(
-      `SELECT email FROM "user" WHERE id = ? LIMIT 1`,
-      [actorId]
-    )
-    if (!userResult.rows.length) return next()
+    if (!reason?.trim()) {
+      return res.status(400).json({ message: "Refund reason is required" })
+    }
 
-    const email = userResult.rows[0].email
-
-    // Check role
-    const staffResult = await pg.raw(
-      `SELECT cs.role, c.sales_channel_id
-       FROM clinic_staff cs
-       JOIN clinic c ON cs.tenant_domain = ANY(c.domains)
-       WHERE cs.email = ?
-         AND cs.is_active = true
-         AND cs.deleted_at IS NULL
+    // ── 1. Get the captured payment for this order ────────────────────────
+    // order → order_payment_collection → payment_collection → payment
+    const paymentResult = await pg.raw(
+      `SELECT p.id AS payment_id, p.amount, p.currency_code, p.captured_at
+       FROM order_payment_collection opc
+       JOIN payment_collection pc ON pc.id = opc.payment_collection_id
+       JOIN payment p ON p.payment_collection_id = pc.id
+       WHERE opc.order_id = ?
+         AND opc.deleted_at IS NULL
+         AND pc.deleted_at IS NULL
+         AND p.deleted_at IS NULL
+         AND p.canceled_at IS NULL
+       ORDER BY p.created_at DESC
        LIMIT 1`,
-      [email]
+      [orderId]
     )
 
-    if (!staffResult.rows.length) {
-      // Super admin — not in clinic_staff at all, allow everything
-      return next()
+    if (!paymentResult.rows.length) {
+      return res.status(404).json({ message: "No payment found for this order" })
     }
 
-    const role = staffResult.rows[0].role
-    const salesChannelId = staffResult.rows[0].sales_channel_id
+    const payment = paymentResult.rows[0]
 
-    // Block restricted roles entirely
-    if (TRULY_RESTRICTED_ROLES.includes(role)) {
-      return res.status(403).json({ message: "Access denied." })
-    }
+    // ── 2. Get actor id for audit trail ───────────────────────────────────
+    const actorId = (req.session as any)?.auth_context?.actor_id
 
-    // Clinic admin on products GET — filter by their sales channel
-    if (role === "clinic_admin" && isProductsPath && req.method === "GET") {
-      if (salesChannelId) {
-        console.log("[ProductFilter] Filtering products for clinic_admin, salesChannelId:", salesChannelId)
-        const query = req.query as any
-        query["sales_channel_id[]"] = salesChannelId
-        req.query = query
+    // ── 3. Run Medusa's refundPaymentWorkflow (calls Stripe) ──────────────
+    await refundPaymentWorkflow(req.scope).run({
+      input: {
+        payment_id: payment.payment_id,
+        created_by: actorId,
+        note: reason.trim(),
+        // no amount = full refund
+      },
+    })
+
+    // ── 4. Update our workflow status to refund_issued ────────────────────
+    await pg.raw(
+      `UPDATE order_workflow
+       SET status = 'refund_issued',
+           refund_reason = ?,
+           refund_issued_at = NOW(),
+           updated_at = NOW()
+       WHERE order_id = ? AND deleted_at IS NULL`,
+      [reason.trim(), orderId]
+    )
+
+    // ── 5. Save refund reason as a comment ───────────────────────────────
+    try {
+      // Get the workflow id
+      const wfResult = await pg.raw(
+        `SELECT id FROM order_workflow WHERE order_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [orderId]
+      )
+      if (wfResult.rows.length) {
+        // Get the actor's email + name for the comment
+        let userEmail = ""
+        let userName = "Admin"
+        if (actorId) {
+          const userRow = await pg.raw(
+            `SELECT email, first_name, last_name FROM "user" WHERE id = ? LIMIT 1`,
+            [actorId]
+          )
+          if (userRow.rows.length) {
+            userEmail = userRow.rows[0].email || ""
+            const fn = userRow.rows[0].first_name || ""
+            const ln = userRow.rows[0].last_name || ""
+            userName = `${fn} ${ln}`.trim() || userEmail || "Admin"
+          }
+        }
+        const commentId = `cmt_${Date.now()}`
+        await pg.raw(
+          `INSERT INTO order_comment
+           (id, order_workflow_id, user_id, user_email, user_name, role, comment, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [
+            commentId,
+            wfResult.rows[0].id,
+            actorId || "system",
+            userEmail,
+            userName,
+            "refund",
+            `💸 Refund issued — ${reason.trim()}`,
+          ]
+        )
       }
+    } catch (commentErr: any) {
+      console.error("[Refund] Comment save error:", commentErr.message)
     }
 
-    return next()
-  } catch {
-    return next()
+    // ── 6. Send refund email to patient ───────────────────────────────────
+    try {
+      const orderResult = await pg.raw(
+        `SELECT
+          o.display_id,
+          o.email,
+          c.first_name  AS customer_first_name,
+          c.last_name   AS customer_last_name,
+          oa.first_name AS shipping_first_name,
+          oa.last_name  AS shipping_last_name,
+          sc.name       AS clinic_name
+         FROM "order" o
+         LEFT JOIN "customer" c       ON c.id  = o.customer_id
+         LEFT JOIN "order_address" oa ON oa.id = o.shipping_address_id
+         LEFT JOIN "sales_channel" sc ON sc.id = o.sales_channel_id
+         WHERE o.id = ? LIMIT 1`,
+        [orderId]
+      )
+
+      if (orderResult.rows.length && orderResult.rows[0].email) {
+        const row = orderResult.rows[0]
+        const firstName = row.shipping_first_name || row.customer_first_name || ""
+        const lastName  = row.shipping_last_name  || row.customer_last_name  || ""
+        const patientName = `${firstName} ${lastName}`.trim() || "Patient"
+
+        const notificationService: INotificationModuleService =
+          req.scope.resolve(Modules.NOTIFICATION)
+
+        await notificationService.createNotifications({
+          to: row.email,
+          channel: "email",
+          template: "order.refund_issued",
+          data: {
+            patient_name: patientName,
+            order_display_id: row.display_id,
+            clinic_name: row.clinic_name,
+            refund_reason: reason.trim(),
+          },
+        })
+      }
+    } catch (emailErr: any) {
+      console.error("[Refund] Email notification error:", emailErr.message)
+    }
+
+    return res.json({
+      success: true,
+      message: "Refund issued successfully",
+    })
+  } catch (err: any) {
+    console.error("[Refund] Error:", err.message)
+    return res.status(500).json({ message: err.message })
   }
 }
-
-export default defineMiddlewares({
-  routes: [
-    // RBAC — block restricted roles from non-order routes
-    {
-      matcher: "/admin/products*",
-      middlewares: [rbacMiddleware],
-    },
-    {
-      matcher: "/admin/inventory*",
-      middlewares: [rbacMiddleware],
-    },
-    {
-      matcher: "/admin/customers*",
-      middlewares: [rbacMiddleware],
-    },
-    {
-      matcher: "/admin/promotions*",
-      middlewares: [rbacMiddleware],
-    },
-    {
-      matcher: "/admin/price-lists*",
-      middlewares: [rbacMiddleware],
-    },
-    {
-      matcher: "/admin/collections*",
-      middlewares: [rbacMiddleware],
-    },
-
-    // Store routes bypass
-    { matcher: "/store/eligibility/check",             method: "GET",           middlewares: [] },
-    { matcher: "/store/eligibility/states",            method: "GET",           middlewares: [] },
-    { matcher: "/store/eligibility/submit",            method: "POST",          middlewares: [] },
-    { matcher: "/store/carts/eligibility-metadata",    method: "POST",          middlewares: [] },
-    { matcher: "/store/carts/current-id",              method: "GET",           middlewares: [] },
-    { matcher: "/store/orders/lookup",                 method: "GET",           middlewares: [] },
-    { matcher: "/store/orders/:gfeId/status",          method: ["GET", "POST"], middlewares: [] },
-    { matcher: "/store/orders/:orderId/gfe-status",    method: "GET",           middlewares: [] },
-    { matcher: "/store/clinics/stripe-config",         method: "GET",           middlewares: [] },
-    { matcher: "/store/clinics/create-payment-intent", method: "POST",          middlewares: [] },
-  ],
-})
