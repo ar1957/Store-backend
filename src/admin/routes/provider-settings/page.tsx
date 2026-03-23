@@ -6,6 +6,7 @@
 import { useState, useEffect } from "react"
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { BuildingStorefront } from "@medusajs/icons"
+import { resolveMyRole } from "../../utils/resolve-role"
 
 export const config = defineRouteConfig({
   label: "Clinic Operations",
@@ -67,30 +68,6 @@ interface UiConfig {
 // ── Auth Helper ───────────────────────────────────────────────────────────
 function adminHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return { ...extra }
-}
-
-// Resolve the current user's role, cached in sessionStorage keyed by email.
-async function resolveMyRole(): Promise<string> {
-  try {
-    const { user } = await fetch("/admin/users/me", { credentials: "include" }).then(r => r.json())
-    if (!user?.email) return "super_admin"
-
-    const cacheKey = `mhc_role_${user.email}`
-    const cached = sessionStorage.getItem(cacheKey)
-    if (cached) return cached
-
-    const { clinics } = await fetch("/admin/clinics", { credentials: "include" }).then(r => r.json())
-    for (const clinic of (clinics || [])) {
-      const { staff } = await fetch(`/admin/clinics/${clinic.id}/staff`, { credentials: "include" }).then(r => r.json())
-      const match = (staff || []).find((s: any) => s.email === user.email)
-      if (match?.role) {
-        sessionStorage.setItem(cacheKey, match.role)
-        return match.role
-      }
-    }
-    sessionStorage.setItem(cacheKey, "super_admin")
-  } catch {}
-  return "super_admin"
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────

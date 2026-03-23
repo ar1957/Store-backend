@@ -265,6 +265,9 @@ export default function ClinicOrdersPage() {
   const [total, setTotal] = useState(0)
   const limit = 20
 
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null)
+
   const fetchOrders = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -295,6 +298,24 @@ export default function ClinicOrdersPage() {
       setLoading(false)
     }
   }, [page, search])
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    setRefreshMsg(null)
+    try {
+      const res = await fetch("/admin/gfe-poll", {
+        method: "POST",
+        credentials: "include",
+      })
+      const data = await res.json()
+      setRefreshMsg(`Checked ${data.checked} orders — ${data.updated} status${data.updated !== 1 ? "es" : ""} updated`)
+    } catch {
+      setRefreshMsg("GFE poll failed — showing cached data")
+    } finally {
+      await fetchOrders()
+      setRefreshing(false)
+    }
+  }
 
   // Apply nav restrictions on mount + redirect /app/orders to here for restricted roles
   useEffect(() => {
@@ -416,7 +437,8 @@ export default function ClinicOrdersPage() {
         </select>
 
         <button
-          onClick={fetchOrders}
+          onClick={handleRefresh}
+          disabled={refreshing}
           style={{
             marginLeft: "auto",
             padding: "8px 16px",
@@ -424,14 +446,30 @@ export default function ClinicOrdersPage() {
             border: "1px solid #E5E7EB",
             background: "#fff",
             fontSize: "14px",
-            cursor: "pointer",
-            color: "#374151",
+            cursor: refreshing ? "default" : "pointer",
+            color: refreshing ? "#9CA3AF" : "#374151",
             fontWeight: 500,
+            opacity: refreshing ? 0.7 : 1,
           }}
         >
-          ↻ Refresh
+          {refreshing ? "⏳ Checking GFE…" : "↻ Refresh"}
         </button>
       </div>
+
+      {/* Refresh status message */}
+      {refreshMsg && (
+        <div style={{
+          marginBottom: 12,
+          padding: "8px 14px",
+          background: "#f0fdf4",
+          border: "1px solid #bbf7d0",
+          borderRadius: 8,
+          fontSize: 13,
+          color: "#166534",
+        }}>
+          ✓ {refreshMsg}
+        </div>
+      )}
 
       {/* Table */}
       <div style={{

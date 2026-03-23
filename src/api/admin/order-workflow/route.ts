@@ -78,14 +78,16 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       }
 
       // Filter orders: wf.tenant_domain must be in the domains of those clinics
-      // Inline clinic IDs directly — safe since they come from our own DB query
-      // knex pg.raw() doesn't reliably bind ? inside EXISTS subqueries
+      // OR order's sales_channel_id matches the clinic's sales_channel_id
       const safeIds = clinicIds.map(id => `'${id.replace(/'/g, "''")}'`).join(", ")
       clinicFilter = `AND EXISTS (
         SELECT 1 FROM clinic cl
         WHERE cl.id IN (${safeIds})
           AND cl.deleted_at IS NULL
-          AND wf.tenant_domain = ANY(cl.domains)
+          AND (
+            wf.tenant_domain = ANY(cl.domains)
+            OR o.sales_channel_id = cl.sales_channel_id
+          )
       )`
       clinicParams = [] // no params needed — IDs are inlined
     }
