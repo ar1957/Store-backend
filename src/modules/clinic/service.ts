@@ -24,7 +24,9 @@ export interface ClinicData {
   pharmacy_staff_id: string | null
 }
 
-// ── Token cache ────────────────────────────────────────────────────────────
+// ── Clinic domain cache ────────────────────────────────────────────────────
+const CLINIC_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+let clinicListCache: { data: ClinicData[]; fetchedAt: number } | null = null
 interface TokenCache { token: string; expiresAt: number }
 interface LocationCache { locations: any[]; fetchedAt: number }
 interface TreatmentCache { treatments: any[]; fetchedAt: number }
@@ -52,7 +54,11 @@ class ClinicService extends MedusaService({ Clinic }) {
   }
 
   async getClinicByDomain(domain: string): Promise<ClinicData | null> {
-    const all = await this.listClinics({} as any)
+    // Use cached clinic list to avoid full table scan on every request
+    if (!clinicListCache || Date.now() - clinicListCache.fetchedAt > CLINIC_CACHE_TTL) {
+      clinicListCache = { data: (await this.listClinics({} as any)) as ClinicData[], fetchedAt: Date.now() }
+    }
+    const all = clinicListCache.data
 
     // 1. Exact match first
     let match = (all as ClinicData[]).find(c =>
@@ -90,6 +96,7 @@ class ClinicService extends MedusaService({ Clinic }) {
 
   async updateClinic(id: string, data: Partial<ClinicData>): Promise<ClinicData> {
     const results = await this.updateClinics({ id } as any, data as any)
+    clinicListCache = null // invalidate domain cache
     this.clearCaches(id)
     return results[0] as ClinicData
   }
