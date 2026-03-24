@@ -19,14 +19,10 @@ phases:
 
 artifacts:
   files:
+    - dist/**/*
     - .medusa/**/*
     - .ebextensions/**/*
     - package.json
     - package-lock.json
     - Procfile
   discard-paths: no
-```
-
-Also create a `Procfile` at the root of `my-medusa-store`:
-```
-web: npm run start:prod
