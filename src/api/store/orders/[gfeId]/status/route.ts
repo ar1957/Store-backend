@@ -45,7 +45,34 @@ function extractDosages(treatments: any[]): { treatmentId: number; treatmentName
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pgConnection = req.scope.resolve("__pg_connection__") as any
+    const clinicSvc = req.scope.resolve("clinic") as any
     const { gfeId } = req.params
+
+    // Resolve the requesting clinic's domains for tenant scoping
+    const host = (
+      req.headers["x-forwarded-host"] ||
+      req.headers["x-tenant-domain"] ||
+      req.headers["host"] ||
+      ""
+    ) as string
+    const domain = host.split(":")[0]
+    const clinic = await clinicSvc.getClinicByDomain(host) || await clinicSvc.getClinicByDomain(domain)
+    // Build allowed domains — include both with-port and without-port variants
+    const allowedDomains: string[] = []
+    if (clinic?.domains) {
+      for (const d of clinic.domains) {
+        allowedDomains.push(d)
+        allowedDomains.push(d.split(":")[0]) // strip port
+      }
+    }
+    if (clinic?.slug) allowedDomains.push(clinic.slug)
+    // Also add the bare request domain
+    if (domain && !allowedDomains.includes(domain)) allowedDomains.push(domain)
+
+    // Build tenant filter — if we can't resolve a clinic, deny
+    if (!clinic) {
+      return res.status(404).json({ message: "Order not found" })
+    }
 
     const result = await pgConnection.raw(`
       SELECT
@@ -58,11 +85,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         refund_issued_at, refunded_at,
         created_at, updated_at
       FROM order_workflow
-      WHERE gfe_id = ? OR id = ?
+      WHERE (gfe_id = ? OR id = ?)
+        AND tenant_domain = ANY(?)
       LIMIT 1
-    `, [gfeId, gfeId])
+    `, [gfeId, gfeId, allowedDomains])
+
+    console.log(`[GFE Status] gfeId=${gfeId} allowedDomains=${JSON.stringify(allowedDomains)} found=${result.rows.length}`)
 
     if (!result.rows.length) {
+      console.log(`[GFE Status] 404 — gfeId=${gfeId} allowedDomains=${JSON.stringify(allowedDomains)}`)
       return res.status(404).json({ message: "Order not found" })
     }
 

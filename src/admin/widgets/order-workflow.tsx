@@ -388,7 +388,10 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
         <RefundSection
           clinicId={clinicId!}
           orderId={order.id}
-          onRefunded={() => loadWorkflow(clinicId!, order.id)}
+          onRefunded={() => {
+            loadWorkflow(clinicId!, order.id)
+            loadComments(clinicId!, order.id)
+          }}
         />
       )}
 

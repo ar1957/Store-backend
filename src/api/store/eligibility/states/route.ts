@@ -12,7 +12,9 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     if (!domain) return res.status(400).json({ message: "domain is required" })
 
     const clinicSvc = req.scope.resolve(CLINIC_MODULE) as any
-    const clinic = await clinicSvc.getClinicByDomain(domain)
+    let clinic = await clinicSvc.getClinicByDomain(domain)
+    // Fallback: try without port
+    if (!clinic) clinic = await clinicSvc.getClinicByDomain(domain.split(":")[0])
     if (!clinic) return res.status(404).json({ message: "Clinic not found for domain" })
 
     const locations = await clinicSvc.getLocations(clinic.id)

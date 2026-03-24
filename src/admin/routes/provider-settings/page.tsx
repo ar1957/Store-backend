@@ -4,6 +4,14 @@
  */
 
 import { useState, useEffect } from "react"
+import { defineRouteConfig } from "@medusajs/admin-sdk"
+import { BuildingStorefront } from "@medusajs/icons"
+import { resolveMyRole } from "../../utils/resolve-role"
+
+export const config = defineRouteConfig({
+  label: "Clinic Operations",
+  icon: BuildingStorefront,
+})
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Clinic {
@@ -29,6 +37,9 @@ interface Clinic {
   publishable_api_key: string
   sales_channel_id: string
   pharmacy_staff_id: string
+  from_email: string
+  from_name: string
+  reply_to: string
 }
 
 interface Staff { id: string; email: string; full_name: string; role: string }
@@ -41,13 +52,20 @@ interface Comment { id: string; user_name: string; user_email: string; role: str
 interface CurrentUser { id: string; email: string; first_name: string; last_name: string }
 interface StaffRecord { clinic_id: string; role: string; full_name: string; email: string; tenant_domain: string }
 
-interface NavLink { label: string; url: string; open_new_tab?: boolean }
+interface NavLink { label: string; url: string; open_new_tab?: boolean; children?: NavLink[] }
+interface SocialLink { platform: string; url: string }
 interface UiConfig {
   tenant_domain: string
   nav_links: NavLink[]
   footer_links: NavLink[]
+  bottom_links: NavLink[]
   logo_url: string
   get_started_url: string
+  contact_phone: string
+  contact_email: string
+  contact_address: string
+  social_links: SocialLink[]
+  certification_image_url: string
 }
 
 // ── Auth Helper ───────────────────────────────────────────────────────────
@@ -155,6 +173,56 @@ export default function ClinicOpsPage() {
 
   const isSuperAdmin = !userLoading && currentUser && !myStaffRecord
   const myRole = myStaffRecord?.role || (isSuperAdmin ? "super_admin" : null)
+
+  // Hide Settings nav immediately on mount, reveal only for super_admin once role resolves
+  useEffect(() => {
+    resolveMyRole().then(role => {
+      document.getElementById("mhc-nav-restrictions")?.remove()
+      document.getElementById("mhc-hide-settings")?.remove()
+      document.getElementById("mhc-search-hide")?.remove()
+
+      const s = document.createElement("style")
+      s.id = "mhc-nav-restrictions"
+
+      // Hide search bar for all non-super-admin roles
+      if (role !== "super_admin") {
+        const sh = document.createElement("style")
+        sh.id = "mhc-search-hide"
+        sh.textContent = `
+          button.bg-ui-bg-subtle.gap-x-2\\.5 { display: none !important; }
+        `
+        document.head.appendChild(sh)
+      }
+
+      if (role === "medical_director" || role === "pharmacist") {
+        s.textContent = `
+          a[href="/app/orders"],
+          a[href="/app/products"],
+          a[href="/app/inventory"],
+          a[href="/app/customers"],
+          a[href="/app/promotions"],
+          a[href="/app/price-lists"],
+          a[href="/app/reservations"],
+          a[href="/app/settings"],
+          a[href^="/app/settings/"],
+          a[href="/app/provider-settings"] { display: none !important; }
+        `
+      } else if (role === "clinic_admin") {
+        s.textContent = `
+          a[href="/app/orders"],
+          a[href="/app/customers"],
+          a[href="/app/promotions"],
+          a[href="/app/settings"],
+          a[href^="/app/settings/"] { display: none !important; }
+        `
+      } else {
+        // super_admin: hide only standard orders (replaced by clinic-orders)
+        s.textContent = `a[href="/app/orders"] { display: none !important; }`
+      }
+
+      document.head.appendChild(s)
+    })
+  }, [])
 
   // Filter clinics visible to this user
   const visibleClinics = isSuperAdmin
@@ -382,7 +450,7 @@ function ClinicDetail({
       <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
         {activeTab === "details"  && <DetailsTab  clinic={clinic} onUpdated={onUpdated} />}
         {activeTab === "api"      && <ApiTab       clinic={clinic} onUpdated={onUpdated} />}
-        {activeTab === "staff"    && <StaffTab     clinic={clinic} onUpdated={onUpdated} />}
+        {activeTab === "staff"    && <StaffTab     clinic={clinic} onUpdated={onUpdated} role={role} />}
         {activeTab === "mappings" && <MappingsTab  clinic={clinic} />}
         {activeTab === "orders"   && (
           <OrdersTab
@@ -404,21 +472,76 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState("")
   const [domainInput, setDomainInput] = useState("")
+  const [salesChannels, setSalesChannels] = useState<{ id: string; name: string }[]>([])
+  const [loadingPubKey, setLoadingPubKey] = useState(false)
 
   useEffect(() => { setForm({ ...clinic, domains: clinic.domains || [] }) }, [clinic.id])
 
+  // Load sales channels on mount
+  useEffect(() => {
+    fetch("/admin/sales-channels?limit=100", { credentials: "include", headers: adminHeaders() })
+      .then(r => r.json())
+      .then(d => setSalesChannels((d.sales_channels || []).map((sc: any) => ({ id: sc.id, name: sc.name }))))
+      .catch(() => {})
+  }, [])
+
+  const handleSalesChannelChange = async (scId: string) => {
+    setForm(p => ({ ...p, sales_channel_id: scId } as any))
+    if (!scId) return
+
+    // Fetch the publishable API key for this sales channel
+    setLoadingPubKey(true)
+    try {
+      const res = await fetch(`/admin/api-keys?limit=100`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      // Find a publishable key linked to this sales channel
+      const keys: any[] = data.api_keys || []
+      const match = keys.find((k: any) =>
+        k.type === "publishable" &&
+        (k.sales_channels || []).some((sc: any) => sc.id === scId)
+      )
+      if (match) {
+        setForm(p => ({ ...p, publishable_api_key: match.token, sales_channel_id: scId } as any))
+      }
+    } catch {}
+    finally { setLoadingPubKey(false) }
+  }
+
   const save = async () => {
     setSaving(true)
+    setStatus("")
     try {
+      const payload = {
+        name: form.name,
+        slug: form.slug,
+        contact_email: form.contact_email,
+        brand_color: form.brand_color,
+        logo_url: form.logo_url,
+        publishable_api_key: form.publishable_api_key,
+        sales_channel_id: (form as any).sales_channel_id || null,
+        domains: form.domains,
+        is_active: form.is_active,
+        from_email: (form as any).from_email || null,
+        from_name: (form as any).from_name || null,
+        reply_to: (form as any).reply_to || null,
+      }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
         headers: adminHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       })
-      setStatus(res.ok ? "saved" : "error")
-      if (res.ok) onUpdated()
-    } catch { setStatus("error") }
-    finally { setSaving(false) }
+      if (res.ok) {
+        setStatus("saved")
+        onUpdated()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        console.error("[DetailsTab save]", res.status, err)
+        setStatus("error")
+      }
+    } catch (e) {
+      console.error("[DetailsTab save] network error", e)
+      setStatus("error")
+    } finally { setSaving(false) }
   }
 
   const addDomain = () => {
@@ -452,8 +575,44 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
         <Field label="Logo URL">
           <input style={s.input} value={form.logo_url || ""} onChange={e => setForm(p => ({ ...p, logo_url: e.target.value }))} placeholder="https://..." />
         </Field>
-        <Field label="Publishable API Key (Medusa)">
-          <input style={s.input} value={form.publishable_api_key || ""} onChange={e => setForm(p => ({ ...p, publishable_api_key: e.target.value }))} placeholder="pk_..." />
+      </div>
+
+      {/* ── Per-clinic email sending ── */}
+      <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 16 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#6b7280", letterSpacing: "0.05em", marginBottom: 12 }}>
+          📧 Email Sending (Resend)
+        </div>
+        <div style={s.grid2}>
+          <Field label="From Email">
+            <input style={s.input} value={(form as any).from_email || ""} onChange={e => setForm(p => ({ ...p, from_email: e.target.value } as any))} placeholder="noreply@yourclinic.com" />
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Must be a verified sender in Resend</div>
+          </Field>
+          <Field label="From Name">
+            <input style={s.input} value={(form as any).from_name || ""} onChange={e => setForm(p => ({ ...p, from_name: e.target.value } as any))} placeholder="Spaderx Clinic" />
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Display name shown to patients</div>
+          </Field>
+          <Field label="Reply-To Email">
+            <input style={s.input} value={(form as any).reply_to || ""} onChange={e => setForm(p => ({ ...p, reply_to: e.target.value } as any))} placeholder="support@yourclinic.com" />
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Optional — where patient replies go</div>
+          </Field>
+        </div>
+      </div>
+
+      <div style={s.grid2}>
+        <Field label="Sales Channel">
+          <select
+            style={s.input}
+            value={(form as any).sales_channel_id || ""}
+            onChange={e => handleSalesChannelChange(e.target.value)}
+          >
+            <option value="">Select sales channel…</option>
+            {salesChannels.map(sc => (
+              <option key={sc.id} value={sc.id}>{sc.name}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label={loadingPubKey ? "Publishable API Key (loading…)" : "Publishable API Key (Medusa)"}>
+          <input style={s.input} value={form.publishable_api_key || ""} onChange={e => setForm(p => ({ ...p, publishable_api_key: e.target.value }))} placeholder="pk_… (auto-filled when channel selected)" />
         </Field>
       </div>
       <Field label="Domains">
@@ -491,6 +650,7 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
   )
 }
 
+
 // ── API Tab ────────────────────────────────────────────────────────────────
 function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
   const [form, setForm] = useState({ ...clinic })
@@ -504,16 +664,39 @@ function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }
 
   const save = async () => {
     setSaving(true)
+    setStatus("")
     try {
+      const payload = {
+        api_client_id: form.api_client_id,
+        api_client_secret: form.api_client_secret,
+        api_env: form.api_env,
+        api_base_url_test: form.api_base_url_test,
+        api_base_url_prod: form.api_base_url_prod,
+        connect_env: form.connect_env,
+        connect_url_test: form.connect_url_test,
+        connect_url_prod: form.connect_url_prod,
+        redirect_url: form.redirect_url,
+        stripe_publishable_key: form.stripe_publishable_key,
+        stripe_secret_key: form.stripe_secret_key,
+        pharmacy_staff_id: form.pharmacy_staff_id,
+      }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
         headers: adminHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       })
-      setStatus(res.ok ? "saved" : "error")
-      if (res.ok) onUpdated()
-    } catch { setStatus("error") }
-    finally { setSaving(false) }
+      if (res.ok) {
+        setStatus("saved")
+        onUpdated()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        console.error("[ApiTab save]", res.status, err)
+        setStatus("error")
+      }
+    } catch (e) {
+      console.error("[ApiTab save] network error", e)
+      setStatus("error")
+    } finally { setSaving(false) }
   }
 
   const testConnection = async () => {
@@ -607,11 +790,15 @@ function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }
 }
 
 // ── Staff Tab ──────────────────────────────────────────────────────────────
-function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+function StaffTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => void; role: string }) {
   const [staff, setStaff] = useState<Staff[]>([])
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ email: "", full_name: "", role: "pharmacist" })
   const [adding, setAdding] = useState(false)
+  const [pwTarget, setPwTarget] = useState<Staff | null>(null)
+  const [newPw, setNewPw] = useState("")
+  const [pwSaving, setPwSaving] = useState(false)
+  const [pwMsg, setPwMsg] = useState<{ text: string; ok: boolean } | null>(null)
 
   useEffect(() => { loadStaff() }, [clinic.id])
 
@@ -638,18 +825,43 @@ function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void
     finally { setAdding(false) }
   }
 
+  const setPassword = async () => {
+    if (!pwTarget || newPw.length < 8) return
+    setPwSaving(true)
+    setPwMsg(null)
+    try {
+      const res = await fetch("/admin/set-user-password", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: pwTarget.email, password: newPw }),
+      })
+      const d = await res.json()
+      if (res.ok) {
+        setPwMsg({ text: "Password updated", ok: true })
+        setNewPw("")
+        setTimeout(() => { setPwTarget(null); setPwMsg(null) }, 1500)
+      } else {
+        setPwMsg({ text: d.message || "Failed", ok: false })
+      }
+    } catch (e: any) {
+      setPwMsg({ text: e.message || "Error", ok: false })
+    } finally { setPwSaving(false) }
+  }
+
   const roleColors: Record<string, { bg: string; color: string }> = {
     medical_director: { bg: "#ede9fe", color: "#7c3aed" },
     pharmacist:       { bg: "#dbeafe", color: "#1e40af" },
     clinic_admin:     { bg: "#f3f4f6", color: "#374151" },
   }
 
+  const canManage = role === "super_admin" || role === "clinic_admin"
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
-        <button onClick={() => setShowForm(p => !p)} style={s.btnPrimary}>{showForm ? "Cancel" : "+ Add Staff"}</button>
+        {canManage && <button onClick={() => setShowForm(p => !p)} style={s.btnPrimary}>{showForm ? "Cancel" : "+ Add Staff"}</button>}
       </div>
-      {showForm && (
+      {showForm && canManage && (
         <div style={{ ...s.formBox, marginBottom: 20 }}>
           <div style={s.grid2}>
             <Field label="Full Name">
@@ -671,6 +883,50 @@ function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void
           </button>
         </div>
       )}
+
+      {/* Set Password modal */}
+      {pwTarget && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 12, padding: 28, width: 380,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+          }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Set Password</div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 20 }}>{pwTarget.full_name || pwTarget.email}</div>
+            <Field label="New Password">
+              <input
+                style={s.input} type="password" placeholder="Minimum 8 characters"
+                value={newPw} onChange={e => setNewPw(e.target.value)}
+                autoFocus autoComplete="new-password"
+              />
+            </Field>
+            {pwMsg && (
+              <div style={{
+                marginTop: 12, padding: "8px 12px", borderRadius: 8, fontSize: 13,
+                background: pwMsg.ok ? "#f0fdf4" : "#fef2f2",
+                color: pwMsg.ok ? "#15803d" : "#dc2626",
+                border: `1px solid ${pwMsg.ok ? "#bbf7d0" : "#fecaca"}`,
+              }}>
+                {pwMsg.ok ? "✓" : "✗"} {pwMsg.text}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={setPassword} disabled={pwSaving || newPw.length < 8} style={{
+                ...s.btnPrimary, opacity: newPw.length < 8 ? 0.5 : 1,
+              }}>
+                {pwSaving ? "Saving…" : "Update Password"}
+              </button>
+              <button onClick={() => { setPwTarget(null); setNewPw(""); setPwMsg(null) }} style={s.btnOutline}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {staff.length === 0 ? (
         <EmptyState icon="👥" message="No staff assigned to this clinic yet" />
       ) : (
@@ -690,11 +946,19 @@ function StaffTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void
                       {m.role.replace("_", " ").replace(/\b\w/g, l => l.toUpperCase())}
                     </span>
                   </td>
-                  <td style={s.td}>
-                    <button onClick={async () => {
-                      await fetch(`/admin/clinics/${clinic.id}/staff/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
-                      loadStaff()
-                    }} style={s.btnDanger}>Remove</button>
+                  <td style={{ ...s.td, display: "flex", gap: 8 }}>
+                    {canManage && (
+                      <button onClick={() => { setPwTarget(m); setNewPw(""); setPwMsg(null) }}
+                        style={{ ...s.btnOutline, fontSize: 12 }}>
+                        🔒 Set Password
+                      </button>
+                    )}
+                    {canManage && (
+                      <button onClick={async () => {
+                        await fetch(`/admin/clinics/${clinic.id}/staff/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
+                        loadStaff()
+                      }} style={s.btnDanger}>Remove</button>
+                    )}
                   </td>
                 </tr>
               )
@@ -1173,8 +1437,14 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
     tenant_domain: clinic.domains?.[0] || clinic.slug,
     nav_links: [],
     footer_links: [],
+    bottom_links: [],
     logo_url: "",
     get_started_url: "",
+    contact_phone: "",
+    contact_email: "",
+    contact_address: "",
+    social_links: [],
+    certification_image_url: "",
   })
 
   const [config, setConfig] = useState<UiConfig>(blankConfig())
@@ -1196,8 +1466,14 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
             tenant_domain: clinic.domains?.[0] || clinic.slug,
             nav_links: d.config.nav_links || [],
             footer_links: d.config.footer_links || [],
+            bottom_links: d.config.bottom_links || [],
             logo_url: d.config.logo_url || "",
             get_started_url: d.config.get_started_url || "",
+            contact_phone: d.config.contact_phone || "",
+            contact_email: d.config.contact_email || "",
+            contact_address: d.config.contact_address || "",
+            social_links: d.config.social_links || [],
+            certification_image_url: d.config.certification_image_url || "",
           })
         }
       })
@@ -1232,6 +1508,29 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
   const removeLink = (section: "nav_links" | "footer_links", idx: number) =>
     setConfig(p => ({ ...p, [section]: p[section].filter((_, i) => i !== idx) }))
 
+  const addChildLink = (section: "nav_links" | "footer_links", parentIdx: number) =>
+    setConfig(p => {
+      const links = [...p[section]]
+      links[parentIdx] = { ...links[parentIdx], children: [...(links[parentIdx].children || []), { ...BLANK_LINK }] }
+      return { ...p, [section]: links }
+    })
+
+  const updateChildLink = (section: "nav_links" | "footer_links", parentIdx: number, childIdx: number, field: keyof NavLink, val: any) =>
+    setConfig(p => {
+      const links = [...p[section]]
+      const children = [...(links[parentIdx].children || [])]
+      children[childIdx] = { ...children[childIdx], [field]: val }
+      links[parentIdx] = { ...links[parentIdx], children }
+      return { ...p, [section]: links }
+    })
+
+  const removeChildLink = (section: "nav_links" | "footer_links", parentIdx: number, childIdx: number) =>
+    setConfig(p => {
+      const links = [...p[section]]
+      links[parentIdx] = { ...links[parentIdx], children: (links[parentIdx].children || []).filter((_, i) => i !== childIdx) }
+      return { ...p, [section]: links }
+    })
+
   const renderLinkSection = (section: "nav_links" | "footer_links", title: string) => (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -1241,19 +1540,42 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
       {config[section].length === 0 ? (
         <div style={{ fontSize: 13, color: "#9ca3af", padding: "12px 0" }}>No links added yet</div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {config[section].map((link, idx) => (
-            <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, alignItems: "center" }}>
-              <input style={s.input} placeholder="Label (e.g. Home)"
-                value={link.label} onChange={e => updateLink(section, idx, "label", e.target.value)} />
-              <input style={s.input} placeholder="URL (e.g. https://...)"
-                value={link.url} onChange={e => updateLink(section, idx, "url", e.target.value)} />
-              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
-                <input type="checkbox" checked={!!link.open_new_tab}
-                  onChange={e => updateLink(section, idx, "open_new_tab", e.target.checked)} />
-                New tab
-              </label>
-              <button onClick={() => removeLink(section, idx)} style={s.btnDanger}>×</button>
+            <div key={idx} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 10, background: "#fafafa" }}>
+              {/* Parent row */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto auto", gap: 8, alignItems: "center" }}>
+                <input style={s.input} placeholder="Label (e.g. About)"
+                  value={link.label} onChange={e => updateLink(section, idx, "label", e.target.value)} />
+                <input style={s.input} placeholder="URL (leave blank if dropdown only)"
+                  value={link.url} onChange={e => updateLink(section, idx, "url", e.target.value)} />
+                <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!link.open_new_tab}
+                    onChange={e => updateLink(section, idx, "open_new_tab", e.target.checked)} />
+                  New tab
+                </label>
+                <button onClick={() => addChildLink(section, idx)} style={{ ...s.btnOutline, fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }} title="Add child link">+ Child</button>
+                <button onClick={() => removeLink(section, idx)} style={s.btnDanger}>×</button>
+              </div>
+              {/* Child links */}
+              {(link.children || []).length > 0 && (
+                <div style={{ marginTop: 8, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 6, borderLeft: "2px solid #e5e7eb" }}>
+                  {(link.children || []).map((child, ci) => (
+                    <div key={ci} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, alignItems: "center" }}>
+                      <input style={{ ...s.input, fontSize: 12 }} placeholder="Child label"
+                        value={child.label} onChange={e => updateChildLink(section, idx, ci, "label", e.target.value)} />
+                      <input style={{ ...s.input, fontSize: 12 }} placeholder="Child URL"
+                        value={child.url} onChange={e => updateChildLink(section, idx, ci, "url", e.target.value)} />
+                      <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!child.open_new_tab}
+                          onChange={e => updateChildLink(section, idx, ci, "open_new_tab", e.target.checked)} />
+                        New tab
+                      </label>
+                      <button onClick={() => removeChildLink(section, idx, ci)} style={s.btnDanger}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1263,12 +1585,16 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
 
   if (loading) return <div style={{ color: "#9ca3af", padding: 24 }}>Loading…</div>
 
+  const SOCIAL_PLATFORMS = ["Facebook", "Instagram", "TikTok", "Twitter/X", "YouTube", "LinkedIn", "Pinterest", "Snapchat"]
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#0369a1" }}>
         💡 Define the navigation and footer links for <strong>{clinic.name}</strong>'s storefront.
         These are served via <code>/store/clinics/ui-config</code> and rendered by the storefront automatically.
       </div>
+
+      {/* Branding */}
       <div style={s.grid2}>
         <Field label="Logo URL">
           <input style={s.input} value={config.logo_url} placeholder="https://..."
@@ -1279,8 +1605,98 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
             onChange={e => setConfig(p => ({ ...p, get_started_url: e.target.value }))} />
         </Field>
       </div>
+
+      {/* Contact Info */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 12 }}>📞 Contact Information</div>
+        <div style={s.grid2}>
+          <Field label="Phone">
+            <input style={s.input} value={config.contact_phone} placeholder="(956) 766-0051"
+              onChange={e => setConfig(p => ({ ...p, contact_phone: e.target.value }))} />
+          </Field>
+          <Field label="Email">
+            <input style={s.input} value={config.contact_email} placeholder="support@yourclinic.com"
+              onChange={e => setConfig(p => ({ ...p, contact_email: e.target.value }))} />
+          </Field>
+        </div>
+        <Field label="Address (use line breaks for multi-line)">
+          <textarea style={{ ...s.input, height: 72, resize: "vertical", fontFamily: "inherit" }}
+            value={config.contact_address} placeholder={"1907 N. Veterans Blvd.\nPharr, Texas 78577\nSuite B"}
+            onChange={e => setConfig(p => ({ ...p, contact_address: e.target.value }))} />
+        </Field>
+      </div>
+
+      {/* Social Links */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#111" }}>🌐 Social Media Links</div>
+          <button onClick={() => setConfig(p => ({ ...p, social_links: [...p.social_links, { platform: "Facebook", url: "" }] }))} style={s.btnOutline}>+ Add Social</button>
+        </div>
+        {config.social_links.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#9ca3af", padding: "8px 0" }}>No social links added yet</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {config.social_links.map((sl, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "160px 1fr auto", gap: 8, alignItems: "center" }}>
+                <select style={s.input} value={sl.platform}
+                  onChange={e => setConfig(p => { const sl2 = [...p.social_links]; sl2[i] = { ...sl2[i], platform: e.target.value }; return { ...p, social_links: sl2 } })}>
+                  {SOCIAL_PLATFORMS.map(pl => <option key={pl}>{pl}</option>)}
+                </select>
+                <input style={s.input} placeholder="https://facebook.com/yourclinic" value={sl.url}
+                  onChange={e => setConfig(p => { const sl2 = [...p.social_links]; sl2[i] = { ...sl2[i], url: e.target.value }; return { ...p, social_links: sl2 } })} />
+                <button onClick={() => setConfig(p => ({ ...p, social_links: p.social_links.filter((_, j) => j !== i) }))} style={s.btnDanger}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Certification Image */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 12 }}>🏅 Certification / Badge Image</div>
+        <Field label="Image URL (shown below contact info in footer)">
+          <input style={s.input} value={config.certification_image_url} placeholder="https://... (e.g. compounded-in-usa badge)"
+            onChange={e => setConfig(p => ({ ...p, certification_image_url: e.target.value }))} />
+        </Field>
+        {config.certification_image_url && (
+          <img src={config.certification_image_url} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
+        )}
+      </div>
+
       {renderLinkSection("nav_links", "🔗 Navigation Links")}
       {renderLinkSection("footer_links", "📎 Footer Links")}
+
+      {/* Bottom Bar Links */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#111" }}>📋 Bottom Bar Links</div>
+            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>Shown in the thin bar at the very bottom of the footer (e.g. Terms, Privacy, Consent)</div>
+          </div>
+          <button onClick={() => setConfig(p => ({ ...p, bottom_links: [...p.bottom_links, { ...BLANK_LINK }] }))} style={s.btnOutline}>+ Add Link</button>
+        </div>
+        {config.bottom_links.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#9ca3af", padding: "8px 0" }}>No bottom links added yet</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {config.bottom_links.map((link, idx) => (
+              <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, alignItems: "center" }}>
+                <input style={s.input} placeholder="Label (e.g. Privacy Policy)"
+                  value={link.label} onChange={e => setConfig(p => { const bl = [...p.bottom_links]; bl[idx] = { ...bl[idx], label: e.target.value }; return { ...p, bottom_links: bl } })} />
+                <input style={s.input} placeholder="URL"
+                  value={link.url} onChange={e => setConfig(p => { const bl = [...p.bottom_links]; bl[idx] = { ...bl[idx], url: e.target.value }; return { ...p, bottom_links: bl } })} />
+                <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6b7280", whiteSpace: "nowrap", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!link.open_new_tab}
+                    onChange={e => setConfig(p => { const bl = [...p.bottom_links]; bl[idx] = { ...bl[idx], open_new_tab: e.target.checked }; return { ...p, bottom_links: bl } })} />
+                  New tab
+                </label>
+                <button onClick={() => setConfig(p => ({ ...p, bottom_links: p.bottom_links.filter((_, i) => i !== idx) }))} style={s.btnDanger}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <SaveBar saving={saving} status={status} onSave={save} />
     </div>
   )
@@ -1360,9 +1776,3 @@ const s: Record<string, React.CSSProperties> = {
   modalTitle: { margin: "0 0 4px", fontSize: 16, fontWeight: 700 },
   modalSubtitle: { margin: "0 0 16px", fontSize: 13, color: "#6b7280" },
 }
-
-import { defineRouteConfig } from "@medusajs/admin-sdk"
-
-export const config = defineRouteConfig({
-  label: "Clinic Operations",
-})

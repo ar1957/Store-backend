@@ -9,7 +9,7 @@ import { INotificationModuleService } from "@medusajs/framework/types"
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
-    const { orderId } = req.params
+    const { id: clinicId, orderId } = req.params
     const { tracking_number, carrier, pharmacist_user_id } = req.body as any
 
     if (!tracking_number) {
@@ -48,14 +48,18 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           oa.first_name AS shipping_first_name,
           oa.last_name  AS shipping_last_name,
           sc.name AS clinic_name,
-          wf.treatment_dosages
+          wf.treatment_dosages,
+          cl.from_email AS clinic_from_email,
+          cl.from_name  AS clinic_from_name,
+          cl.reply_to   AS clinic_reply_to
         FROM "order" o
         LEFT JOIN "customer" c       ON c.id = o.customer_id
         LEFT JOIN "order_address" oa ON oa.id = o.shipping_address_id
         LEFT JOIN "sales_channel" sc ON sc.id = o.sales_channel_id
         LEFT JOIN "order_workflow" wf ON wf.order_id = o.id AND wf.deleted_at IS NULL
+        LEFT JOIN "clinic" cl        ON cl.id = ?
         WHERE o.id = ? LIMIT 1`,
-        [orderId]
+        [clinicId, orderId]
       )
 
       if (orderResult.rows.length && orderResult.rows[0].email) {
@@ -78,6 +82,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             status: "shipped",
             tracking_number,
             carrier: carrier || "UPS",
+            from_email: row.clinic_from_email || undefined,
+            from_name: row.clinic_from_name || undefined,
+            reply_to: row.clinic_reply_to || undefined,
           },
         })
       }

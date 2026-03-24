@@ -15,6 +15,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const host = (
       req.headers["x-forwarded-host"] ||
+      req.headers["x-tenant-domain"] ||
       req.headers["host"] ||
       ""
     ) as string
@@ -59,6 +60,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         nav_links:       uiConfig.nav_links || [],
         footer_links:    uiConfig.footer_links || [],
         get_started_url: uiConfig.get_started_url || "/store",
+        // Stripe key for client-side payment initialization
+        stripe_publishable_key: clinic.stripe_publishable_key || "",
       }
     })
   } catch (err: unknown) {

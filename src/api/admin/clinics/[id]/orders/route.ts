@@ -16,10 +16,25 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const domains: string[] = clinic.domains || []
     if (clinic.slug && !domains.includes(clinic.slug)) domains.push(clinic.slug)
-    if (!domains.length) return res.json({ orders: [] })
 
+    const salesChannelId = clinic.sales_channel_id || null
     const statusFilter = req.query.status as string | undefined
-    const placeholders = domains.map(() => "?").join(", ")
+
+    // Build WHERE: match by sales_channel_id (most reliable) OR tenant_domain
+    const conditions: string[] = []
+    const params: any[] = []
+
+    if (salesChannelId) {
+      conditions.push(`o.sales_channel_id = ?`)
+      params.push(salesChannelId)
+    }
+    if (domains.length) {
+      const placeholders = domains.map(() => "?").join(", ")
+      conditions.push(`ow.tenant_domain IN (${placeholders})`)
+      params.push(...domains)
+    }
+
+    if (!conditions.length) return res.json({ orders: [] })
 
     let query = `
       SELECT
@@ -38,9 +53,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       LEFT JOIN "order" o        ON o.id = ow.order_id AND o.deleted_at IS NULL
       LEFT JOIN customer c       ON c.id = o.customer_id
       LEFT JOIN order_address oa ON oa.id = o.shipping_address_id
-      WHERE ow.tenant_domain IN (${placeholders})
+      WHERE (${conditions.join(" OR ")})
     `
-    const params: any[] = [...domains]
 
     if (statusFilter) {
       query += ` AND ow.status = ?`

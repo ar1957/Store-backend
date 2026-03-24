@@ -78,14 +78,16 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       }
 
       // Filter orders: wf.tenant_domain must be in the domains of those clinics
-      // Inline clinic IDs directly — safe since they come from our own DB query
-      // knex pg.raw() doesn't reliably bind ? inside EXISTS subqueries
+      // OR order's sales_channel_id matches the clinic's sales_channel_id
       const safeIds = clinicIds.map(id => `'${id.replace(/'/g, "''")}'`).join(", ")
       clinicFilter = `AND EXISTS (
         SELECT 1 FROM clinic cl
         WHERE cl.id IN (${safeIds})
           AND cl.deleted_at IS NULL
-          AND wf.tenant_domain = ANY(cl.domains)
+          AND (
+            wf.tenant_domain = ANY(cl.domains)
+            OR o.sales_channel_id = cl.sales_channel_id
+          )
       )`
       clinicParams = [] // no params needed — IDs are inlined
     }
@@ -144,7 +146,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
        LEFT JOIN "customer" c         ON c.id  = o.customer_id
        LEFT JOIN "order_address" oa   ON oa.id = o.shipping_address_id
        LEFT JOIN "sales_channel" sc   ON sc.id = o.sales_channel_id
-       LEFT JOIN "order_summary" os   ON os.order_id = o.id AND os.deleted_at IS NULL
+       LEFT JOIN LATERAL (
+         SELECT totals FROM "order_summary"
+         WHERE order_id = o.id AND deleted_at IS NULL
+         ORDER BY created_at DESC LIMIT 1
+       ) os ON true
        INNER JOIN "order_workflow" wf  ON wf.order_id = o.id AND wf.deleted_at IS NULL
        WHERE o.deleted_at IS NULL
          AND o.is_draft_order = false

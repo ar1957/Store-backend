@@ -32,6 +32,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const clinicSvc = req.scope.resolve(CLINIC_MODULE) as any
     const pgConnection = req.scope.resolve("__pg_connection__") as any
+    const userService = req.scope.resolve("user") as any
 
     const clinic = await clinicSvc.getClinicById(req.params.id)
     if (!clinic) return res.status(404).json({ message: "Clinic not found" })
@@ -39,6 +40,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const tenantDomain = clinic.domains?.[0] || clinic.slug
     const body = req.body as any
     const id = `staff_${Date.now()}`
+
+    // Ensure a Medusa user record exists for this email
+    const existing = await pgConnection.raw(
+      `SELECT id FROM "user" WHERE email = ? LIMIT 1`,
+      [body.email]
+    )
+    if (!existing.rows[0]) {
+      await userService.createUsers({ email: body.email })
+    }
 
     await pgConnection.raw(`
       INSERT INTO clinic_staff (id, tenant_domain, user_id, email, full_name, role, is_active, created_at, updated_at)

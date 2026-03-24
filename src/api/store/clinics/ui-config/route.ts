@@ -36,14 +36,19 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     console.log("[Store UI Config] Found clinic:", clinic.name, clinic.id)
 
     const result = await pg.raw(
-      `SELECT nav_links, footer_links, logo_url, get_started_url
+      `SELECT nav_links, footer_links, bottom_links, logo_url, get_started_url,
+              contact_phone, contact_email, contact_address, social_links, certification_image_url
        FROM clinic_ui_config
        WHERE clinic_id = ?
        LIMIT 1`,
       [clinic.id]
     )
 
-    return res.json({ config: result.rows[0] || null })
+    const row = result.rows[0] || {}
+    // brand_color comes from the clinic record itself (already fetched above)
+    row.brand_color = clinic.brand_color || null
+
+    return res.json({ config: row })
   } catch (err: unknown) {
     console.error("[Store UI Config] Error:", err)
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })
