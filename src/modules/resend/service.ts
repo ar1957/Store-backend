@@ -170,6 +170,43 @@ function ShippedEmail({ data }: { data: any }) {
   )
 }
 
+function RefundEmail({ data }: { data: any }) {
+  const brand = data.brand_color || "#6d28d9"
+  const e = React.createElement
+  return e("div", { style: { fontFamily: "Arial, sans-serif", maxWidth: 600, margin: "0 auto", background: "#fff" } },
+    // Header
+    e("div", { style: { background: brand, padding: "32px 40px" } },
+      e("h1", { style: { color: "#fff", fontSize: 28, fontWeight: 700, margin: 0 } }, "Your Refund Has Been Processed")
+    ),
+    // Body
+    e("div", { style: { padding: "28px 40px" } },
+      e("p", { style: { fontSize: 14, color: "#374151", margin: "0 0 12px" } },
+        `Hi ${(data.patient_name || "there").split(" ")[0]},`
+      ),
+      e("p", { style: { fontSize: 14, color: "#374151", margin: "0 0 20px" } },
+        `We've successfully processed a refund for your order #${data.order_display_id}.`
+      ),
+      e("div", { style: { background: "#F9FAFB", border: "1px solid #e5e7eb", borderRadius: 8, padding: "16px 20px", margin: "0 0 20px" } },
+        e("p", { style: { margin: "0 0 6px", fontSize: 13, fontWeight: 700, color: "#111" } }, "Reason:"),
+        e("p", { style: { margin: 0, fontSize: 13, color: "#374151" } }, data.refund_reason || "")
+      ),
+      e("p", { style: { fontSize: 14, color: "#374151", margin: "0 0 8px" } },
+        "Please allow 5–10 business days for the refund to appear on your original payment method."
+      ),
+      e("p", { style: { fontSize: 14, color: "#374151", margin: 0 } },
+        "If you have any questions, please don't hesitate to reach out to your clinic."
+      ),
+    ),
+    // Footer
+    e("div", { style: { borderTop: "1px solid #f3f4f6", padding: "20px 40px", textAlign: "center" } },
+      data.logo_url && e("img", { src: data.logo_url, alt: data.clinic_name || "Clinic", style: { maxHeight: 48, maxWidth: 160, objectFit: "contain", marginBottom: 8 } }),
+      e("p", { style: { fontSize: 12, color: "#9ca3af", margin: 0 } },
+        data.clinic_name ? `© ${new Date().getFullYear()} ${data.clinic_name}. All rights reserved.` : ""
+      ),
+    ),
+  )
+}
+
 // ── Template map ───────────────────────────────────────────────────────────
 
 const TEMPLATES: Record<string, { subject: string; component: (props: { data: any }) => any }> = {
@@ -188,6 +225,10 @@ const TEMPLATES: Record<string, { subject: string; component: (props: { data: an
   "order.md_denied": {
     subject: "Update on Your Order",
     component: OrderStatusEmail,
+  },
+  "order.refund_issued": {
+    subject: "Your Refund Has Been Processed",
+    component: RefundEmail,
   },
 }
 

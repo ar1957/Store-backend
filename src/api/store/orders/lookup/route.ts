@@ -30,8 +30,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     // Scope by sales_channel_id (most reliable) or fall back to domain matching
     const salesChannelId = clinic.sales_channel_id
-    const allowedDomains: string[] = clinic?.domains ?? []
+    // Include both with-port and without-port variants of every domain
+    const allowedDomains: string[] = []
+    for (const d of (clinic.domains || [])) {
+      allowedDomains.push(d)
+      allowedDomains.push(d.split(":")[0])
+    }
     if (clinic.slug) allowedDomains.push(clinic.slug)
+    if (domain && !allowedDomains.includes(domain)) allowedDomains.push(domain)
 
     let orderRows: any[] = []
 

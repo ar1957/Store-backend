@@ -1,0 +1,32 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - echo Installing dependencies...
+      - npm ci
+
+  build:
+    commands:
+      - echo Building Medusa backend...
+      - npm run build
+
+  post_build:
+    commands:
+      - echo Build complete
+
+artifacts:
+  files:
+    - .medusa/**/*
+    - .ebextensions/**/*
+    - package.json
+    - package-lock.json
+    - Procfile
+  discard-paths: no
+```
+
+Also create a `Procfile` at the root of `my-medusa-store`:
+```
+web: npm run start:prod

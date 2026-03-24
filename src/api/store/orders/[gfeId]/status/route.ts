@@ -57,8 +57,17 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     ) as string
     const domain = host.split(":")[0]
     const clinic = await clinicSvc.getClinicByDomain(host) || await clinicSvc.getClinicByDomain(domain)
-    const allowedDomains: string[] = clinic?.domains ?? []
+    // Build allowed domains — include both with-port and without-port variants
+    const allowedDomains: string[] = []
+    if (clinic?.domains) {
+      for (const d of clinic.domains) {
+        allowedDomains.push(d)
+        allowedDomains.push(d.split(":")[0]) // strip port
+      }
+    }
     if (clinic?.slug) allowedDomains.push(clinic.slug)
+    // Also add the bare request domain
+    if (domain && !allowedDomains.includes(domain)) allowedDomains.push(domain)
 
     // Build tenant filter — if we can't resolve a clinic, deny
     if (!clinic) {
@@ -77,16 +86,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         created_at, updated_at
       FROM order_workflow
       WHERE (gfe_id = ? OR id = ?)
-        AND (
-          tenant_domain = ANY(?)
-          OR order_id IN (
-            SELECT id FROM "order" WHERE sales_channel_id = ?
-          )
-        )
+        AND tenant_domain = ANY(?)
       LIMIT 1
-    `, [gfeId, gfeId, allowedDomains, clinic.sales_channel_id])
+    `, [gfeId, gfeId, allowedDomains])
+
+    console.log(`[GFE Status] gfeId=${gfeId} allowedDomains=${JSON.stringify(allowedDomains)} found=${result.rows.length}`)
 
     if (!result.rows.length) {
+      console.log(`[GFE Status] 404 — gfeId=${gfeId} allowedDomains=${JSON.stringify(allowedDomains)}`)
       return res.status(404).json({ message: "Order not found" })
     }
 
