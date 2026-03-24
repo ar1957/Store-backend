@@ -12,8 +12,6 @@ phases:
     commands:
       - echo Building Medusa backend...
       - npm run build
-      - echo Installing production dependencies in compiled server...
-      - cd .medusa/server && npm ci --omit=dev
 
   post_build:
     commands:
