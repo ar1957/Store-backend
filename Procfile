@@ -1,1 +1,1 @@
-web: npm run start:prod
+web: node .medusa/server/main.js
