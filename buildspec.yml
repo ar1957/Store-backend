@@ -23,7 +23,5 @@ artifacts:
   files:
     - .medusa/**/*
     - .ebextensions/**/*
-    - package.json
-    - package-lock.json
     - Procfile
   discard-paths: no
