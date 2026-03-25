@@ -1,9 +1,10 @@
-import { loadEnv, defineConfig } from '@medusajs/framework/utils'
-import pg from 'pg'
+const { loadEnv, defineConfig } = require('@medusajs/framework/utils')
+const pg = require('pg')
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 
-const getClinicDomains = async (): Promise<string[]> => {
+// Logic to fetch clinic domains for dynamic CORS
+const getClinicDomains = async () => {
   if (!process.env.DATABASE_URL) return []
   try {
     const pool = new pg.Pool({ 
@@ -15,9 +16,9 @@ const getClinicDomains = async (): Promise<string[]> => {
     )
     await pool.end()
     return result.rows
-      .flatMap((r: any) => r.domains || [])
+      .flatMap((r) => r.domains || [])
       .filter(Boolean)
-      .map((d: string) => {
+      .map((d) => {
         if (d.startsWith('http')) return d
         if (d.includes('localhost')) return `http://${d}`
         return `https://${d}`
@@ -56,6 +57,7 @@ const buildConfig = async () => {
     },
     modules: [
       {
+        // Points to your provider-integration module containing the 7 migrations
         resolve: './src/modules/provider-integration',
       },
       {
