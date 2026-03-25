@@ -57,14 +57,14 @@ const buildConfig = async () => {
     },
     modules: [
       {
-        // Points to your provider-integration module containing the 7 migrations
-        resolve: './src/modules/provider-integration',
+        // Point to the compiled JS location on the server
+        resolve: './.medusa/server/src/modules/provider-integration',
       },
       {
-        resolve: './src/modules/clinic-ops',
+        resolve: './.medusa/server/src/modules/clinic-ops',
       },
       {
-        resolve: './src/modules/clinic',
+        resolve: './.medusa/server/src/modules/clinic',
       },
       {
         resolve: '@medusajs/medusa/payment',
@@ -86,7 +86,7 @@ const buildConfig = async () => {
         options: {
           providers: [
             {
-              resolve: './src/modules/resend',
+              resolve: './.medusa/server/src/modules/resend',
               id: 'resend',
               options: {
                 channels: ['email'],
