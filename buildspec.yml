@@ -19,7 +19,9 @@ phases:
 
 artifacts:
   files:
-    - .medusa/**/*
-    - .ebextensions/**/*
-    - Procfile
+    - "**/*"
+  exclude-paths:
+    - "node_modules/**/*"
+    - ".git/**/*"
+    - "src/**/*"
   discard-paths: no
