@@ -1,45 +1,25 @@
 const { loadEnv, defineConfig } = require('@medusajs/framework/utils')
-const pg = require('pg')
+const path = require('path')
+const fs = require('fs')
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 
-// Logic to fetch clinic domains for dynamic CORS
-const getClinicDomains = async () => {
-  if (!process.env.DATABASE_URL) return []
-  try {
-    const pool = new pg.Pool({ 
-      connectionString: process.env.DATABASE_URL,
-      connectionTimeoutMillis: 3000,
-    })
-    const result = await pool.query(
-      `SELECT domains FROM clinic WHERE deleted_at IS NULL AND is_active = true`
-    )
-    await pool.end()
-    return result.rows
-      .flatMap((r) => r.domains || [])
-      .filter(Boolean)
-      .map((d) => {
-        if (d.startsWith('http')) return d
-        if (d.includes('localhost')) return `http://${d}`
-        return `https://${d}`
-      })
-  } catch (e) {
-    console.warn('[CORS] Could not fetch clinic domains from DB:', e.message)
-    return []
-  }
+// Resolve a module path that works both locally (src/) and on AWS (compiled .medusa/server/src/)
+const resolveModule = (name: string): string => {
+  const compiled = path.join(process.cwd(), '.medusa', 'server', 'src', 'modules', name)
+  const source   = path.join(process.cwd(), 'src', 'modules', name)
+  if (fs.existsSync(compiled)) return compiled
+  return source
 }
 
 const buildConfig = async () => {
-  const staticStoreCors = process.env.STORE_CORS || 'http://localhost:8000'
   const staticAdminCors = process.env.ADMIN_CORS || 'http://localhost:9000'
   const staticAuthCors  = process.env.AUTH_CORS  || 'http://localhost:9000'
 
-  const clinicDomains = await getClinicDomains()
-
-  const storeCors = [
-    ...staticStoreCors.split(','),
-    ...clinicDomains,
-  ].filter(Boolean).join(',')
+  // storeCors is set to wildcard — dynamic per-clinic CORS is handled by
+  // the dynamicCorsMiddleware in src/api/middlewares.ts which reads from DB
+  // with a 2-minute cache. This means new clinics work immediately, no restart.
+  const storeCors = '*'
 
   return defineConfig({
     admin: {
@@ -57,14 +37,13 @@ const buildConfig = async () => {
     },
     modules: [
       {
-        // Using absolute path via process.cwd() to ensure Medusa finds migrations on AWS
-        resolve: process.cwd() + '/.medusa/server/src/modules/provider-integration',
+        resolve: resolveModule('provider-integration'),
       },
       {
-        resolve: process.cwd() + '/.medusa/server/src/modules/clinic-ops',
+        resolve: resolveModule('clinic-ops'),
       },
       {
-        resolve: process.cwd() + '/.medusa/server/src/modules/clinic',
+        resolve: resolveModule('clinic'),
       },
       {
         resolve: '@medusajs/medusa/payment',
@@ -86,8 +65,7 @@ const buildConfig = async () => {
         options: {
           providers: [
             {
-              // Resend also uses the absolute path to the compiled module
-              resolve: process.cwd() + '/.medusa/server/src/modules/resend',
+              resolve: resolveModule('resend'),
               id: 'resend',
               options: {
                 channels: ['email'],

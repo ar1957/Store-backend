@@ -1,4 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework"
+import { invalidateCorsCache } from "../../middlewares"
 
 const CLINIC_MODULE = "clinic"
 
@@ -28,6 +29,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "name and slug are required" })
     }
     const clinic = await svc.createClinic(body)
+    invalidateCorsCache() // new clinic domain available immediately
     return res.json({ clinic })
   } catch (err: unknown) {
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })
