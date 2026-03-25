@@ -5,120 +5,9 @@ import {
   MedusaResponse,
 } from "@medusajs/framework/http"
 import { maybeApplyLinkFilter } from "@medusajs/framework"
-import { Pool } from "pg"
 
-// ── Dynamic CORS ───────────────────────────────────────────────────────────
-// Medusa's built-in storeCors is set to "*" in medusa-config.ts so it never
-// blocks. This middleware does the real enforcement: it checks the request
-// Origin against the clinic domains table (with a 2-minute in-process cache)
-// so new clinics are picked up immediately — no restart needed.
-
-const pgPool = new Pool({ connectionString: process.env.DATABASE_URL })
-
-interface CorsCache { origins: Set<string>; fetchedAt: number }
-let corsCache: CorsCache | null = null
-const CORS_CACHE_TTL = 2 * 60 * 1000 // 2 minutes
-
-// Base origins always allowed regardless of DB state
-function baseOrigins(): Set<string> {
-  const origins = new Set<string>(["http://localhost:8000", "http://localhost:9000"])
-  // Also pull from env so static CORS config still works during migration
-  const envCors = process.env.STORE_CORS || ""
-  for (const o of envCors.split(",")) {
-    const t = o.trim()
-    if (t) origins.add(t)
-  }
-  return origins
-}
-
-async function getAllowedOrigins(): Promise<Set<string>> {
-  if (corsCache && Date.now() - corsCache.fetchedAt < CORS_CACHE_TTL) {
-    return corsCache.origins
-  }
-
-  const origins = baseOrigins()
-
-  try {
-    // Check table exists first — safe during initial deploy before migrations run
-    const tableCheck = await pgPool.query(`
-      SELECT 1 FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = 'clinic'
-      LIMIT 1
-    `)
-    if (!tableCheck.rows.length) {
-      // Migrations haven't run yet — return base origins, don't cache
-      return origins
-    }
-
-    const result = await pgPool.query(
-      `SELECT domains FROM clinic WHERE deleted_at IS NULL AND is_active = true`
-    )
-    for (const row of result.rows) {
-      for (const d of (row.domains || []) as string[]) {
-        const clean = d.trim()
-        if (!clean) continue
-        if (clean.startsWith("http")) {
-          origins.add(clean)
-        } else if (clean.includes("localhost") || clean.includes(".local")) {
-          origins.add(`http://${clean}`)
-        } else {
-          origins.add(`https://${clean}`)
-          const noPort = clean.split(":")[0]
-          if (noPort !== clean) origins.add(`https://${noPort}`)
-        }
-      }
-    }
-    corsCache = { origins, fetchedAt: Date.now() }
-    return origins
-  } catch (e) {
-    console.warn("[DynamicCORS] DB error, using base+cached origins:", (e as Error).message)
-    // Merge cached clinic origins with base if available
-    if (corsCache) {
-      for (const o of corsCache.origins) origins.add(o)
-    }
-    return origins
-  }
-}
-
-// Call this after creating/updating a clinic to immediately reflect new domains
-export function invalidateCorsCache() {
-  corsCache = null
-}
-
-async function dynamicCorsMiddleware(
-  req: MedusaRequest,
-  res: MedusaResponse,
-  next: MedusaNextFunction
-) {
-  const origin = req.headers["origin"] as string | undefined
-
-  if (req.method === "OPTIONS") {
-    // Preflight — always respond permissively for allowed origins
-    if (origin) {
-      const allowed = await getAllowedOrigins()
-      if (allowed.has(origin)) {
-        res.setHeader("Access-Control-Allow-Origin", origin)
-        res.setHeader("Access-Control-Allow-Credentials", "true")
-        res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS")
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,x-publishable-api-key,x-medusa-access-token")
-        res.setHeader("Vary", "Origin")
-        return res.status(204).end()
-      }
-    }
-    return next()
-  }
-
-  if (origin) {
-    const allowed = await getAllowedOrigins()
-    if (allowed.has(origin)) {
-      res.setHeader("Access-Control-Allow-Origin", origin)
-      res.setHeader("Access-Control-Allow-Credentials", "true")
-      res.setHeader("Vary", "Origin")
-    }
-  }
-
-  return next()
-}
+// Export a no-op so clinic routes that import invalidateCorsCache don't break
+export function invalidateCorsCache() {}
 
 const BLOCK_FOR_RESTRICTED = [
   "/admin/products",
@@ -284,13 +173,7 @@ async function clinicProductFilter(
 
 export default defineMiddlewares({
   routes: [
-    // ── DYNAMIC CORS (runs first on all routes) ──────────────────────
-    {
-      matcher: "/**",
-      middlewares: [dynamicCorsMiddleware],
-    },
-
-    // ── PUBLIC BOOTSTRAP ROUTES (MUST BE FIRST) ──────────────────────
+    // ── PUBLIC BOOTSTRAP ROUTES ──────────────────────────────────────
     { 
       matcher: "/store/clinics/tenant-config", 
       method: "GET", 
