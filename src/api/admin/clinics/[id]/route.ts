@@ -1,4 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework"
+import { invalidateCorsCache } from "../../../middlewares"
 
 const CLINIC_MODULE = "clinic"
 
@@ -72,6 +73,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       const sql = `UPDATE clinic SET ${sets.join(", ")} WHERE id = ? RETURNING *`
       const result = await pg.raw(sql, values)
       updatedClinic = result.rows[0]
+      invalidateCorsCache() // domains may have changed
     } else {
       const current = await pg.raw(`SELECT * FROM clinic WHERE id = ? LIMIT 1`, [clinicId])
       updatedClinic = current.rows[0]
@@ -89,6 +91,7 @@ export async function DELETE(req: MedusaRequest, res: MedusaResponse) {
   try {
     const svc = req.scope.resolve(CLINIC_MODULE) as any
     await svc.deleteClinic(req.params.id)
+    invalidateCorsCache()
     return res.json({ success: true })
   } catch (err: unknown) {
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })
