@@ -57,14 +57,14 @@ const buildConfig = async () => {
     },
     modules: [
       {
-        // Point to the compiled JS location on the server
-        resolve: './.medusa/server/src/modules/provider-integration',
+        // Using absolute path via process.cwd() to ensure Medusa finds migrations on AWS
+        resolve: process.cwd() + '/.medusa/server/src/modules/provider-integration',
       },
       {
-        resolve: './.medusa/server/src/modules/clinic-ops',
+        resolve: process.cwd() + '/.medusa/server/src/modules/clinic-ops',
       },
       {
-        resolve: './.medusa/server/src/modules/clinic',
+        resolve: process.cwd() + '/.medusa/server/src/modules/clinic',
       },
       {
         resolve: '@medusajs/medusa/payment',
@@ -86,7 +86,8 @@ const buildConfig = async () => {
         options: {
           providers: [
             {
-              resolve: './.medusa/server/src/modules/resend',
+              // Resend also uses the absolute path to the compiled module
+              resolve: process.cwd() + '/.medusa/server/src/modules/resend',
               id: 'resend',
               options: {
                 channels: ['email'],
