@@ -24,13 +24,8 @@ const buildConfig = async () => {
         storeCors,
         adminCors,
         authCors,
-        jwtSecret:    process.env.JWT_SECRET    || '11a0082c825ab97a36ff3b2c7e408d149534bb55bc8a7c5f6330d8dc3a8150b2',
+        jwtSecret: process.env.JWT_SECRET || '11a0082c825ab97a36ff3b2c7e408d149534bb55bc8a7c5f6330d8dc3a8150b2',
         cookieSecret: process.env.COOKIE_SECRET || 'fdccd0b02f072d93ba1e0ef683aba3c9c1f7071f416fd3d3be2c16197767776b',
-        // --- CRITICAL UPDATES START HERE ---
-        authMethods: ["emailpass"],
-        cookieSecure: false,  // Mandatory because your EB URL is http://
-        cookieSameSite: "lax" // Allows the cookie to be sent back on the next request
-        // --- CRITICAL UPDATES END HERE ---
       }
     },
     modules: [
