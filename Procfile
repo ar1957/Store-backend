@@ -1,1 +1,1 @@
-web: npx medusa start
+web: cd .medusa/server && node_modules/.bin/medusa start
