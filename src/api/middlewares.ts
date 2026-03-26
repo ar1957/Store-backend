@@ -5,8 +5,75 @@ import {
   MedusaResponse,
 } from "@medusajs/framework/http"
 import { maybeApplyLinkFilter } from "@medusajs/framework"
+import { Pool } from "pg"
 
-export function invalidateCorsCache() {}
+// ── Dynamic CORS ───────────────────────────────────────────────────────────
+// Runs at request-time so new clinics are picked up within 60s, no restart.
+// storeCors in medusa-config.ts is set to STORE_CORS env var only — this
+// middleware handles the per-clinic domain allowlist dynamically.
+
+const pgPool = new Pool({ connectionString: process.env.DATABASE_URL })
+
+let corsCache: { origins: Set<string>; ts: number } = { origins: new Set(), ts: 0 }
+const CORS_TTL = 60_000
+
+async function getAllowedOrigins(): Promise<Set<string>> {
+  if (Date.now() - corsCache.ts < CORS_TTL) return corsCache.origins
+  try {
+    // Safe during first deploy — table may not exist yet
+    const tableCheck = await pgPool.query(
+      `SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='clinic'`
+    )
+    if (!tableCheck.rows.length) return corsCache.origins
+
+    const result = await pgPool.query(
+      `SELECT domains FROM clinic WHERE deleted_at IS NULL AND is_active = true`
+    )
+    const origins = new Set<string>()
+    for (const row of result.rows) {
+      for (const d of (row.domains || []) as string[]) {
+        const clean = d.trim()
+        if (!clean) continue
+        if (clean.startsWith("http")) origins.add(clean)
+        else if (clean.includes("localhost") || clean.includes(".local")) origins.add(`http://${clean}`)
+        else {
+          origins.add(`https://${clean}`)
+          const noPort = clean.split(":")[0]
+          if (noPort !== clean) origins.add(`https://${noPort}`)
+        }
+      }
+    }
+    corsCache = { origins, ts: Date.now() }
+    return origins
+  } catch {
+    return corsCache.origins
+  }
+}
+
+export function invalidateCorsCache() { corsCache = { origins: new Set(), ts: 0 } }
+
+async function dynamicCorsMiddleware(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  next: MedusaNextFunction
+) {
+  const origin = req.headers["origin"] as string | undefined
+  if (!origin) return next()
+
+  const allowed = await getAllowedOrigins()
+  if (allowed.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin)
+    res.setHeader("Access-Control-Allow-Credentials", "true")
+    res.setHeader("Vary", "Origin")
+    if (req.method === "OPTIONS") {
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,PATCH,OPTIONS")
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,x-publishable-api-key,x-medusa-access-token")
+      return res.status(204).end()
+    }
+  }
+  return next()
+}
+
 
 const BLOCK_FOR_RESTRICTED = [
   "/admin/products",
@@ -172,6 +239,12 @@ async function clinicProductFilter(
 
 export default defineMiddlewares({
   routes: [
+    // ── DYNAMIC CORS — runs on all store routes ──────────────────────
+    {
+      matcher: "/store/*",
+      middlewares: [dynamicCorsMiddleware],
+    },
+
     // ── PUBLIC BOOTSTRAP ROUTES ──────────────────────────────────────
     { 
       matcher: "/store/clinics/tenant-config", 

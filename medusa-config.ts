@@ -1,11 +1,9 @@
 const { loadEnv, defineConfig } = require('@medusajs/framework/utils')
-const pg = require('pg')
 const path = require('path')
 const fs = require('fs')
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 
-// Resolve module path: works locally (src/) and on AWS (compiled .medusa/server/src/)
 const resolveModule = (name: string): string => {
   const compiled = path.join(process.cwd(), '.medusa', 'server', 'src', 'modules', name)
   const source   = path.join(process.cwd(), 'src', 'modules', name)
@@ -13,103 +11,51 @@ const resolveModule = (name: string): string => {
   return source
 }
 
-// Fetch clinic domains for CORS — safe if clinic table doesn't exist yet
-const getClinicDomains = async (): Promise<string[]> => {
-  if (!process.env.DATABASE_URL) return []
-  const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    connectionTimeoutMillis: 3000,
-  })
-  try {
-    const tableCheck = await pool.query(
-      `SELECT 1 FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_name = 'clinic'`
-    )
-    if (!tableCheck.rowCount) return []
-    const result = await pool.query(
-      `SELECT domains FROM clinic WHERE deleted_at IS NULL AND is_active = true`
-    )
-    return result.rows
-      .flatMap((r: any) => r.domains || [])
-      .filter(Boolean)
-      .map((d: string) => {
-        if (d.startsWith('http')) return d
-        if (d.includes('localhost') || d.includes('.local')) return `http://${d}`
-        return `https://${d}`
-      })
-  } catch (e: any) {
-    console.warn('[CORS] Could not fetch clinic domains from DB:', e.message)
-    return []
-  } finally {
-    await pool.end().catch(() => {})
-  }
-}
-
 const buildConfig = async () => {
-  const staticStoreCors = process.env.STORE_CORS || 'http://localhost:8000'
-  const staticAdminCors = process.env.ADMIN_CORS || 'http://localhost:9000'
-  const staticAuthCors  = process.env.AUTH_CORS  || 'http://localhost:9000'
-
-  const clinicDomains = await getClinicDomains()
-
-  const storeCors = [
-    ...staticStoreCors.split(','),
-    ...clinicDomains,
-  ].filter(Boolean).join(',')
+  // CORS is handled dynamically at request-time by src/api/middlewares.ts
+  // so new clinics work immediately without restart.
+  const storeCors = process.env.STORE_CORS || 'http://localhost:8000'
+  const adminCors = process.env.ADMIN_CORS || 'http://localhost:9000'
+  const authCors  = process.env.AUTH_CORS  || 'http://localhost:9000'
 
   return defineConfig({
-    admin: {
-      disable: false,
-    },
+    admin: { disable: false },
     projectConfig: {
       databaseUrl: process.env.DATABASE_URL,
       http: {
         storeCors,
-        adminCors: staticAdminCors,
-        authCors:  staticAuthCors,
+        adminCors,
+        authCors,
         jwtSecret:    process.env.JWT_SECRET    || 'supersecret',
         cookieSecret: process.env.COOKIE_SECRET || 'supersecret',
       }
     },
     modules: [
-      {
-        resolve: resolveModule('provider-integration'),
-      },
-      {
-        resolve: resolveModule('clinic-ops'),
-      },
-      {
-        resolve: resolveModule('clinic'),
-      },
+      { resolve: resolveModule('provider-integration') },
+      { resolve: resolveModule('clinic-ops') },
+      { resolve: resolveModule('clinic') },
       {
         resolve: '@medusajs/medusa/payment',
         options: {
-          providers: [
-            {
-              resolve: '@medusajs/medusa/payment-stripe',
-              id: 'stripe',
-              options: {
-                apiKey: process.env.STRIPE_API_KEY,
-                capture: true,
-              },
-            },
-          ],
+          providers: [{
+            resolve: '@medusajs/medusa/payment-stripe',
+            id: 'stripe',
+            options: { apiKey: process.env.STRIPE_API_KEY, capture: true },
+          }],
         },
       },
       {
         resolve: '@medusajs/medusa/notification',
         options: {
-          providers: [
-            {
-              resolve: resolveModule('resend'),
-              id: 'resend',
-              options: {
-                channels: ['email'],
-                api_key: process.env.RESEND_API_KEY,
-                from:    process.env.RESEND_FROM_EMAIL,
-              },
+          providers: [{
+            resolve: resolveModule('resend'),
+            id: 'resend',
+            options: {
+              channels: ['email'],
+              api_key: process.env.RESEND_API_KEY,
+              from:    process.env.RESEND_FROM_EMAIL,
             },
-          ],
+          }],
         },
       },
     ],
