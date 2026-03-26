@@ -6,7 +6,6 @@ import {
 } from "@medusajs/framework/http"
 import { maybeApplyLinkFilter } from "@medusajs/framework"
 
-// Export a no-op so clinic routes that import invalidateCorsCache don't break
 export function invalidateCorsCache() {}
 
 const BLOCK_FOR_RESTRICTED = [

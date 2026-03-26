@@ -5,21 +5,10 @@ const fs = require('fs')
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 
-// __dirname when compiled = <project>/.medusa/server/
-// __dirname when running ts-node/dev = <project>/
-// So the project root is always 2 levels up from __dirname if compiled,
-// or __dirname itself if running from source.
-// We detect which by checking if __dirname ends with .medusa/server.
-const isCompiled = __dirname.includes('.medusa') || __dirname.includes('medusa/server')
-const projectRoot = isCompiled
-  ? path.resolve(__dirname, '..', '..')   // .medusa/server -> project root
-  : __dirname                              // already at project root
-
-// Resolve a module: on AWS the compiled .medusa/server/src/modules/<name> is used.
-// Locally src/modules/<name> is used. Both are absolute paths — no cwd() dependency.
+// Resolve module path: works locally (src/) and on AWS (compiled .medusa/server/src/)
 const resolveModule = (name: string): string => {
-  const compiled = path.join(projectRoot, '.medusa', 'server', 'src', 'modules', name)
-  const source   = path.join(projectRoot, 'src', 'modules', name)
+  const compiled = path.join(process.cwd(), '.medusa', 'server', 'src', 'modules', name)
+  const source   = path.join(process.cwd(), 'src', 'modules', name)
   if (fs.existsSync(compiled)) return compiled
   return source
 }
@@ -36,10 +25,7 @@ const getClinicDomains = async (): Promise<string[]> => {
       `SELECT 1 FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name = 'clinic'`
     )
-    if (!tableCheck.rowCount) {
-      console.warn('[CORS] clinic table does not exist yet — skipping dynamic domains')
-      return []
-    }
+    if (!tableCheck.rowCount) return []
     const result = await pool.query(
       `SELECT domains FROM clinic WHERE deleted_at IS NULL AND is_active = true`
     )
