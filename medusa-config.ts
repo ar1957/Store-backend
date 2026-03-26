@@ -12,11 +12,9 @@ const resolveModule = (name: string): string => {
 }
 
 const buildConfig = async () => {
-  // CORS is handled dynamically at request-time by src/api/middlewares.ts
-  // so new clinics work immediately without restart.
-  const storeCors = (process.env.STORE_CORS || 'http://localhost:8000').split(',')
-  const adminCors = (process.env.ADMIN_CORS || 'http://localhost:9000').split(',')
-  const authCors  = (process.env.AUTH_CORS  || 'http://localhost:9000').split(',')
+  const storeCors = process.env.STORE_CORS || ''
+  const adminCors = process.env.ADMIN_CORS || ''
+  const authCors  = process.env.AUTH_CORS  || ''
 
   return defineConfig({
     admin: { disable: false },
@@ -26,11 +24,9 @@ const buildConfig = async () => {
         storeCors,
         adminCors,
         authCors,
-        jwtSecret:    process.env.JWT_SECRET    || 'supersecret',
-        cookieSecret: process.env.COOKIE_SECRET || 'supersecret',
-        // Essential for auth session persistence on HTTP Elastic Beanstalk links
-        authMethods: ["emailpass"],
-        cookieSecure: false, 
+        jwtSecret:      process.env.JWT_SECRET    || 'supersecret',
+        cookieSecret:   process.env.COOKIE_SECRET || 'supersecret',
+        cookieSecure:   false,
         cookieSameSite: "lax",
       }
     },
