@@ -5,22 +5,20 @@ phases:
     runtime-versions:
       nodejs: 20
     commands:
-      # Install all dependencies including devDependencies for the build
       - npm ci
 
   build:
     commands:
-      # Compile the TypeScript to JavaScript
       - npm run build
-      # Prune node_modules to only production dependencies to reduce zip size
       - npm prune --production
+      # Verify .ebextensions is present before packaging
+      - echo "=== Verifying .ebextensions ===" && ls -la .ebextensions/
 
 artifacts:
   files:
-    - ".medusa/**/*"     # Essential: Contains your compiled .js migrations
-    - "node_modules/**/*" # Essential: Production dependencies for the server
-    - "package.json"     # Essential: Identifies the project root
-    - "medusa-config.js" # Essential: The brain of your configuration
-    - ".ebextensions/**/*" # Essential: Contains your 01_setup.config
-    - "Procfile"          # Essential: Tells EB how to start the app
-  discard-paths: no      # Critical: Preserves the folder structure needed for migrations
+    - ".medusa/**/*"
+    - "node_modules/**/*"
+    - "package.json"
+    - ".ebextensions/**/*"
+    - "Procfile"
+  discard-paths: no
