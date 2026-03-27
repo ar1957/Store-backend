@@ -74,6 +74,19 @@ export class Migration20240101000008 extends Migration {
       ALTER TABLE "clinic_ui_config"
         ADD COLUMN IF NOT EXISTS "clinic_id" VARCHAR(255);
     `)
+
+    // ── product_treatment_map deleted_at column ──────────────────────────────
+    this.addSql(`
+      ALTER TABLE "product_treatment_map"
+        ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMPTZ;
+    `)
+
+    // ── order_workflow gfe_id unique constraint ───────────────────────────────
+    this.addSql(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "order_workflow_gfe_id_unique"
+      ON "order_workflow" ("gfe_id")
+      WHERE "gfe_id" IS NOT NULL;
+    `)
   }
 
   async down(): Promise<void> {
