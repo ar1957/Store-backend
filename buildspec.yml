@@ -19,7 +19,7 @@ artifacts:
     - ".medusa/**/*"
     - "node_modules/**/*"
     - "package.json"
-    - "medusa-config.js"
     - ".ebextensions/**/*"
     - "Procfile"
+    - "scripts/**/*"
   discard-paths: no
