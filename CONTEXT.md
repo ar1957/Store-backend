@@ -1,117 +1,152 @@
-# MHC Store — Session Context
+# MHC Store — Developer Handoff Context
+
+## Project Overview
+Multi-tenant Medusa v2 backend + Next.js 15 storefront. Each clinic/store is a tenant with its own domain, branding, Stripe keys, and GFE (telehealth) API credentials. The admin UI is a custom Medusa admin extension.
 
 ## Workspaces
-- Backend: `c:\MHCStore\my-medusa-store` (Medusa v2, Node)
-- Storefront: `c:\MHCStore\my-medusa-store-storefront` (Next.js 14, App Router)
-- Admin UI: served at `http://localhost:9000/app` (Medusa built-in admin)
-- Storefront runs at port 8000 (e.g. `http://spaderx.local:8000`)
+- `my-medusa-store` — Medusa v2 backend (port 9000)
+- `my-medusa-store-storefront` — Next.js 15 storefront (port 8000)
 
-## Multi-Tenant Architecture
-Each clinic is a "tenant" identified by domain (e.g. `spaderx.local:8000`).
-- Middleware (`src/middleware.ts`) reads the host, fetches `/store/clinics/tenant-config` with `cache: "no-store"`, sets `x-tenant-api-key` and `x-tenant-domain` cookies.
-- `src/lib/config.ts` reads the publishable API key from the `x-tenant-api-key` cookie (set by middleware) for server actions.
-- The "Initiating Medusa client with default headers" log always shows the env default key — this is the SDK constructor, NOT the actual request key. Ignore it.
-- Full server restart required when changing `middleware.ts` or `config.ts`.
+---
 
-## Key Backend Routes
-| Route | Purpose |
-|---|---|
-| `GET/POST /admin/clinics/:id/ui-config` | Admin saves/loads storefront UI config |
-| `GET /store/clinics/ui-config` | Storefront reads UI config by host header |
-| `GET /store/clinics/tenant-config` | Middleware reads publishable key + stripe key |
+## AWS Deployment
 
-## Database
-- PostgreSQL: `postgres://postgres:2190@localhost/medusa-my-medusa-store`
-- Custom table: `clinic_ui_config` — stores all storefront UI config as JSONB
-- Migrations in: `src/modules/provider-integration/migrations/`
-- Latest migration: `Migration20240101000006` — adds contact/social/bottom_links columns
-- To run migrations: `npx medusa db:migrate` (from `my-medusa-store/`)
-- If migration doesn't pick up new file, run ALTER TABLE directly via psql
+### Infrastructure
+- **Backend**: AWS Elastic Beanstalk (`medusa-backend-test.eba-t6prye2p.us-west-1.elasticbeanstalk.com`)
+- **Frontend**: Separate EB environment (deployed via CodePipeline)
+- **Database**: RDS PostgreSQL (`medusa-db-test.czojurt1hrt9.us-west-1.rds.amazonaws.com`)
+- **CI/CD**: AWS CodeBuild + CodePipeline
 
-### clinic_ui_config columns
+### How to Deploy Backend
+1. Push to `main` branch → CodePipeline triggers CodeBuild
+2. CodeBuild runs `buildspec.yml`: `npm ci` → `npm run build` → `npm prune --production`
+3. Artifact zipped and deployed to Elastic Beanstalk
+4. EB runs `.ebextensions/01_setup.config` which runs `db:migrate` then starts the app
+
+### Start Command (Critical)
+The Procfile must be:
 ```
-id, tenant_domain, clinic_id,
-nav_links (jsonb), footer_links (jsonb), bottom_links (jsonb),
-logo_url, get_started_url,
-contact_phone, contact_email, contact_address,
-social_links (jsonb), certification_image_url,
-created_at, updated_at
+web: cd .medusa/server && node /var/app/current/node_modules/@medusajs/cli/dist/index.js start
+```
+**Do NOT use `npx medusa start`** — it resolves to the wrong (v1) binary on AWS.
+
+### If the app crashes on AWS after an env var change
+EB rewrites the systemd service from the Procfile. If it reverts to `npx medusa start`, fix manually:
+```bash
+sudo sed -i 's|npx medusa start|node /var/app/current/node_modules/@medusajs/cli/dist/index.js start|g' /etc/systemd/system/web.service
+sudo systemctl daemon-reload && sudo systemctl restart web
 ```
 
-### NavLink JSON shape
-```json
-{ "label": "string", "url": "string", "open_new_tab": false, "children": [...NavLink] }
+### EB Environment Variables (Critical)
+Get the full DATABASE_URL via:
+```bash
+/opt/elasticbeanstalk/bin/get-config environment --key DATABASE_URL
 ```
-Children make dropdowns in nav and grouped columns in footer.
+The shell `$DATABASE_URL` only has the hostname — always use `get-config` in scripts.
 
-### SocialLink JSON shape
-```json
-{ "platform": "Facebook|Instagram|TikTok|...", "url": "string" }
+Key env vars:
+- `DATABASE_URL` — full postgres connection string with credentials
+- `ADMIN_CORS` — must be lowercase: `https://medusa-backend-test.eba-...`
+- `AUTH_CORS` — same as ADMIN_CORS + storefront domains
+- `STORE_CORS` — storefront domains only (clinic domains handled dynamically)
+- `JWT_SECRET`, `COOKIE_SECRET`, `STRIPE_API_KEY`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`
+
+### 401 After Login Fix
+The app runs on HTTPS on AWS. `medusa-config.ts` has `cookieSecure: false, cookieSameSite: "lax"` to prevent session cookie being dropped. If login succeeds (200) but `/admin/users/me` returns 401, check CORS values are lowercase and match the actual browser URL exactly.
+
+### Migrations
+Custom migrations are in `my-medusa-store/src/modules/provider-integration/migrations/` (Migration20240101000001 through Migration20240101000008). These were manually run on the AWS DB on 2026-03-26 and are recorded in `mikro_orm_migrations`. Future migrations will run automatically via `db:migrate` in the ebextension.
+
+To run migrations manually on AWS:
+```bash
+export DATABASE_URL=$(/opt/elasticbeanstalk/bin/get-config environment --key DATABASE_URL)
+cd /var/app/current/.medusa/server && node /var/app/current/node_modules/@medusajs/cli/dist/index.js db:migrate
 ```
 
-## Storefront Layout
-- `(main)` route group: `src/app/[countryCode]/(main)/layout.tsx` — has Nav + Footer
-- `(checkout)` route group: `src/app/[countryCode]/(checkout)/layout.tsx` — also has Nav + Footer (added in earlier session)
-- Both layouts call `fetchUiConfig(host)` with `cache: "no-store"` and pass all props to Footer
+---
 
-## Nav Component
-- `src/modules/layout/templates/nav/index.tsx` — server component, imports `NavDropdown`
-- `src/modules/layout/templates/nav/nav-dropdown.tsx` — `"use client"`, handles hover dropdowns for items with `children`
-- Items without children render as plain links; items with children get a chevron + dropdown on hover/mouseenter
+## Architecture
 
-## Footer Component
-- `src/modules/layout/templates/footer/index.tsx` — async server component
-- Left column: logo → social icons (filled dark circles) → phone → email → address → certification badge
-- Middle/right: dynamic link groups (children = separate column with header), flat links = "Links" column, plus Medusa categories/collections
-- Bottom bar: copyright left, `bottom_links` center, MedusaCTA right
-- Text colors: `text-gray-700` for contact info, `text-gray-600` for links, `text-gray-800` for headers — NOT pale `text-ui-fg-subtle`
+### Multi-Tenancy
+- Each clinic has a record in the `clinic` table with `domains[]`, `publishable_api_key`, `stripe_publishable_key`, etc.
+- The storefront middleware (`src/middleware.ts`) calls `/store/clinics/tenant-config` on every request to get the tenant's API key and inject it as a cookie
+- CORS for clinic domains is handled dynamically by `src/api/middlewares.ts` — reads from DB with 60s cache, no restart needed when adding a new clinic
 
-## Admin UI Config Tab (provider-settings)
-File: `src/admin/routes/provider-settings/page.tsx`
+### Key Custom Tables
+- `clinic` — tenant config (domains, API keys, branding)
+- `clinic_staff` — staff members per clinic with roles
+- `order_workflow` — tracks GFE/telehealth order lifecycle
+- `order_comment` — comments on orders
+- `product_treatment_map` — maps Medusa products to GFE treatments
+- `clinic_ui_config` — nav/footer links, logo, contact info per clinic
 
-Sections in the Storefront UI tab:
-1. Logo URL + Get Started URL
-2. Contact Info (phone, email, multi-line address)
-3. Social Media Links (platform dropdown + URL, add/remove rows)
-4. Certification/Badge Image (URL + live preview)
-5. Navigation Links (parent + child links, `+ Child` button per row)
-6. Footer Links (same parent/child structure)
-7. Bottom Bar Links (flat list for bottom strip)
+### Roles
+- `super_admin` — sees everything
+- `clinic_admin` — sees clinic-orders, products, clinic operations
+- `pharmacist` / `medical_director` — sees clinic-orders only
 
-## Cart / Checkout Flow
-- `src/lib/data/cart.ts` — all cart server actions (`addToCart`, `deleteLineItem`, etc.)
-- `src/lib/data/cookies.ts` — `getCacheTag` falls back to base tag name (not empty string) so `revalidateTag` always fires
-- Cart page: `src/app/[countryCode]/(main)/cart/page.tsx` — has `export const dynamic = "force-dynamic"`
-- Delete button: `src/modules/common/components/delete-button/index.tsx` — uses `.finally(() => setIsDeleting(false))` + `router.refresh()`
-- Do NOT add `router.refresh()` in `product-actions` — caused regressions previously
+### Email
+Uses Resend. Template `"order.confirmation"`, `"order.status_update"`, `"order.shipped"`, `"order.md_denied"`, `"order.refund_issued"` are all in `src/modules/resend/service.ts`.
 
-## Product Eligibility + Add to Cart
-File: `src/modules/products/components/product-actions/index.tsx`
+---
 
-Flow:
-1. On mount, checks if product requires eligibility via `/store/eligibility/check`
-2. If yes and not yet screened → shows `EligibilityModal`
-3. After modal approval → `handleEligibilityApproved`: adds to cart, saves metadata to `/store/carts/eligibility-metadata`, caches in `sessionStorage`, navigates to cart
-4. If already screened (`alreadyScreened = true`) → calls `handleAddToCart` directly (skips metadata save — already saved first time)
-5. `handleAddToCart` wraps in `try/finally` so spinner always clears, then navigates to `/${countryCode}/cart`
+## Pending / Known Issues
 
-Key fix: second-item spinning was caused by `handleButtonClick` calling `handleEligibilityApproved` for already-screened users, which ran a retry loop + backend fetch that could hang.
+### 1. test-connection route missing on AWS (deploy pending)
+`POST /admin/clinics/:id/test-connection` returns 404 on AWS because the route was created after the last build. It exists in source at `src/api/admin/clinics/[id]/test-connection/route.ts`. **Next deploy will fix this.**
 
-## Checkout (Single Page)
-File: `src/modules/checkout/components/single-page-checkout/index.tsx`
+### 2. Zero-downtime clinic CORS
+Dynamic CORS middleware is in `src/api/middlewares.ts`. New clinic domains are picked up within 60 seconds from DB. `STORE_CORS` env var only needs `http://localhost:8000` — clinic domains are DB-driven.
 
-- `liveCart` state updated after `initiatePaymentSession` → `retrieveCart()` with payment_collection fields
-- `PaymentWrapper` lives inside `SinglePageCheckout`, receives `liveCart`
-- `canPlaceOrder` checks `liveCart.shipping_methods` (not stale server prop)
-- `handleSetShipping` fetches fresh cart after setting shipping, updates `liveCart`
-- `PaymentButton` has `onBeforeSubmit` prop that runs `saveShippingAddress` sequentially before Stripe confirms
+### 3. Storefront eligibility check performance
+`/api/eligibility-check` in the storefront now queries Postgres directly (bypassing the Medusa backend hop) with a 60s in-process cache. `DATABASE_URL` must be set in `my-medusa-store-storefront/.env.local`.
 
-## Stripe / Payment
-- Per-clinic Stripe keys stored in `clinic` table (`stripe_publishable_key`, `stripe_secret_key`)
-- Storefront fetches publishable key via `/api/tenant-stripe-key` Next.js API route (server-side proxy, avoids browser blocking `host` header)
-- `payment-wrapper` reads key from `data.tenant.stripe_publishable_key` (not `data.tenant.ui_config.stripe_publishable_key`)
+---
 
-## Known Constraints
-- Only one git commit exists (initial) — no prior history to revert to
-- Storefront hot-reloads code changes; `middleware.ts` and `config.ts` require full server restart
-- `router.refresh()` in product-actions causes regressions — do not add it back
+## Local Development
+
+### Backend
+```bash
+cd my-medusa-store
+npx medusa develop
+```
+Runs on port 9000. Hot-reloads on file changes.
+
+### Storefront
+```bash
+cd my-medusa-store-storefront
+npm run dev
+```
+Runs on port 8000.
+
+### Local hosts file (for multi-tenant testing)
+Add to `C:\Windows\System32\drivers\etc\hosts`:
+```
+127.0.0.1 myclassywellness.local
+127.0.0.1 spaderx.local
+127.0.0.1 contour-wellness.local
+```
+
+---
+
+## Important Code Patterns
+
+### Always use x-forwarded-host not host
+Node.js `fetch` silently drops the `host` header. Always use `x-forwarded-host` when passing tenant domain to backend.
+
+### Next.js 15 params must be awaited
+```ts
+const { id } = await params  // NOT: const { id } = params
+```
+
+### tenant_domain vs clinic domains
+`order_workflow.tenant_domain` is stored WITHOUT port (e.g. `myclassywellness.local`). Clinic `domains[]` array has WITH port (e.g. `myclassywellness.local:8000`). Always strip port when comparing.
+
+### CSS variable for brand color
+`--color-primary` (NOT `--brand-primary`)
+
+### Button styles
+`border-radius: 16px`, `font-size: 14px`
+
+### export const dynamic = "force-dynamic"
+Required on all Next.js layouts that read tenant headers from the request.
