@@ -33,6 +33,23 @@ const buildConfig = async () => {
       { resolve: resolveModule('clinic-ops') },
       { resolve: resolveModule('clinic') },
       {
+        resolve: "@medusajs/medusa/file",
+        options: {
+          providers: [
+            {
+              resolve: "@medusajs/file-local",
+              id: "local",
+              options: {
+                // Use MEDUSA_BACKEND_URL so uploaded file URLs point to the correct server
+                backend_url: process.env.MEDUSA_BACKEND_URL
+                  ? `${process.env.MEDUSA_BACKEND_URL}/static`
+                  : "http://localhost:9000/static",
+              },
+            },
+          ],
+        },
+      },
+      {
         resolve: '@medusajs/medusa/payment',
         options: {
           providers: [{
