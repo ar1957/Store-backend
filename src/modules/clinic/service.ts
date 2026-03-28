@@ -32,7 +32,7 @@ interface LocationCache { locations: any[]; fetchedAt: number }
 interface TreatmentCache { treatments: any[]; fetchedAt: number }
 
 const TOKEN_TTL   = 50 * 60 * 1000
-const LOC_TTL     = 24 * 60 * 60 * 1000
+const LOC_TTL     = 5 * 60 * 1000  // 5 minutes — refresh often to pick up new locations
 const TREAT_TTL   = 24 * 60 * 60 * 1000
 
 const tokenCache:     Record<string, TokenCache>     = {}
