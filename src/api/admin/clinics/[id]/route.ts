@@ -74,6 +74,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       const result = await pg.raw(sql, values)
       updatedClinic = result.rows[0]
       invalidateCorsCache() // domains may have changed
+      // Clear in-memory token/location/treatment caches so new API keys take effect immediately
+      const svc = req.scope.resolve(CLINIC_MODULE) as any
+      svc.clearCaches(clinicId)
     } else {
       const current = await pg.raw(`SELECT * FROM clinic WHERE id = ? LIMIT 1`, [clinicId])
       updatedClinic = current.rows[0]
