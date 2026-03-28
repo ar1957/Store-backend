@@ -36,11 +36,21 @@ const buildConfig = async () => {
         resolve: "@medusajs/medusa/file",
         options: {
           providers: [
-            {
+            process.env.S3_BUCKET ? {
+              resolve: "@medusajs/file-s3",
+              id: "s3",
+              options: {
+                file_url: `https://${process.env.S3_BUCKET}.s3.${process.env.S3_REGION}.amazonaws.com`,
+                access_key_id: process.env.S3_ACCESS_KEY_ID,
+                secret_access_key: process.env.S3_SECRET_ACCESS_KEY,
+                region: process.env.S3_REGION,
+                bucket: process.env.S3_BUCKET,
+                prefix: "medusa",
+              },
+            } : {
               resolve: "@medusajs/file-local",
               id: "local",
               options: {
-                // Use MEDUSA_BACKEND_URL so uploaded file URLs point to the correct server
                 backend_url: process.env.MEDUSA_BACKEND_URL
                   ? `${process.env.MEDUSA_BACKEND_URL}/static`
                   : "http://localhost:9000/static",
