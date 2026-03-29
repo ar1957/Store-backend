@@ -1659,7 +1659,7 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
             onChange={e => setConfig(p => ({ ...p, certification_image_url: e.target.value }))} />
         </Field>
         {config.certification_image_url && (
-          <img src={config.certification_image_url} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
+          <img src={config.certification_image_url} alt="Certification badge preview" referrerPolicy="no-referrer" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
         )}
       </div>
 
