@@ -55,6 +55,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           ow.tracking_number,
           ow.carrier,
           ow.shipped_at,
+          ow.pharmacy_queue_id,
+          ow.pharmacy_status,
           ow.created_at
         FROM "order" o
         LEFT JOIN order_workflow ow ON ow.order_id = o.id
@@ -81,6 +83,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           ow.tracking_number,
           ow.carrier,
           ow.shipped_at,
+          ow.pharmacy_queue_id,
+          ow.pharmacy_status,
           ow.created_at
         FROM "order" o
         LEFT JOIN order_workflow ow ON ow.order_id = o.id
@@ -110,20 +114,31 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       refunded:            "Refund Issued",
     }
 
-    const orders = orderRows.map(row => ({
-      orderId: row.order_id,
-      gfeId: row.gfe_id,
-      status: row.status || "pending_provider",
-      statusLabel: statusLabels[row.status] || row.status || "Pending",
-      providerName: row.provider_name,
-      virtualRoomUrl: row.virtual_room_url || null,
-      tracking: row.tracking_number ? {
-        trackingNumber: row.tracking_number,
-        carrier: row.carrier,
-        shippedAt: row.shipped_at,
-      } : null,
-      createdAt: row.created_at,
-    }))
+    const orders = orderRows.map(row => {
+      // Pharmacy-aware status label
+      let statusLabel = statusLabels[row.status] || row.status || "Pending"
+      if (row.status === "processing_pharmacy" && row.pharmacy_queue_id) {
+        statusLabel = row.pharmacy_status
+          ? `Order Received by Pharmacy (${row.pharmacy_status})`
+          : "Order Received by Pharmacy"
+      }
+      return {
+        orderId: row.order_id,
+        gfeId: row.gfe_id,
+        status: row.status || "pending_provider",
+        statusLabel,
+        providerName: row.provider_name,
+        virtualRoomUrl: row.virtual_room_url || null,
+        pharmacyQueueId: row.pharmacy_queue_id || null,
+        pharmacyStatus: row.pharmacy_status || null,
+        tracking: row.tracking_number ? {
+          trackingNumber: row.tracking_number,
+          carrier: row.carrier,
+          shippedAt: row.shipped_at,
+        } : null,
+        createdAt: row.created_at,
+      }
+    })
 
     return res.json({ orders })
   } catch (err: unknown) {

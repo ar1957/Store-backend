@@ -6,9 +6,9 @@ const CLINIC_MODULE = "clinic"
 // GET /admin/clinics — list all clinics
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
-    const svc = req.scope.resolve(CLINIC_MODULE) as any
-    const clinics = await svc.getAllClinics()
-    const masked = clinics.map((c: any) => ({
+    const pg = req.scope.resolve("__pg_connection__") as any
+    const result = await pg.raw(`SELECT * FROM clinic WHERE deleted_at IS NULL ORDER BY name`)
+    const masked = result.rows.map((c: any) => ({
       ...c,
       api_client_secret: c.api_client_secret
         ? "••••••••" + c.api_client_secret.slice(-4)

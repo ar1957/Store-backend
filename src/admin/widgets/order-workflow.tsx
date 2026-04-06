@@ -22,6 +22,8 @@ interface WorkflowData {
   tracking_number: string
   carrier: string
   treatment_dosages: { treatmentId: number; treatmentName: string; dosage: string | null }[]
+  pharmacy_queue_id?: string | null
+  pharmacy_status?: string | null
 }
 
 interface Comment {
@@ -79,6 +81,9 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [tracking, setTracking] = useState({ number: "", carrier: "UPS" })
   const [processing, setProcessing] = useState(false)
   const [showActions, setShowActions] = useState(false)
+  const [submittingPharmacy, setSubmittingPharmacy] = useState(false)
+  const [pharmacyResult, setPharmacyResult] = useState<string | null>(null)
+  const [pharmacyConfigured, setPharmacyConfigured] = useState(false)
 
   const role = myStaff?.role || "super_admin"
 
@@ -136,6 +141,18 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
 
       if (!targetClinicId) targetClinicId = allClinics[0]?.id
       setClinicId(targetClinicId)
+
+      // Check if this clinic has pharmacy configured
+      if (targetClinicId) {
+        try {
+          const clinicRes = await fetch(`/admin/clinics/${targetClinicId}`, { credentials: "include" })
+          const clinicData = await clinicRes.json()
+          const c = clinicData.clinic || {}
+          const hasPharmacy = c.pharmacy_enabled === true &&
+            !!(c.pharmacy_api_key || c.pharmacy_username)
+          setPharmacyConfigured(hasPharmacy)
+        } catch {}
+      }
 
       if (targetClinicId) {
         await loadWorkflow(targetClinicId, order.id)
@@ -251,6 +268,29 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
     finally { setProcessing(false) }
   }
 
+  const submitToPharmacy = async () => {
+    if (!clinicId) return
+    setSubmittingPharmacy(true)
+    setPharmacyResult(null)
+    try {
+      const res = await fetch(`/admin/clinics/${clinicId}/orders/${order.id}/pharmacy-submit`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setPharmacyResult(`✓ Submitted. Queue ID: ${data.queueId}`)
+        await loadWorkflow(clinicId, order.id)
+      } else {
+        setPharmacyResult(`✗ Error: ${data.message}`)
+      }
+    } catch (e: any) {
+      setPharmacyResult(`✗ Error: ${e.message}`)
+    }
+    finally { setSubmittingPharmacy(false) }
+  }
+
   if (loading) {
     return (
       <div style={ws.container}>
@@ -325,6 +365,31 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
               <span style={{ fontSize: 13, fontWeight: 700, color: "#166534" }}>{td.dosage || "—"}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Pharmacy submit button — shown when processing_pharmacy but not yet submitted, and pharmacy is configured */}
+      {workflow.status === "processing_pharmacy" && !workflow.pharmacy_queue_id && pharmacyConfigured && (role === "super_admin" || role === "clinic_admin" || role === "pharmacist") && (
+        <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#1e40af", marginBottom: 6 }}>💊 Pharmacy API Available</div>
+          <div style={{ fontSize: 12, color: "#3b82f6", marginBottom: 10 }}>This order has not been submitted to the pharmacy API yet.</div>
+          {pharmacyResult && (
+            <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8, background: pharmacyResult.startsWith("✓") ? "#f0fdf4" : "#fef2f2", color: pharmacyResult.startsWith("✓") ? "#166534" : "#dc2626" }}>
+              {pharmacyResult}
+            </div>
+          )}
+          <button onClick={submitToPharmacy} disabled={submittingPharmacy}
+            style={{ padding: "8px 16px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            {submittingPharmacy ? "Submitting…" : "Submit to Pharmacy API"}
+          </button>
+        </div>
+      )}
+
+      {/* Pharmacy queue info — shown when already submitted */}
+      {workflow.pharmacy_queue_id && (
+        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: 10, marginBottom: 16, fontSize: 13 }}>
+          💊 Pharmacy Queue ID: <strong>{workflow.pharmacy_queue_id}</strong>
+          {workflow.pharmacy_status && <span style={{ marginLeft: 8, color: "#6b7280" }}>({workflow.pharmacy_status})</span>}
         </div>
       )}
 
