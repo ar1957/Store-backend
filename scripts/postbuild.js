@@ -27,6 +27,51 @@ async function POST(req, res) {
 }
 `,
   },
+  {
+    src: "src/api/admin/clinics/[id]/test-pharmacy/route.ts",
+    dst: ".medusa/server/src/api/admin/clinics/[id]/test-pharmacy/route.js",
+    content: `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.POST = POST;
+async function safeJson(res) {
+  const raw = await res.text();
+  try { return { ok: true, data: JSON.parse(raw), raw }; } catch {}
+  return { ok: false, data: null, raw: raw.slice(0, 200) };
+}
+async function POST(req, res) {
+  try {
+    const { pharmacy_type, pharmacy_api_url, pharmacy_api_key,
+            pharmacy_store_id, pharmacy_username, pharmacy_password } = req.body || {};
+    const baseUrl = (pharmacy_api_url || "").replace(/\\/$/, "");
+    if (!baseUrl) return res.status(400).json({ success: false, message: "No pharmacy API URL configured" });
+    if (pharmacy_type === "rmm") {
+      const authUrl = baseUrl + "/getJWTkey";
+      console.log("[TestPharmacy] RMM auth URL: " + authUrl);
+      const authRes = await fetch(authUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: pharmacy_username, password: pharmacy_password }),
+      });
+      const { ok: isJson, data, raw } = await safeJson(authRes);
+      console.log("[TestPharmacy] status=" + authRes.status + " isJson=" + isJson + " body=" + raw);
+      if (!isJson) return res.status(400).json({ success: false, message: "RMM API returned non-JSON (HTTP " + authRes.status + "). Response: " + raw });
+      if (authRes.ok && data && data.token) return res.json({ success: true, message: "Authentication successful" });
+      return res.status(400).json({ success: false, message: (data && (data.error || data.message)) || ("Auth failed (HTTP " + authRes.status + ")") });
+    } else {
+      const testRes = await fetch(baseUrl + "/RxRequestStatus", {
+        method: "POST",
+        headers: { "Authorization": pharmacy_api_key, "Content-Type": "application/json" },
+        body: JSON.stringify({ StoreID: pharmacy_store_id, QueueID: "test" }),
+      });
+      return res.json({ success: testRes.status < 500, message: "Connection status: " + testRes.status });
+    }
+  } catch (err) {
+    console.error("[TestPharmacy] Error:", err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+`,
+  },
 ]
 
 for (const route of routes) {
