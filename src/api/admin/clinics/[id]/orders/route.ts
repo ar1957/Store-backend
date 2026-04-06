@@ -45,6 +45,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         ow.tracking_number, ow.carrier, ow.shipped_at,
         ow.treatment_dosages,
         ow.refund_reason, ow.refunded_at,
+        ow.pharmacy_queue_id, ow.pharmacy_status, ow.pharmacy_submitted_at,
         ow.created_at, ow.updated_at,
         o.display_id,
         COALESCE(oa.first_name, c.first_name, '') || ' ' || COALESCE(oa.last_name, c.last_name, '') AS patient_name,

@@ -82,6 +82,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         md_decision, md_notes, md_reviewed_at,
         tracking_number, carrier, shipped_at,
         treatment_dosages,
+        pharmacy_queue_id, pharmacy_status,
         refund_issued_at, refunded_at,
         created_at, updated_at
       FROM order_workflow
@@ -99,14 +100,26 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const order = result.rows[0]
 
+    // Compute pharmacy-aware status label
+    let statusLabel = statusLabels[order.status] || order.status
+    let statusDescription = statusDescriptions[order.status] || ""
+    if (order.status === "processing_pharmacy" && order.pharmacy_queue_id) {
+      statusLabel = "Order Received by Pharmacy"
+      statusDescription = order.pharmacy_status
+        ? `Pharmacy status: ${order.pharmacy_status}. Reference: #${order.pharmacy_queue_id}`
+        : `Your prescription has been submitted to the pharmacy. Reference: #${order.pharmacy_queue_id}`
+    }
+
     return res.json({
       gfeId: order.gfe_id,
       status: order.status,
-      statusLabel: statusLabels[order.status] || order.status,
-      statusDescription: statusDescriptions[order.status] || "",
+      statusLabel,
+      statusDescription,
       virtualRoomUrl: order.virtual_room_url,
       providerName: order.provider_name,
       treatmentDosages: order.treatment_dosages || [],
+      pharmacyQueueId: order.pharmacy_queue_id || null,
+      pharmacyStatus: order.pharmacy_status || null,
       tracking: order.tracking_number ? {
         trackingNumber: order.tracking_number,
         carrier: order.carrier,

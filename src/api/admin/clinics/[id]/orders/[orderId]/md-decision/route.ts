@@ -5,6 +5,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules } from "@medusajs/framework/utils"
 import { INotificationModuleService } from "@medusajs/framework/types"
+import { submitToPharmacyIfEnabled } from "../../../../../utils/pharmacy-submit"
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
@@ -36,6 +37,14 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
        WHERE id = ?`,
       [newStatus, decision, notes || null, md_user_id || null, workflow.id]
     )
+
+    // Auto-submit to pharmacy if approved and clinic has pharmacy API enabled
+    if (decision === "approved") {
+      const wfDosages = await pg.raw(`SELECT treatment_dosages FROM order_workflow WHERE id = ? LIMIT 1`, [workflow.id])
+      const dosages = wfDosages.rows[0]?.treatment_dosages || []
+      submitToPharmacyIfEnabled(pg, clinicId, orderId, workflow.id, dosages)
+        .catch(e => console.error("[MD Decision] Pharmacy submit error:", e.message))
+    }
 
     // Save notes as a comment if provided
     if (notes?.trim()) {

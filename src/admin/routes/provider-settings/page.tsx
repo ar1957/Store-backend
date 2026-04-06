@@ -40,6 +40,15 @@ interface Clinic {
   from_email: string
   from_name: string
   reply_to: string
+  pharmacy_type: string
+  pharmacy_api_url: string
+  pharmacy_api_key: string
+  pharmacy_store_id: string
+  pharmacy_vendor_name: string
+  pharmacy_doctor_first_name: string
+  pharmacy_doctor_last_name: string
+  pharmacy_doctor_npi: string
+  pharmacy_enabled: boolean
 }
 
 interface Staff { id: string; email: string; full_name: string; role: string }
@@ -385,13 +394,13 @@ function ClinicDetail({
 }) {
   // MD and Pharmacist go straight to orders tab
   const defaultTab = (role === "medical_director" || role === "pharmacist") ? "orders" : "details"
-  const [activeTab, setActiveTab] = useState<"details" | "api" | "staff" | "mappings" | "orders" | "uiconfig">(defaultTab as any)
+  const [activeTab, setActiveTab] = useState<"details" | "api" | "staff" | "mappings" | "orders" | "uiconfig" | "pharmacy">(defaultTab as any)
 
   // Tabs visible per role
   const visibleTabs = (() => {
     if (role === "medical_director" || role === "pharmacist") return ["orders"]
-    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig"]
-    return ["details", "api", "staff", "mappings", "orders", "uiconfig"] // super_admin
+    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy"]
+    return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy"] // super_admin
   })()
 
   const TAB_LABELS: Record<string, string> = {
@@ -401,6 +410,7 @@ function ClinicDetail({
     mappings: "💊 Product Mapping",
     orders: "📋 Orders",
     uiconfig: "🎨 Storefront UI",
+    pharmacy: "💊 Pharmacy",
   }
 
   // Default filter per role
@@ -461,6 +471,7 @@ function ClinicDetail({
           />
         )}
         {activeTab === "uiconfig" && <UiConfigTab clinic={clinic} />}
+        {activeTab === "pharmacy" && <PharmacyTab clinic={clinic} onUpdated={onUpdated} />}
       </div>
     </div>
   )
@@ -1659,7 +1670,7 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
             onChange={e => setConfig(p => ({ ...p, certification_image_url: e.target.value }))} />
         </Field>
         {config.certification_image_url && (
-          <img src={config.certification_image_url} alt="Certification badge preview" referrerPolicy="no-referrer" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
+          <img src={config.certification_image_url} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
         )}
       </div>
 
@@ -1698,6 +1709,283 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
       </div>
 
       <SaveBar saving={saving} status={status} onSave={save} />
+    </div>
+  )
+}
+
+// ── Pharmacy Tab ──────────────────────────────────────────────────────────
+function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+  const ca = clinic as any
+  const [form, setForm] = useState({
+    pharmacy_type: ca.pharmacy_type || "digitalrx",
+    pharmacy_api_url: ca.pharmacy_api_url || "",
+    pharmacy_api_key: ca.pharmacy_api_key || "",
+    pharmacy_store_id: ca.pharmacy_store_id || "",
+    pharmacy_vendor_name: ca.pharmacy_vendor_name || "",
+    pharmacy_doctor_first_name: ca.pharmacy_doctor_first_name || "",
+    pharmacy_doctor_last_name: ca.pharmacy_doctor_last_name || "",
+    pharmacy_doctor_npi: ca.pharmacy_doctor_npi || "",
+    pharmacy_enabled: ca.pharmacy_enabled === true,
+    // RMM fields
+    pharmacy_username: ca.pharmacy_username || "",
+    pharmacy_password: ca.pharmacy_password || "",
+    pharmacy_prescriber_id: ca.pharmacy_prescriber_id || "",
+    pharmacy_prescriber_address: ca.pharmacy_prescriber_address || "",
+    pharmacy_prescriber_city: ca.pharmacy_prescriber_city || "",
+    pharmacy_prescriber_state: ca.pharmacy_prescriber_state || "",
+    pharmacy_prescriber_zip: ca.pharmacy_prescriber_zip || "",
+    pharmacy_prescriber_phone: ca.pharmacy_prescriber_phone || "",
+    pharmacy_prescriber_dea: ca.pharmacy_prescriber_dea || "",
+    pharmacy_ship_type: ca.pharmacy_ship_type || "ship_to_patient",
+    pharmacy_ship_rate: ca.pharmacy_ship_rate || "2_day",
+    pharmacy_pay_type: ca.pharmacy_pay_type || "patient_pay",
+  })
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState("")
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<string | null>(null)
+
+  // Sync form when clinic data changes (e.g. after save + reload)
+  useEffect(() => {
+    const c = clinic as any
+    setForm({
+      pharmacy_type: c.pharmacy_type || "digitalrx",
+      pharmacy_api_url: c.pharmacy_api_url || "",
+      pharmacy_api_key: c.pharmacy_api_key || "",
+      pharmacy_store_id: c.pharmacy_store_id || "",
+      pharmacy_vendor_name: c.pharmacy_vendor_name || "",
+      pharmacy_doctor_first_name: c.pharmacy_doctor_first_name || "",
+      pharmacy_doctor_last_name: c.pharmacy_doctor_last_name || "",
+      pharmacy_doctor_npi: c.pharmacy_doctor_npi || "",
+      pharmacy_enabled: c.pharmacy_enabled === true,
+      pharmacy_username: c.pharmacy_username || "",
+      pharmacy_password: c.pharmacy_password || "",
+      pharmacy_prescriber_id: c.pharmacy_prescriber_id || "",
+      pharmacy_prescriber_address: c.pharmacy_prescriber_address || "",
+      pharmacy_prescriber_city: c.pharmacy_prescriber_city || "",
+      pharmacy_prescriber_state: c.pharmacy_prescriber_state || "",
+      pharmacy_prescriber_zip: c.pharmacy_prescriber_zip || "",
+      pharmacy_prescriber_phone: c.pharmacy_prescriber_phone || "",
+      pharmacy_prescriber_dea: c.pharmacy_prescriber_dea || "",
+      pharmacy_ship_type: c.pharmacy_ship_type || "ship_to_patient",
+      pharmacy_ship_rate: c.pharmacy_ship_rate || "2_day",
+      pharmacy_pay_type: c.pharmacy_pay_type || "patient_pay",
+    })
+  }, [clinic.id])
+
+  const isRmm = form.pharmacy_type === "rmm"
+  const isDigitalRx = form.pharmacy_type === "digitalrx" || form.pharmacy_type === "custom"
+
+  const RMM_URLS = {
+    sandbox: "https://requestmymeds.net/api/v2/sandbox",
+    production: "https://requestmymeds.net/api/v2",
+  }
+  const DIGITALRX_URL = "https://www.dbswebserver.com/DBSRestApi/API"
+
+  const handleTypeChange = (newType: string) => {
+    setForm(p => ({
+      ...p,
+      pharmacy_type: newType,
+      // Auto-set URL when switching types
+      pharmacy_api_url: newType === "rmm" ? RMM_URLS.sandbox : newType === "digitalrx" ? DIGITALRX_URL : p.pharmacy_api_url,
+    }))
+  }
+
+  const rmmEnv = form.pharmacy_api_url?.includes("sandbox") ? "sandbox" : "production"
+
+  const save = async () => {
+    setSaving(true); setStatus("")
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      })
+      if (res.ok) { setStatus("saved"); onUpdated() } else { setStatus("error") }
+    } catch { setStatus("error") }
+    finally { setSaving(false) }
+  }
+
+  const testConnection = async () => {
+    setTesting(true); setTestResult(null)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/test-pharmacy`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pharmacy_type: form.pharmacy_type,
+          pharmacy_api_url: form.pharmacy_api_url,
+          pharmacy_api_key: form.pharmacy_api_key,
+          pharmacy_store_id: form.pharmacy_store_id,
+          pharmacy_username: form.pharmacy_username,
+          pharmacy_password: form.pharmacy_password,
+        }),
+      })
+      const data = await res.json()
+      setTestResult(data.success ? "✓ " + data.message : "✗ " + data.message)
+    } catch (e: any) {
+      setTestResult("✗ Connection failed: " + e.message)
+    }
+    finally { setTesting(false) }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#6b7280", letterSpacing: "0.05em" }}>
+        Pharmacy API Integration
+      </div>
+
+      {/* Enable toggle */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: form.pharmacy_enabled ? "#f0fdf4" : "#f9fafb", borderRadius: 8, border: `1px solid ${form.pharmacy_enabled ? "#bbf7d0" : "#e5e7eb"}` }}>
+        <div onClick={() => setForm(p => ({ ...p, pharmacy_enabled: !p.pharmacy_enabled }))} style={{
+          width: 40, height: 22, borderRadius: 11, background: form.pharmacy_enabled ? "#10b981" : "#d1d5db",
+          position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0,
+        }}>
+          <div style={{
+            position: "absolute", top: 3, left: form.pharmacy_enabled ? 21 : 3,
+            width: 16, height: 16, borderRadius: "50%", background: "#fff",
+            transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+          }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>
+            {form.pharmacy_enabled ? "Pharmacy API Enabled" : "Pharmacy API Disabled"}
+          </div>
+          <div style={{ fontSize: 12, color: "#6b7280" }}>
+            {form.pharmacy_enabled
+              ? "Orders will be automatically submitted to the pharmacy API when approved."
+              : "Orders will require manual pharmacy processing. Credentials are saved but not used."}
+          </div>
+        </div>
+      </div>
+
+      <Field label="Pharmacy Type">
+        <select style={s.input} value={form.pharmacy_type} onChange={e => handleTypeChange(e.target.value)}>
+          <option value="digitalrx">DigitalRX (SmartConnect)</option>
+          <option value="rmm">Partell Pharmacy (RequestMyMeds)</option>
+          <option value="custom">Custom</option>
+        </select>
+      </Field>
+
+      {/* RMM environment selector */}
+      {isRmm && (
+        <Field label="Environment">
+          <select style={s.input} value={rmmEnv} onChange={e => setForm(p => ({ ...p, pharmacy_api_url: RMM_URLS[e.target.value as "sandbox" | "production"] }))}>
+            <option value="sandbox">Sandbox (Testing)</option>
+            <option value="production">Production</option>
+          </select>
+        </Field>
+      )}
+
+      <Field label="API Base URL">
+        <input style={s.input} value={form.pharmacy_api_url}
+          onChange={e => setForm(p => ({ ...p, pharmacy_api_url: e.target.value }))}
+          placeholder={isRmm ? "https://requestmymeds.net/api/v2/sandbox" : "https://www.dbswebserver.com/DBSRestApi/API"} />
+        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Base URL without trailing slash</div>
+      </Field>
+
+      {/* DigitalRX fields */}
+      {isDigitalRx && (<>
+        <Field label="API Key (Authorization Header)">
+          <input style={s.input} value={form.pharmacy_api_key} onChange={e => setForm(p => ({ ...p, pharmacy_api_key: e.target.value }))} placeholder="Your pharmacy API key" />
+        </Field>
+        <Field label="Store ID">
+          <input style={s.input} value={form.pharmacy_store_id} onChange={e => setForm(p => ({ ...p, pharmacy_store_id: e.target.value }))} placeholder="e.g. 190190" />
+        </Field>
+        <Field label="Vendor Name">
+          <input style={s.input} value={form.pharmacy_vendor_name} onChange={e => setForm(p => ({ ...p, pharmacy_vendor_name: e.target.value }))} placeholder="Your company name" />
+        </Field>
+      </>)}
+
+      {/* RMM fields */}
+      {isRmm && (<>
+        <div style={s.grid2}>
+          <Field label="Username">
+            <input style={s.input} value={form.pharmacy_username} onChange={e => setForm(p => ({ ...p, pharmacy_username: e.target.value }))} placeholder="RMM username" />
+          </Field>
+          <Field label="Password">
+            <input style={s.input} type="password" value={form.pharmacy_password} onChange={e => setForm(p => ({ ...p, pharmacy_password: e.target.value }))} placeholder="RMM password" />
+          </Field>
+        </div>
+        <Field label="Clinic Name">
+          <input style={s.input} value={form.pharmacy_vendor_name} onChange={e => setForm(p => ({ ...p, pharmacy_vendor_name: e.target.value }))} placeholder="Clinic name" />
+        </Field>
+        <div style={s.grid2}>
+          <Field label="Pay Type">
+            <select style={s.input} value={form.pharmacy_pay_type} onChange={e => setForm(p => ({ ...p, pharmacy_pay_type: e.target.value }))}>
+              <option value="patient_pay">Patient Pay</option>
+              <option value="clinic_pay">Clinic Pay</option>
+            </select>
+          </Field>
+          <Field label="Ship Type">
+            <select style={s.input} value={form.pharmacy_ship_type} onChange={e => setForm(p => ({ ...p, pharmacy_ship_type: e.target.value }))}>
+              <option value="ship_to_patient">Ship to Patient</option>
+              <option value="ship_to_clinic">Ship to Clinic</option>
+            </select>
+          </Field>
+          <Field label="Ship Rate">
+            <select style={s.input} value={form.pharmacy_ship_rate} onChange={e => setForm(p => ({ ...p, pharmacy_ship_rate: e.target.value }))}>
+              <option value="2_day">2 Day</option>
+              <option value="overnight">Overnight</option>
+            </select>
+          </Field>
+        </div>
+      </>)}
+
+      {/* Prescriber info — shared but RMM needs more fields */}
+      <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 16 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#6b7280", letterSpacing: "0.05em", marginBottom: 12 }}>
+          Prescribing Doctor / Prescriber Info
+        </div>
+        <div style={s.grid2}>
+          <Field label="First Name">
+            <input style={s.input} value={form.pharmacy_doctor_first_name} onChange={e => setForm(p => ({ ...p, pharmacy_doctor_first_name: e.target.value }))} placeholder="First name" />
+          </Field>
+          <Field label="Last Name">
+            <input style={s.input} value={form.pharmacy_doctor_last_name} onChange={e => setForm(p => ({ ...p, pharmacy_doctor_last_name: e.target.value }))} placeholder="Last name" />
+          </Field>
+          <Field label="NPI (10 digits)">
+            <input style={s.input} value={form.pharmacy_doctor_npi} onChange={e => setForm(p => ({ ...p, pharmacy_doctor_npi: e.target.value }))} placeholder="1234567890" />
+          </Field>
+          {isRmm && (<>
+            <Field label="Prescriber ID (max 10 chars)">
+              <input style={s.input} value={form.pharmacy_prescriber_id} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_id: e.target.value.slice(0, 10) }))} placeholder="e.g. DOC001" />
+            </Field>
+            <Field label="DEA Number">
+              <input style={s.input} value={form.pharmacy_prescriber_dea} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_dea: e.target.value }))} placeholder="AB1234567" />
+            </Field>
+            <Field label="Phone">
+              <input style={s.input} value={form.pharmacy_prescriber_phone} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_phone: e.target.value }))} placeholder="(123) 456-7890" />
+            </Field>
+            <Field label="Address">
+              <input style={s.input} value={form.pharmacy_prescriber_address} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_address: e.target.value }))} placeholder="123 Main St" />
+            </Field>
+            <Field label="City">
+              <input style={s.input} value={form.pharmacy_prescriber_city} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_city: e.target.value }))} placeholder="City" />
+            </Field>
+            <Field label="State">
+              <input style={s.input} value={form.pharmacy_prescriber_state} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_state: e.target.value }))} placeholder="CA" maxLength={2} />
+            </Field>
+            <Field label="ZIP">
+              <input style={s.input} value={form.pharmacy_prescriber_zip} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_zip: e.target.value }))} placeholder="90210" />
+            </Field>
+          </>)}
+        </div>
+      </div>
+
+      {testResult && (
+        <div style={{ fontSize: 13, padding: "8px 12px", borderRadius: 8, background: testResult.startsWith("✓") ? "#f0fdf4" : "#fef2f2", color: testResult.startsWith("✓") ? "#166534" : "#dc2626", border: `1px solid ${testResult.startsWith("✓") ? "#bbf7d0" : "#fecaca"}` }}>
+          {testResult}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <button onClick={testConnection} disabled={testing || (!form.pharmacy_api_key && !form.pharmacy_username)} style={{ ...s.btnOutline, opacity: ((!form.pharmacy_api_key && !form.pharmacy_username) || testing) ? 0.5 : 1 }}>
+          {testing ? "Testing..." : "Test Connection"}
+        </button>
+        <SaveBar saving={saving} status={status} onSave={save} inline />
+      </div>
     </div>
   )
 }

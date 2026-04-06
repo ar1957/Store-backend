@@ -5,6 +5,7 @@
  */
 
 import { MedusaContainer } from "@medusajs/framework"
+import { submitToPharmacyIfEnabled } from "../api/admin/utils/pharmacy-submit"
 
 const CLINIC_MODULE = "clinic"
 
@@ -113,6 +114,10 @@ export default async function pollGfeStatus(container: MedusaContainer) {
               WHERE id = ?
             `, [providerName, JSON.stringify(dosages), row.id])
             logger.info(`[GFE Poll] ✓ Order ${row.id} → processing_pharmacy (all treatments approved)`)
+
+            // Auto-submit to pharmacy if enabled for this clinic
+            submitToPharmacyIfEnabled(pgConnection, clinic.id, row.order_id, row.id, dosages)
+              .catch((e: any) => logger.error(`[GFE Poll] Pharmacy auto-submit error for order ${row.order_id}: ${e.message}`))
 
           } else if (outcome === "deferred") {
             await pgConnection.raw(`

@@ -9,8 +9,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     const svc = req.scope.resolve(CLINIC_MODULE) as any
     const pg = req.scope.resolve("__pg_connection__") as any
 
-    const clinic = await svc.getClinicById(req.params.id)
-    if (!clinic) return res.status(404).json({ message: "Clinic not found" })
+    // Use raw SQL to get ALL columns including pharmacy fields not in the ORM model
+    const clinicResult = await pg.raw(`SELECT * FROM clinic WHERE id = ? LIMIT 1`, [req.params.id])
+    if (!clinicResult.rows.length) return res.status(404).json({ message: "Clinic not found" })
+    const clinic = clinicResult.rows[0]
 
     const tenantDomain = clinic.domains?.[0] || clinic.slug
     const uiResult = await pg.raw(
@@ -47,6 +49,14 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       "redirect_url", "publishable_api_key", "sales_channel_id",
       "stripe_publishable_key", "stripe_secret_key", "pharmacy_staff_id",
       "from_email", "from_name", "reply_to",
+      "pharmacy_type", "pharmacy_api_url", "pharmacy_api_key",
+      "pharmacy_store_id", "pharmacy_vendor_name",
+      "pharmacy_doctor_first_name", "pharmacy_doctor_last_name", "pharmacy_doctor_npi",
+      "pharmacy_enabled",
+      "pharmacy_username", "pharmacy_password", "pharmacy_prescriber_id",
+      "pharmacy_prescriber_address", "pharmacy_prescriber_city", "pharmacy_prescriber_state",
+      "pharmacy_prescriber_zip", "pharmacy_prescriber_phone", "pharmacy_prescriber_dea",
+      "pharmacy_ship_type", "pharmacy_ship_rate", "pharmacy_pay_type",
     ]
 
     const sets: string[] = []

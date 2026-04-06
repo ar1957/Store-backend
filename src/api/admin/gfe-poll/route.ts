@@ -1,4 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { submitToPharmacyIfEnabled } from "../utils/pharmacy-submit"
 
 /**
  * POST /admin/gfe-poll
@@ -90,6 +91,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
               WHERE id = ?
             `, [providerName, JSON.stringify(dosages), row.id])
             updated++
+            // Auto-submit to pharmacy API if enabled for this clinic
+            const clinic = await clinicSvc.getClinicByDomain(row.tenant_domain)
+            if (clinic) {
+              submitToPharmacyIfEnabled(pg, clinic.id, row.order_id, row.id, dosages)
+                .catch(e => console.error("[gfe-poll] Pharmacy submit error:", e.message))
+            }
           } else if (outcome === "deferred") {
             await pg.raw(`
               UPDATE order_workflow
