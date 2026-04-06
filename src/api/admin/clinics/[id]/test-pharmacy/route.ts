@@ -6,16 +6,11 @@ import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 
 async function safeJson(res: Response): Promise<{ ok: boolean; data: any; raw: string }> {
   const raw = await res.text()
-  const contentType = res.headers.get("content-type") || ""
-  if (contentType.includes("application/json")) {
-    try {
-      return { ok: true, data: JSON.parse(raw), raw }
-    } catch {
-      return { ok: false, data: null, raw }
-    }
+  try {
+    return { ok: true, data: JSON.parse(raw), raw }
+  } catch {
+    return { ok: false, data: null, raw: raw.slice(0, 200) }
   }
-  // Not JSON — return the status and first 200 chars of body for diagnosis
-  return { ok: false, data: null, raw: raw.slice(0, 200) }
 }
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {

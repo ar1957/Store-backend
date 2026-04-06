@@ -9,7 +9,6 @@ phases:
 
   build:
     commands:
-      - rm -rf .medusa
       - npm run build
       - npm prune --production
       # Verify .ebextensions is present before packaging
