@@ -89,3 +89,23 @@ for (const route of routes) {
 }
 
 console.log("[postbuild] Done.")
+
+// ── Patch admin login page branding ──────────────────────────────────────────
+const adminDist = path.join(".medusa", "server", "public", "admin", "assets")
+if (fs.existsSync(adminDist)) {
+  const files = fs.readdirSync(adminDist).filter(f => f.endsWith(".js"))
+  let patched = false
+  for (const file of files) {
+    const filePath = path.join(adminDist, file)
+    let content = fs.readFileSync(filePath, "utf8")
+    if (content.includes("Welcome to Medusa")) {
+      content = content.replace(/Welcome to Medusa/g, "MHC Clinic Administration")
+      content = content.replace(/Sign in to access the account area/g, "Sign in to access the admin portal")
+      fs.writeFileSync(filePath, content)
+      console.log(`[postbuild] Patched login branding in ${file}`)
+      patched = true
+      break
+    }
+  }
+  if (!patched) console.log("[postbuild] Warning: 'Welcome to Medusa' string not found in any admin asset")
+}
