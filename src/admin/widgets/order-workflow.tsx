@@ -14,6 +14,7 @@ import { HttpTypes } from "@medusajs/types"
 interface WorkflowData {
   id: string
   order_id: string
+  gfe_id: string | null
   status: string
   provider_name: string
   provider_status: string
@@ -84,6 +85,7 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [submittingPharmacy, setSubmittingPharmacy] = useState(false)
   const [pharmacyResult, setPharmacyResult] = useState<string | null>(null)
   const [pharmacyConfigured, setPharmacyConfigured] = useState(false)
+  const [gfePortalUrl, setGfePortalUrl] = useState<string | null>(null)
 
   const role = myStaff?.role || "super_admin"
 
@@ -151,6 +153,10 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           const hasPharmacy = c.pharmacy_enabled === true &&
             !!(c.pharmacy_api_key || c.pharmacy_username)
           setPharmacyConfigured(hasPharmacy)
+
+          // Build GFE portal URL
+          const connectUrl = c.connect_env === "prod" ? c.connect_url_prod : c.connect_url_test
+          if (connectUrl) setGfePortalUrl(connectUrl.replace(/\/$/, ""))
         } catch {}
       }
 
@@ -458,6 +464,20 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
             loadComments(clinicId!, order.id)
           }}
         />
+      )}
+
+      {/* GFE Portal link */}
+      {workflow.gfe_id && gfePortalUrl && (
+        <div style={{ marginBottom: 16 }}>
+          <a
+            href={`${gfePortalUrl}/gfe-pro?id=${workflow.gfe_id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, fontSize: 13, fontWeight: 600, color: "#166534", textDecoration: "none" }}
+          >
+            🔗 View Patient GFE
+          </a>
+        </div>
       )}
 
       {/* Comments section */}

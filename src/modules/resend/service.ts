@@ -209,6 +209,55 @@ function RefundEmail({ data }: { data: any }) {
 
 // ── Template map ───────────────────────────────────────────────────────────
 
+function PendingProviderReminderEmail({ data }: { data: any }) {
+  const e = React.createElement
+  const brand = data.brand_color || "#6d28d9"
+  const daysPending = data.days_pending || 0
+  const urgency = daysPending >= 3 ? "We noticed you haven't connected with a provider yet." : "Your consultation is ready and waiting."
+
+  return e("div", { style: { fontFamily: "sans-serif", maxWidth: 600, margin: "0 auto", background: "#fff" } },
+    e("div", { style: { background: brand, padding: "28px 40px" } },
+      data.logo_url
+        ? e("img", { src: data.logo_url, alt: data.clinic_name || "Clinic", style: { maxHeight: 48, maxWidth: 160, objectFit: "contain" } })
+        : e("h2", { style: { color: "#fff", margin: 0, fontSize: 20 } }, data.clinic_name || "Your Clinic"),
+    ),
+    e("div", { style: { padding: "32px 40px" } },
+      e("h1", { style: { fontSize: 22, fontWeight: 700, color: "#111", margin: "0 0 16px" } },
+        "Don't forget — your provider is waiting"
+      ),
+      e("p", { style: { fontSize: 15, color: "#374151", lineHeight: "1.6", margin: "0 0 16px" } },
+        `Hi ${data.patient_name || "there"},`
+      ),
+      e("p", { style: { fontSize: 15, color: "#374151", lineHeight: "1.6", margin: "0 0 16px" } },
+        `${urgency} Your order #${data.order_display_id} is pending a provider consultation.`
+      ),
+      e("p", { style: { fontSize: 15, color: "#374151", lineHeight: "1.6", margin: "0 0 24px" } },
+        "Click below to track your order and connect with a provider to complete your consultation."
+      ),
+      e("a", {
+        href: data.track_order_url || "#",
+        style: {
+          display: "inline-block", padding: "14px 28px",
+          background: brand, color: "#fff", borderRadius: 8,
+          fontWeight: 700, fontSize: 15, textDecoration: "none",
+        }
+      }, "Track My Order →"),
+      data.virtual_room_url && e("p", { style: { fontSize: 13, color: "#6b7280", marginTop: 20 } },
+        "Or join your virtual visit directly: ",
+        e("a", { href: data.virtual_room_url, style: { color: brand } }, "Join Virtual Visit"),
+      ),
+      e("p", { style: { fontSize: 13, color: "#9ca3af", marginTop: 32, borderTop: "1px solid #f3f4f6", paddingTop: 16 } },
+        "If you have questions, please contact us. This is an automated reminder."
+      ),
+    ),
+    e("div", { style: { borderTop: "1px solid #f3f4f6", padding: "20px 40px", textAlign: "center" } },
+      e("p", { style: { fontSize: 12, color: "#9ca3af", margin: 0 } },
+        data.clinic_name ? `© ${new Date().getFullYear()} ${data.clinic_name}. All rights reserved.` : ""
+      ),
+    ),
+  )
+}
+
 const TEMPLATES: Record<string, { subject: string; component: (props: { data: any }) => any }> = {
   "order.confirmation": {
     subject: "Your Order Has Been Received",
@@ -229,6 +278,10 @@ const TEMPLATES: Record<string, { subject: string; component: (props: { data: an
   "order.refund_issued": {
     subject: "Your Refund Has Been Processed",
     component: RefundEmail,
+  },
+  "order.pending_provider_reminder": {
+    subject: "Action Required: Complete Your Provider Consultation",
+    component: PendingProviderReminderEmail,
   },
 }
 

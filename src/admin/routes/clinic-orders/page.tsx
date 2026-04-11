@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useLocation } from "react-router-dom"
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { ShoppingCart } from "@medusajs/icons"
 
@@ -234,7 +234,8 @@ function applyNavForRole(role: string) {
       a[href="/app/reservations"],
       a[href="/app/settings"],
       a[href^="/app/settings/"],
-      a[href="/app/provider-settings"] { display: none !important; }
+      a[href="/app/provider-settings"],
+      a[href="/app/clinic-dashboard"] { display: none !important; }
     `
   } else if (role === "clinic_admin") {
     // Hide settings + standard orders + customers + promotions
@@ -255,12 +256,23 @@ function applyNavForRole(role: string) {
 
 export default function ClinicOrdersPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [orders, setOrders] = useState<ClinicOrder[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    const params = new URLSearchParams(location.search)
+    return params.get("status") || "all"
+  })
   const [clinicFilter, setClinicFilter] = useState<string>("all")
+
+  // Sync status filter when URL changes (e.g. drill-down from dashboard)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    const s = params.get("status")
+    if (s) { setStatusFilter(s); setPage(1) }
+  }, [location.search])
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const limit = 20
@@ -273,14 +285,12 @@ export default function ClinicOrdersPage() {
     setError(null)
     try {
       const offset = (page - 1) * limit
-
-      // Single request to our custom route — returns orders + workflows
-      // joined in SQL and sorted by created_at DESC across the whole DB
       const params = new URLSearchParams({
         limit: String(limit),
         offset: String(offset),
       })
       if (search) params.set("q", search)
+      if (statusFilter && statusFilter !== "all") params.set("status", statusFilter)
 
       const res = await fetch(`/admin/order-workflow?${params}`, {
         credentials: "include",
@@ -297,7 +307,7 @@ export default function ClinicOrdersPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search])
+  }, [page, search, statusFilter])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -339,7 +349,6 @@ export default function ClinicOrdersPage() {
 
   const filtered = orders.filter((o) => {
     if (clinicFilter !== "all" && o.sales_channel?.name !== clinicFilter) return false
-    if (statusFilter !== "all" && o.workflow?.status !== statusFilter) return false
     return true
   })
 

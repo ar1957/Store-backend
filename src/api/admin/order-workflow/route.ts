@@ -15,6 +15,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     const limit = parseInt((req.query?.limit as string) ?? "20", 10)
     const offset = parseInt((req.query?.offset as string) ?? "0", 10)
     const q = ((req.query?.q as string) ?? "").trim()
+    const statusParam = ((req.query?.status as string) ?? "").trim()
 
     // ── 1. Get logged-in user's email ─────────────────────────────────────
     const actorId = (req.session as any)?.auth_context?.actor_id
@@ -105,6 +106,9 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       : ""
     const searchParams = q ? Array(6).fill(`%${q}%`) : []
 
+    const statusFilter2 = statusParam ? `AND wf.status = ?` : ""
+    const statusParams = statusParam ? [statusParam] : []
+
     // ── 5. Count ──────────────────────────────────────────────────────────
     const countSql = `SELECT COUNT(DISTINCT o.id) AS total
        FROM "order" o
@@ -114,8 +118,9 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
        WHERE o.deleted_at IS NULL
          AND o.is_draft_order = false
          ${clinicFilter}
-         ${searchFilter}`
-    const countBindings = [...clinicParams, ...searchParams]
+         ${searchFilter}
+         ${statusFilter2}`
+    const countBindings = [...clinicParams, ...searchParams, ...statusParams]
 
     const countResult = await pg.raw(countSql, countBindings)
     const total = parseInt(countResult.rows[0]?.total ?? "0", 10)
@@ -156,9 +161,10 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          AND o.is_draft_order = false
          ${clinicFilter}
          ${searchFilter}
+         ${statusFilter2}
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
-      [...clinicParams, ...searchParams, limit, offset]
+      [...clinicParams, ...searchParams, ...statusParams, limit, offset]
     )
 
     const rows = dataResult.rows ?? []
