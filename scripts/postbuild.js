@@ -28,6 +28,103 @@ async function POST(req, res) {
 `,
   },
   {
+    src: "src/api/admin/dashboard/route.ts",
+    dst: ".medusa/server/src/api/admin/dashboard/route.js",
+    content: `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GET = GET;
+async function GET(req, res) {
+  try {
+    const pg = req.scope.resolve("__pg_connection__");
+    let { clinicId, dateFrom, dateTo } = req.query || {};
+
+    const actorId = req.session?.auth_context?.actor_id;
+    let callerRole = "super_admin";
+    let callerClinicId = null;
+    if (actorId) {
+      const userResult = await pg.raw('SELECT email FROM "user" WHERE id = ? LIMIT 1', [actorId]);
+      const email = userResult.rows[0]?.email;
+      if (email) {
+        const staffResult = await pg.raw(
+          'SELECT cs.role, c.id AS clinic_id FROM clinic_staff cs JOIN clinic c ON cs.tenant_domain = ANY(c.domains) WHERE cs.email = ? AND cs.is_active = true AND cs.deleted_at IS NULL LIMIT 1',
+          [email]
+        );
+        if (staffResult.rows.length) {
+          callerRole = staffResult.rows[0].role;
+          callerClinicId = staffResult.rows[0].clinic_id;
+        }
+      }
+    }
+    if (callerRole !== "super_admin" && callerClinicId) clinicId = callerClinicId;
+
+    const conditions = ["ow.deleted_at IS NULL"];
+    const bindings = [];
+    if (clinicId) { conditions.push("c.id = ?"); bindings.push(clinicId); }
+    if (dateFrom) { conditions.push("o.created_at >= ?"); bindings.push(dateFrom); }
+    if (dateTo)   { conditions.push("o.created_at <= ?"); bindings.push(dateTo + "T23:59:59Z"); }
+    const where = "WHERE " + conditions.join(" AND ");
+
+    const clinicJoin = \`JOIN clinic c ON (
+      ow.tenant_domain = ANY(c.domains)
+      OR ow.tenant_domain = ANY(SELECT split_part(d,':',1) FROM unnest(c.domains) AS d)
+      OR o.sales_channel_id = c.sales_channel_id
+    )\`;
+    const txSubquery = \`LEFT JOIN (
+      SELECT order_id, SUM(amount) AS amount
+      FROM order_transaction
+      WHERE reference = 'capture' AND deleted_at IS NULL
+      GROUP BY order_id
+    ) tx ON tx.order_id = o.id\`;
+
+    const byStatus = await pg.raw(
+      \`SELECT ow.status, COUNT(DISTINCT o.id)::int AS count, COALESCE(SUM(tx.amount), 0) AS total
+       FROM order_workflow ow
+       JOIN "order" o ON o.id = ow.order_id
+       \${txSubquery} \${clinicJoin} \${where}
+       GROUP BY ow.status ORDER BY count DESC\`,
+      bindings
+    );
+    const byProduct = await pg.raw(
+      \`SELECT li.title AS product, COUNT(DISTINCT o.id)::int AS count, COALESCE(SUM(DISTINCT tx.amount), 0) AS total
+       FROM order_workflow ow
+       JOIN "order" o ON o.id = ow.order_id
+       \${txSubquery} \${clinicJoin}
+       JOIN order_item oi ON oi.order_id = o.id
+       JOIN order_line_item li ON li.id = oi.item_id
+       \${where}
+       GROUP BY li.title ORDER BY count DESC LIMIT 10\`,
+      bindings
+    );
+    const summary = await pg.raw(
+      \`SELECT COUNT(DISTINCT o.id)::int AS total_orders, COALESCE(SUM(tx.amount), 0) AS total_revenue
+       FROM order_workflow ow
+       JOIN "order" o ON o.id = ow.order_id
+       \${txSubquery} \${clinicJoin} \${where}\`,
+      bindings
+    );
+
+    let clinics = [];
+    if (callerRole === "super_admin") {
+      const cr = await pg.raw("SELECT id, name FROM clinic WHERE deleted_at IS NULL ORDER BY name");
+      clinics = cr.rows;
+    }
+
+    return res.json({
+      byStatus: byStatus.rows,
+      byProduct: byProduct.rows,
+      summary: summary.rows[0],
+      clinics,
+      role: callerRole,
+      scopedClinicId: callerRole !== "super_admin" ? clinicId : null,
+    });
+  } catch (err) {
+    console.error("[Dashboard] Error:", err.message);
+    return res.status(500).json({ message: err.message });
+  }
+}
+`,
+  },
+  {
     src: "src/api/admin/clinics/[id]/test-pharmacy/route.ts",
     dst: ".medusa/server/src/api/admin/clinics/[id]/test-pharmacy/route.js",
     content: `"use strict";
@@ -80,12 +177,9 @@ for (const route of routes) {
     fs.mkdirSync(dstDir, { recursive: true })
     console.log(`[postbuild] Created directory: ${dstDir}`)
   }
-  if (!fs.existsSync(route.dst)) {
-    fs.writeFileSync(route.dst, route.content)
-    console.log(`[postbuild] Wrote: ${route.dst}`)
-  } else {
-    console.log(`[postbuild] Already exists, skipping: ${route.dst}`)
-  }
+  // Always overwrite — ensures updates are applied on every deploy
+  fs.writeFileSync(route.dst, route.content)
+  console.log(`[postbuild] Wrote: ${route.dst}`)
 }
 
 console.log("[postbuild] Done.")
