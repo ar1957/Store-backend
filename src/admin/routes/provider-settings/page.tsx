@@ -458,8 +458,8 @@ function ClinicDetail({
       )}
 
       <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
-        {activeTab === "details"  && <DetailsTab  clinic={clinic} onUpdated={onUpdated} />}
-        {activeTab === "api"      && <ApiTab       clinic={clinic} onUpdated={onUpdated} />}
+        {activeTab === "details"  && <DetailsTab  clinic={clinic} onUpdated={onUpdated} role={role} />}
+        {activeTab === "api"      && <ApiTab       clinic={clinic} onUpdated={onUpdated} role={role} />}
         {activeTab === "staff"    && <StaffTab     clinic={clinic} onUpdated={onUpdated} role={role} />}
         {activeTab === "mappings" && <MappingsTab  clinic={clinic} />}
         {activeTab === "orders"   && (
@@ -478,7 +478,8 @@ function ClinicDetail({
 }
 
 // ── Details Tab ────────────────────────────────────────────────────────────
-function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+function DetailsTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => void; role?: string }) {
+  const readOnly = role === "clinic_admin"
   const [form, setForm] = useState({ ...clinic, domains: clinic.domains || [] })
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState("")
@@ -565,9 +566,14 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {readOnly && (
+        <div style={{ padding: "10px 14px", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, fontSize: 13, color: "#92400e" }}>
+          🔒 View only — contact a Super Admin to make changes.
+        </div>
+      )}
       <div style={s.grid2}>
         <Field label="Clinic Name">
-          <input style={s.input} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+          <input style={s.input} value={form.name} onChange={e => !readOnly && setForm(p => ({ ...p, name: e.target.value }))} disabled={readOnly} />
         </Field>
         <Field label="Slug">
           <input style={s.input} value={form.slug} onChange={e => setForm(p => ({ ...p, slug: e.target.value }))} />
@@ -656,14 +662,15 @@ function DetailsTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => vo
         </div>
         <span style={{ fontSize: 13 }}>Clinic {form.is_active ? "Active" : "Inactive"}</span>
       </div>
-      <SaveBar saving={saving} status={status} onSave={save} />
+      {!readOnly && <SaveBar saving={saving} status={status} onSave={save} />}
     </div>
   )
 }
 
 
 // ── API Tab ────────────────────────────────────────────────────────────────
-function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
+function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => void; role?: string }) {
+  const readOnly = role === "clinic_admin"
   const [form, setForm] = useState({ ...clinic })
   const [showSecret, setShowSecret] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -724,9 +731,14 @@ function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {readOnly && (
+        <div style={{ padding: "10px 14px", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, fontSize: 13, color: "#92400e" }}>
+          🔒 View only — contact a Super Admin to make changes.
+        </div>
+      )}
       <div style={s.grid2}>
         <Field label="Client ID">
-          <input style={s.input} value={form.api_client_id || ""} onChange={e => setForm(p => ({ ...p, api_client_id: e.target.value }))} placeholder="Enter client ID" />
+          <input style={s.input} value={form.api_client_id || ""} onChange={e => !readOnly && setForm(p => ({ ...p, api_client_id: e.target.value }))} disabled={readOnly} placeholder="Enter client ID" />
         </Field>
         <Field label="Client Secret">
           <div style={{ position: "relative" }}>
@@ -790,11 +802,11 @@ function ApiTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <button onClick={testConnection} disabled={testing || !form.api_client_id}
-          style={{ ...s.btnOutline, opacity: !form.api_client_id ? 0.5 : 1 }}>
+        <button onClick={testConnection} disabled={testing || !form.api_client_id || readOnly}
+          style={{ ...s.btnOutline, opacity: (!form.api_client_id || readOnly) ? 0.5 : 1 }}>
           {testing ? "Testing…" : "Test Connection"}
         </button>
-        <SaveBar saving={saving} status={status} onSave={save} inline />
+        {!readOnly && <SaveBar saving={saving} status={status} onSave={save} inline />}
       </div>
     </div>
   )
