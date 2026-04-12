@@ -218,6 +218,67 @@ const steps = [
     `,
   },
   {
+    name: "Migration8 - missing columns on clinic, order_workflow, clinic_staff",
+    sql: `
+      ALTER TABLE "clinic"
+        ADD COLUMN IF NOT EXISTS "stripe_publishable_key" VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "stripe_secret_key"      TEXT,
+        ADD COLUMN IF NOT EXISTS "deleted_at"             TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS "from_email"             VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "from_name"              VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "reply_to"               VARCHAR(255);
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "deleted_at"          TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS "pharmacy_staff_id"   TEXT,
+        ADD COLUMN IF NOT EXISTS "provider_decided_at" TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS "md_decided_at"       TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS "refunded_at"         TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS "refund_reason"       TEXT,
+        ADD COLUMN IF NOT EXISTS "treatment_dosages"   JSONB DEFAULT '[]';
+      ALTER TABLE "clinic_staff"
+        ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMPTZ;
+      ALTER TABLE "clinic_ui_config"
+        ADD COLUMN IF NOT EXISTS "clinic_id" VARCHAR(255);
+      ALTER TABLE "product_treatment_map"
+        ADD COLUMN IF NOT EXISTS "deleted_at" TIMESTAMPTZ;
+    `,
+  },
+  {
+    name: "Migration9 - pharmacy fields on clinic + order_workflow",
+    sql: `
+      ALTER TABLE "clinic"
+        ADD COLUMN IF NOT EXISTS "pharmacy_type"               VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS "pharmacy_api_url"            VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "pharmacy_api_key"            VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "pharmacy_store_id"           VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "pharmacy_vendor_name"        VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "pharmacy_doctor_first_name"  VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "pharmacy_doctor_last_name"   VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "pharmacy_doctor_npi"         VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS "pharmacy_enabled"            BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS "pharmacy_username"           VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "pharmacy_password"           VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "pharmacy_prescriber_id"      VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS "pharmacy_prescriber_address" VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "pharmacy_prescriber_city"    VARCHAR(150),
+        ADD COLUMN IF NOT EXISTS "pharmacy_prescriber_state"   VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS "pharmacy_prescriber_zip"     VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS "pharmacy_prescriber_phone"   VARCHAR(100),
+        ADD COLUMN IF NOT EXISTS "pharmacy_prescriber_dea"     VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS "pharmacy_ship_type"          VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS "pharmacy_ship_rate"          VARCHAR(50),
+        ADD COLUMN IF NOT EXISTS "pharmacy_pay_type"           VARCHAR(50);
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "pharmacy_queue_id"     TEXT,
+        ADD COLUMN IF NOT EXISTS "pharmacy_submitted_at" TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS "pharmacy_status"       TEXT;
+    `,
+  },
+  {
+    name: "order_workflow gfe_id as text",
+    sql: `ALTER TABLE "order_workflow" ALTER COLUMN "gfe_id" TYPE TEXT USING gfe_id::TEXT`,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -227,7 +288,8 @@ const steps = [
       ('Migration20240101000005'),
       ('Migration20240101000006'),
       ('Migration20240101000007'),
-      ('Migration20240101000008')
+      ('Migration20240101000008'),
+      ('Migration20240101000009')
       ON CONFLICT DO NOTHING`,
   },
 ]
