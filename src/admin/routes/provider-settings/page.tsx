@@ -1186,6 +1186,8 @@ function OrdersTab({
   const [processing, setProcessing] = useState(false)
   const [orderToDelete, setOrderToDelete] = useState<Order | null>(null)
   const [commentOrder, setCommentOrder] = useState<Order | null>(null)
+  const [reminderSending, setReminderSending] = useState<string | null>(null)
+  const [reminderMsg, setReminderMsg] = useState<{ orderId: string; ok: boolean; text: string } | null>(null)
 
   useEffect(() => { loadOrders() }, [clinic.id, filterStatus])
 
