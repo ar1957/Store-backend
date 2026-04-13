@@ -45,7 +45,7 @@ const buildConfig = async () => {
                 secret_access_key: process.env.S3_SECRET_ACCESS_KEY,
                 region: process.env.S3_REGION,
                 bucket: process.env.S3_BUCKET,
-                prefix: "medusa",
+                prefix: process.env.S3_PREFIX || "medusa",
                 cache_control: "public, max-age=31536000",
               },
             } : {
@@ -63,11 +63,24 @@ const buildConfig = async () => {
       {
         resolve: '@medusajs/medusa/payment',
         options: {
-          providers: [{
-            resolve: '@medusajs/medusa/payment-stripe',
-            id: 'stripe',
-            options: { apiKey: process.env.STRIPE_API_KEY, capture: true },
-          }],
+          providers: [
+            {
+              resolve: '@medusajs/medusa/payment-stripe',
+              id: 'stripe',
+              options: { apiKey: process.env.STRIPE_API_KEY, capture: true },
+            },
+            ...(process.env.PAYPAL_CLIENT_ID ? [{
+              resolve: 'medusa-plugin-paypal/providers/payment-paypal',
+              id: 'paypal',
+              options: {
+                intent: 'CAPTURE',
+                sandbox: process.env.PAYPAL_MODE !== 'live',
+                clientId: process.env.PAYPAL_CLIENT_ID,
+                clientSecret: process.env.PAYPAL_CLIENT_SECRET,
+                webhookId: process.env.PAYPAL_WEBHOOK_ID,
+              },
+            }] : []),
+          ],
         },
       },
       {

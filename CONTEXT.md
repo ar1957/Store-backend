@@ -11,39 +11,68 @@ Multi-tenant Medusa v2 backend + Next.js 15 storefront. Each clinic/store is a t
 
 ## AWS Deployment
 
-### Infrastructure
-- **Backend**: AWS Elastic Beanstalk (`medusa-backend-test.eba-t6prye2p.us-west-1.elasticbeanstalk.com`)
-- **Frontend**: Separate EB environment (`medusa-storefront-test.eba-jmypnpmk.us-west-1.elasticbeanstalk.com`)
-- **Database**: RDS PostgreSQL (`medusa-db-test.czojurt1hrt9.us-west-1.rds.amazonaws.com`)
-- **CI/CD**: AWS CodeBuild + CodePipeline
-- **S3 Images**: `gocbeglobal-dev` bucket, `us-west-1`, public read enabled
+### Infrastructure — TEST
+- **Backend**: `medusa-backend-test.eba-t6prye2p.us-west-1.elasticbeanstalk.com`
+- **Frontend**: `medusa-storefront-test.eba-jmypnpmk.us-west-1.elasticbeanstalk.com`
+- **Database**: `medusa-db-test.czojurt1hrt9.us-west-1.rds.amazonaws.com`
 
-### How to Deploy Backend
-1. Push to `main` branch → CodePipeline triggers CodeBuild
-2. CodeBuild runs `buildspec.yml`: `npm ci --legacy-peer-deps` → `npm run build` → `npm prune --production`
-3. Artifact zipped and deployed to Elastic Beanstalk
-4. EB runs `.ebextensions/01_setup.config` which runs migrations, fixes image URLs, patches S3 ACL
+### Infrastructure — PROD
+- **Backend**: `api.mhc-clinic-admin.com` (EB: `medusa-backend-prod`)
+- **Frontend**: `medusa-storefront-prod` EB environment
+- **Database**: `medusa-db-prod.czojurt1hrt9.us-west-1.rds.amazonaws.com` (db: `medusa_prod`)
+- **Admin UI**: `https://mhc-clinic-admin.com/app`
+- **Spaderx storefront**: `https://shop.spaderx.com`
 
-### Start Command (Critical)
-The Procfile must be:
-```
-web: cd .medusa/server && node /var/app/current/node_modules/@medusajs/cli/dist/index.js start
-```
+### CI/CD
+- AWS CodeBuild + CodePipeline
+- Backend: `my-medusa-store` repo → `buildspec.yml` → EB deploy
+- Storefront: `my-medusa-store-storefront` repo → `buildspec.yml` → EB deploy
+- `NEXT_PUBLIC_*` vars must be set in **CodeBuild** environment (baked at build time), not just EB
 
-### EB Environment Variables (Critical)
-- `DATABASE_URL` — full postgres connection string
-- `MEDUSA_BACKEND_URL` — `https://medusa-backend-test.eba-t6prye2p.us-west-1.elasticbeanstalk.com`
-- `ADMIN_CORS`, `AUTH_CORS`, `STORE_CORS`
-- `JWT_SECRET`, `COOKIE_SECRET`
-- `STRIPE_API_KEY`
+### Critical: postbuild.js
+`scripts/postbuild.js` runs after `medusa build` and:
+1. Writes routes that Medusa build silently skips: `test-connection/route.js`, `test-pharmacy/route.js`, `dashboard/route.js`
+2. Patches admin login branding ("Welcome to Medusa" → "MHC Clinic Administration")
+3. Patches `@medusajs/file-s3` to disable ACL (bucket uses bucket policy)
+
+### Critical: ebextension
+`.ebextensions/01_setup.config` runs on every EB deploy:
+- Adds swap space
+- Fixes file permissions
+- Runs `manual-migrate.js` (custom schema)
+- **Does NOT run `medusa db:migrate`** — removed because it times out and exhausts DB connection pool
+- Patches S3 ACL
+- Fixes localhost image URLs
+
+### EB Environment Variables (Backend)
+- `DATABASE_URL`, `MEDUSA_BACKEND_URL`, `ADMIN_CORS`, `AUTH_CORS`, `STORE_CORS`
+- `JWT_SECRET`, `COOKIE_SECRET`, `STRIPE_API_KEY`
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`
 - `S3_BUCKET=gocbeglobal-dev`, `S3_REGION=us-west-1`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
+- `S3_PREFIX=prod-images/` (prod) or `test-images/` (test) — controls S3 folder
 - `NODE_ENV=production`, `PORT=9000`
+
+### EB Environment Variables (Storefront)
+- `NEXT_PUBLIC_MEDUSA_BACKEND_URL`, `MEDUSA_BACKEND_URL` — backend URL
+- `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY` — default sales channel key (also set in CodeBuild)
+- `NEXT_PUBLIC_DEFAULT_REGION=us`
+- `NEXT_PUBLIC_GOOGLE_PLACES_KEY`
+- `NEXT_PUBLIC_STRIPE_KEY`
+- `DATABASE_URL` — same RDS as backend (for direct DB queries in storefront API routes)
+- `REVALIDATE_SECRET`, `NODE_ENV=production`, `PORT=8080`
+
+### Nginx Config (Storefront)
+`.platform/nginx/conf.d/elasticbeanstalk/host-header.conf` — sets `X-Forwarded-Host: $host` so Next.js middleware gets the real domain (e.g. `shop.spaderx.com`) instead of the internal EC2 IP. **Critical for multi-tenant resolution behind ALB.**
+
+After any manual `sudo systemctl restart web`, must also run `sudo systemctl reload nginx` to re-apply this config.
 
 ### Migrations
 Custom migrations in `src/modules/provider-integration/migrations/` (Migration20240101000001 through Migration20240101000009).
-Run manually: `node scripts/manual-migrate.js` (requires `DATABASE_URL` env var).
-The ebextension auto-runs migrations on deploy.
+Run manually on server:
+```bash
+export DATABASE_URL=$(/opt/elasticbeanstalk/bin/get-config environment --key DATABASE_URL)
+cd /var/app/current/.medusa/server && node /var/app/current/scripts/manual-migrate.js
+```
 
 ---
 
@@ -51,25 +80,44 @@ The ebextension auto-runs migrations on deploy.
 
 ### Multi-Tenancy
 - Each clinic has a record in the `clinic` table with `domains[]`, `publishable_api_key`, `stripe_publishable_key`, etc.
-- Storefront middleware calls `/store/clinics/tenant-config` on every request
+- Storefront middleware (`src/middleware.ts`) reads `x-forwarded-host` (set by nginx) → calls `/store/clinics/tenant-config` → injects `window.__TENANT_API_KEY__` and `window.__TENANT_DOMAIN__`
 - CORS for clinic domains handled dynamically by `src/api/middlewares.ts` (60s cache)
 
 ### Key Custom Tables
-- `clinic` — tenant config (domains, API keys, branding, pharmacy config)
+- `clinic` — tenant config (domains, API keys, branding, pharmacy config, from_email, from_name, **payment_provider, paypal_client_id, paypal_client_secret, paypal_mode**)
 - `clinic_staff` — staff members per clinic with roles
 - `order_workflow` — tracks GFE/telehealth order lifecycle + pharmacy submission
 - `order_comment` — comments on orders
 - `product_treatment_map` — maps Medusa products to GFE treatments
 - `clinic_ui_config` — nav/footer links, logo, contact info per clinic
+- `clinic_promotion` — maps Medusa promotion IDs to clinics (per-clinic promotion scoping)
 
 ### Roles
-- `super_admin` — sees everything
-- `clinic_admin` — sees clinic-orders, products, clinic operations
-- `pharmacist` / `medical_director` — sees clinic-orders only
+- `super_admin` — sees everything including Clinic Dashboard
+- `clinic_admin` — sees clinic-orders, products, clinic operations (read-only on Details/API tabs), **can manage their own clinic's promotions**
+- `pharmacist` / `medical_director` — sees clinic-orders only, no dashboard
+
+### Payment Providers (per-clinic)
+Each clinic can choose `payment_provider`: `stripe`, `paypal`, or `both`.
+- Stripe keys: `stripe_publishable_key`, `stripe_secret_key` on clinic table
+- PayPal keys: `paypal_client_id`, `paypal_client_secret`, `paypal_mode` on clinic table
+- Backend provider: `medusa-plugin-paypal` (id: `payment-paypal`)
+- Storefront reads `payment_provider` from `/store/clinics/tenant-config` and loads the appropriate SDK
+- Admin UI: API & Credentials tab has Payment Provider selector + PayPal fields
+
+### Per-Clinic Promotions
+- `clinic_promotion` table links Medusa promotion IDs to clinic IDs
+- API: `GET/POST /admin/clinics/:id/promotions`, `DELETE /admin/clinics/:id/promotions/:promotionId`
+- `GET /admin/promotions-list` — lists all Medusa promotions for the assignment dropdown
+- Admin UI: Promotions tab in Clinic Operations (visible to clinic_admin and super_admin)
+- clinic_admin can only see/manage their own clinic's promotions
+- super_admin can assign any promotion to any clinic and see all
 
 ### Email
-Uses Resend. Templates: `order.confirmation`, `order.status_update`, `order.shipped`, `order.md_denied`, `order.refund_issued` — all in `src/modules/resend/service.ts`.
+Uses Resend. Domain `mhc-clinic-admin.com` verified in Resend.
+Templates: `order.confirmation`, `order.status_update`, `order.shipped`, `order.md_denied`, `order.refund_issued`, `order.pending_provider_reminder` — all in `src/modules/resend/service.ts`.
 Per-clinic `from_email`, `from_name`, `reply_to` stored on clinic table.
+Email subscriber joins clinic via `sales_channel_id` fallback (not just `tenant_domain`) to handle race condition where `order_workflow` doesn't exist yet when confirmation fires.
 
 ---
 
@@ -77,10 +125,11 @@ Per-clinic `from_email`, `from_name`, `reply_to` stored on clinic table.
 
 1. Patient places order → `order.placed` event fires
 2. `order-placed.ts` subscriber creates patient + GFE via provider API → saves `virtual_room_url` to `order_workflow`
-3. GFE poll job (`/admin/gfe-poll`) checks provider status every 5 min
+3. GFE poll job (`src/jobs/poll-gfe-status.ts`) checks provider status every 5 min → auto-submits to pharmacy on approval
 4. If provider **approves** → status = `processing_pharmacy` → auto-submit to pharmacy API
-5. If provider **defers** → status = `pending_md_review` → MD reviews in admin → approves → `processing_pharmacy` → auto-submit to pharmacy API
+5. If provider **defers** → status = `pending_md_review` → MD reviews in admin → approves → `processing_pharmacy` → auto-submit
 6. Pharmacy poll job (`src/jobs/pharmacy-poll.ts`) checks pharmacy status every 5 min → updates tracking when shipped
+7. Daily reminder job (`src/jobs/pending-provider-reminder.ts`) runs at 1AM → emails patients still in `pending_provider`
 
 ### Order Statuses
 `pending_provider` → `pending_md_review` (if deferred) → `processing_pharmacy` → `shipped` → (or `md_denied` / `refund_issued`)
@@ -91,85 +140,85 @@ Per-clinic `from_email`, `from_name`, `reply_to` stored on clinic table.
 
 ### Supported Pharmacies
 1. **DigitalRX (SmartConnect)** — `pharmacy_type = "digitalrx"`
-   - Auth: `Authorization: <api_key>` header
-   - Submit: `POST /RxWebRequest` → returns `QueueID`
-   - Status: `POST /RxRequestStatus` with `QueueID`
-   - Sandbox: StoreID `190190`, key `12345678901234567890` (portal-only, not external)
-   - Production: requires real API key from SmartConnect
-
 2. **Partell Pharmacy (RequestMyMeds)** — `pharmacy_type = "rmm"`
-   - Auth: JWT via `POST /getJWTkey` (expires 1 hour)
-   - Submit: `POST /prescriptions` with flat payload
    - Sandbox: `https://requestmymeds.net/api/v2/sandbox`
-   - Production: `https://requestmymeds.net/api/v2`
-   - Credentials: username/password stored on clinic
-
-### Pharmacy Config Fields on `clinic` table
-```
-pharmacy_type, pharmacy_api_url, pharmacy_api_key, pharmacy_store_id,
-pharmacy_vendor_name, pharmacy_enabled (boolean),
-pharmacy_doctor_first_name, pharmacy_doctor_last_name, pharmacy_doctor_npi,
-pharmacy_username, pharmacy_password, pharmacy_prescriber_id,
-pharmacy_prescriber_address, pharmacy_prescriber_city, pharmacy_prescriber_state,
-pharmacy_prescriber_zip, pharmacy_prescriber_phone, pharmacy_prescriber_dea,
-pharmacy_ship_type, pharmacy_ship_rate, pharmacy_pay_type
-```
+   - Status endpoint: `GET /prescriptions/{rx_unique_id}`
 
 ### Key Files
-- `src/api/admin/utils/pharmacy-submit.ts` — shared helper, routes to correct handler
+- `src/api/admin/utils/pharmacy-submit.ts` — shared helper, handles both DigitalRX and RMM
 - `src/api/admin/utils/pharmacy-submit-rmm.ts` — RMM-specific submission
-- `src/api/admin/utils/normalize-phone.ts` — strips country code, returns 10 digits
-- `src/api/admin/clinics/[id]/orders/[orderId]/pharmacy-submit/route.ts` — manual submit button
-- `src/jobs/pharmacy-poll.ts` — cron every 5 min, checks pharmacy status for both DigitalRX and RMM
-- `src/api/admin/clinics/[id]/test-pharmacy/route.ts` — backend proxy for test connection (avoids CORS)
+- `src/jobs/pharmacy-poll.ts` — cron every 5 min, Step 1: auto-submit unsubmitted orders, Step 2: poll status
+- `src/api/admin/clinics/[id]/test-pharmacy/route.ts` — test connection (in postbuild.js, not compiled by Medusa build)
 
-### RMM Status Polling
-RMM poll uses `GET /prescriptions/{rx_unique_id}` with a fresh JWT each poll cycle.
-Response fields: `status` (e.g. "Received", "Processing", "Shipped"), `tracking_number`, `shipping_label_id`.
-When `tracking_number` is present → order moves to `shipped`.
-Otherwise `pharmacy_status` is updated in `order_workflow` so the storefront can display it.
+### Pharmacy Poll — Clinic JOIN Fix
+All pharmacy/dashboard queries join clinic using both domain AND sales_channel_id:
+```sql
+JOIN clinic c ON (
+  ow.tenant_domain = ANY(c.domains)
+  OR ow.tenant_domain = ANY(SELECT split_part(d,':',1) FROM unnest(c.domains) AS d)
+  OR o.sales_channel_id = c.sales_channel_id
+)
+```
+This handles historical orders with old domains after domain changes.
 
-### Track Order — Pharmacy Steps
-The storefront track order page (`/order/status/[gfeId]`) shows a 5-step timeline:
-1. Pending Provider Clearance
-2. Pending Physician Review (only shown if order went through MD review)
-3. Processing by Pharmacy
-4. Order Received by Pharmacy — shows `pharmacy_queue_id` and `pharmacy_status` badge (e.g. "Received")
-5. Medication Shipped — shows tracking number
+---
 
-Step 4 only appears once `pharmacy_status` is populated (i.e. the pharmacy has acknowledged the order).
+## Admin Extensions
+
+### Clinic Dashboard (`/app/clinic-dashboard`)
+- Shows order analytics: by status (pie chart, clickable drill-down to clinic-orders), by product
+- Revenue from `order_transaction` table (`reference = 'capture'`)
+- Filters: date range, clinic (super_admin only)
+- Visible to: `super_admin`, `clinic_admin` only (hidden from pharmacist/medical_director)
+
+### Clinic Operations (`/app/provider-settings`)
+- Details tab and API & Credentials tab: **read-only for `clinic_admin`** (shows lock banner)
+- Pharmacy tab: fully editable by clinic_admin
+
+### Order Workflow Widget
+- Shows GFE portal link: `{connect_url}/gfe-pro?id={gfe_id}`
+- Submit to Pharmacy API button: only shown if `pharmacy_enabled = true` AND credentials exist
 
 ---
 
 ## Storefront
 
-### Key Features
-- Google Places autocomplete on shipping address (`react-google-autocomplete` package)
-  - API key: `NEXT_PUBLIC_GOOGLE_PLACES_KEY` in `.env.local`
-  - Validates state matches eligibility state
-- Stripe Payment Element (replaces Card Element) — supports Affirm, Klarna, Apple Pay, Google Pay, ACH
-- Static legal pages: `/privacy-policy`, `/terms`, `/telehealth`, `/purchase-terms`, `/glp1-waiver`, `/shipping-policy`
-- Track Order page: `/order/status` — searches by email or order ID
-- Order status detail: `/order/status/[gfeId]`
+### Store Page (`/us/store`)
+- Products grouped by category using `CategoryRail` component
+- 4 products per row on desktop
+- Category heading is `text-4xl font-bold`
+
+### Product Detail Page
+- Image gallery uses `product.images` array
+- `listProducts` fields include `*variants.images` (variant images) but NOT `*images` (product-level) — if images don't show, re-upload through admin
+- `force-dynamic` on categories and products pages to avoid build-time backend calls
+
+### Mobile Navigation
+- Uses `LocalizedClientLink` (not plain `<a>`) for internal links — prepends country code
+- External links use plain `<a>`
+
+### Logo Links
+- Nav logo → `/store`
+- Footer logo → `/store`
+
+### Track Order
+- `/us/order/status` — search by email or order ID
+- `/us/order/status/[gfeId]` — 5-step timeline with pharmacy status
 
 ### Important Patterns
-- All browser→backend calls go through Next.js `/api/` proxy routes (CORS)
 - `window.__TENANT_API_KEY__` and `window.__TENANT_DOMAIN__` injected by layout
-- `window.__GOOGLE_PLACES_KEY__` injected by layout
-- `params` in Next.js 15 API routes must be awaited
-- `export const dynamic = "force-dynamic"` on layouts that read tenant headers
+- `NEXT_PUBLIC_*` vars baked at CodeBuild time — must be set in CodeBuild env, not just EB
+- `export const dynamic = "force-dynamic"` on pages that call backend at build time
 
 ---
 
 ## Important Code Patterns
 
-### Always use x-forwarded-host not host
-Node.js `fetch` silently drops the `host` header. Always use `x-forwarded-host`.
+### Domain matching in SQL
+Always use both domain AND sales_channel_id for clinic joins (see Pharmacy Poll section above).
 
-### tenant_domain vs clinic domains
-`order_workflow.tenant_domain` stored WITHOUT port (e.g. `myclassywellness.local`).
-Clinic `domains[]` array has WITH port (e.g. `myclassywellness.local:8000`).
-Always strip port when comparing — both variants in `allowedDomains`.
+### x-forwarded-host
+Storefront middleware reads `x-forwarded-host` first (set by nginx), falls back to `host`. Backend routes read `x-forwarded-host` || `host`.
 
 ### CSS variable for brand color
 `--color-primary` (NOT `--brand-primary`)
@@ -182,18 +231,35 @@ Both `GET /admin/clinics` and `GET /admin/clinics/:id` use raw SQL (`SELECT *`) 
 
 ---
 
-## Pending / Known Issues
+## S3 Image Storage
+- Bucket: `gocbeglobal-dev`, region `us-west-1`
+- Prefix controlled by `S3_PREFIX` env var (default: `medusa`)
+- Prod: `S3_PREFIX=prod-images/`, Test: `S3_PREFIX=test-images/`
+- Bucket uses bucket policy for public read (no per-object ACLs)
+- `@medusajs/file-s3` patched on every deploy to remove ACL header
 
-### 1. DigitalRX sandbox doesn't work externally
-The sandbox key `12345678901234567890` only works through their portal tester, not from external API calls. Need a real production API key from SmartConnect.
+---
 
-### 2. pharmacy_enabled toggle
-Fixed — uses `=== true` strict equality to handle `null` from DB. GET routes use raw SQL so all fields return correctly.
+## Known Issues / Gotchas
 
-### 3. Storefront images
-Product images stored in S3 (`gocbeglobal-dev` bucket, `medusa` prefix). The ebextension patches `@medusajs/file-s3` to disable ACL on every deploy (bucket uses bucket policy for public access).
+### 1. Medusa build silently skips some routes
+Routes in `[id]` subdirectories sometimes don't compile. Fixed via `scripts/postbuild.js` which manually writes the compiled JS. Currently handles: `test-connection`, `test-pharmacy`, `dashboard`.
 
-### 4. Local testing domains
+### 2. DB connection pool exhaustion after failed deploy
+If `medusa db:migrate` runs and times out, it leaves idle connections that fill the pool. Fix:
+```bash
+psql $DATABASE_URL -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'medusa_prod' AND state = 'idle' AND pid <> pg_backend_pid();"
+sudo systemctl restart web
+sudo systemctl reload nginx
+```
+
+### 3. Storefront build fails if backend is down
+`generateStaticParams` calls backend during CodeBuild. Fixed with `export const dynamic = "force-dynamic"` on categories and products pages.
+
+### 4. nginx reload required after web restart
+The `.platform/nginx` config is loaded at deploy time. After manual `sudo systemctl restart web`, run `sudo systemctl reload nginx` to restore `X-Forwarded-Host` header.
+
+### 5. Local testing domains
 Add to `C:\Windows\System32\drivers\etc\hosts`:
 ```
 127.0.0.1 spaderx.local
@@ -210,6 +276,7 @@ Add to `C:\Windows\System32\drivers\etc\hosts`:
 cd my-medusa-store
 npx medusa develop
 ```
+Requires PostgreSQL running as Administrator on Windows.
 
 ### Storefront
 ```bash
@@ -220,4 +287,11 @@ npm run dev
 ### Run migration manually (local)
 ```bash
 set DATABASE_URL=postgres://postgres:2190@localhost/medusa-my-medusa-store && node scripts/manual-migrate.js
+```
+
+### Test built version locally (to verify postbuild patches)
+```bash
+cd my-medusa-store
+npm run build
+set DATABASE_URL=postgres://postgres:2190@localhost/medusa-my-medusa-store && cd .medusa/server && node ../../node_modules/@medusajs/cli/dist/index.js start
 ```

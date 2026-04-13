@@ -169,6 +169,65 @@ async function POST(req, res) {
 }
 `,
   },
+  {
+    src: "src/api/admin/clinics/[id]/promotions/route.ts",
+    dst: ".medusa/server/src/api/admin/clinics/[id]/promotions/route.js",
+    content: `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GET = GET;
+exports.POST = POST;
+async function GET(req, res) {
+  try {
+    const pg = req.scope.resolve("__pg_connection__");
+    const { id: clinicId } = req.params;
+    const result = await pg.raw(\`
+      SELECT cp.id AS assignment_id, cp.clinic_id, cp.promotion_id, cp.created_at AS assigned_at,
+             p.code, p.type, p.status, p.is_automatic, p.created_at AS promotion_created_at
+      FROM clinic_promotion cp
+      LEFT JOIN promotion p ON p.id = cp.promotion_id
+      WHERE cp.clinic_id = ?
+      ORDER BY cp.created_at DESC
+    \`, [clinicId]);
+    return res.json({ promotions: result.rows });
+  } catch (err) {
+    return res.status(500).json({ message: err instanceof Error ? err.message : "Error" });
+  }
+}
+async function POST(req, res) {
+  try {
+    const pg = req.scope.resolve("__pg_connection__");
+    const { id: clinicId } = req.params;
+    const { promotion_id } = req.body || {};
+    if (!promotion_id) return res.status(400).json({ message: "promotion_id is required" });
+    const promoCheck = await pg.raw("SELECT id FROM promotion WHERE id = ? LIMIT 1", [promotion_id]);
+    if (!promoCheck.rows.length) return res.status(404).json({ message: "Promotion not found" });
+    const id = "cprom_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    await pg.raw("INSERT INTO clinic_promotion (id, clinic_id, promotion_id) VALUES (?, ?, ?) ON CONFLICT (clinic_id, promotion_id) DO NOTHING", [id, clinicId, promotion_id]);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: err instanceof Error ? err.message : "Error" });
+  }
+}
+`,
+  },
+  {
+    src: "src/api/admin/clinics/[id]/promotions/[promotionId]/route.ts",
+    dst: ".medusa/server/src/api/admin/clinics/[id]/promotions/[promotionId]/route.js",
+    content: `"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DELETE = DELETE;
+async function DELETE(req, res) {
+  try {
+    const pg = req.scope.resolve("__pg_connection__");
+    const { id: clinicId, promotionId } = req.params;
+    await pg.raw("DELETE FROM clinic_promotion WHERE clinic_id = ? AND promotion_id = ?", [clinicId, promotionId]);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: err instanceof Error ? err.message : "Error" });
+  }
+}
+`,
+  },
 ]
 
 for (const route of routes) {

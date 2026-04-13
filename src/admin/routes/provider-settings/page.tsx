@@ -49,6 +49,10 @@ interface Clinic {
   pharmacy_doctor_last_name: string
   pharmacy_doctor_npi: string
   pharmacy_enabled: boolean
+  payment_provider: string
+  paypal_client_id: string
+  paypal_client_secret: string
+  paypal_mode: string
 }
 
 interface Staff { id: string; email: string; full_name: string; role: string }
@@ -399,8 +403,8 @@ function ClinicDetail({
   // Tabs visible per role
   const visibleTabs = (() => {
     if (role === "medical_director" || role === "pharmacist") return ["orders"]
-    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy"]
-    return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy"] // super_admin
+    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions"]
+    return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions"] // super_admin
   })()
 
   const TAB_LABELS: Record<string, string> = {
@@ -411,6 +415,7 @@ function ClinicDetail({
     orders: "📋 Orders",
     uiconfig: "🎨 Storefront UI",
     pharmacy: "💊 Pharmacy",
+    promotions: "🎁 Promotions",
   }
 
   // Default filter per role
@@ -472,6 +477,7 @@ function ClinicDetail({
         )}
         {activeTab === "uiconfig" && <UiConfigTab clinic={clinic} />}
         {activeTab === "pharmacy" && <PharmacyTab clinic={clinic} onUpdated={onUpdated} />}
+        {activeTab === "promotions" && <PromotionsTab clinic={clinic} role={role} />}
       </div>
     </div>
   )
@@ -697,6 +703,10 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
         stripe_publishable_key: form.stripe_publishable_key,
         stripe_secret_key: form.stripe_secret_key,
         pharmacy_staff_id: form.pharmacy_staff_id,
+        payment_provider: (form as any).payment_provider,
+        paypal_client_id: (form as any).paypal_client_id,
+        paypal_client_secret: (form as any).paypal_client_secret,
+        paypal_mode: (form as any).paypal_mode,
       }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
@@ -791,6 +801,51 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
           </Field>
         </div>
       </div>
+
+      {/* ── Payment Provider Selection ── */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 20, marginTop: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 14 }}>🏦 Payment Provider</div>
+        <Field label="Active Payment Provider">
+          <select style={s.input} value={(form as any).payment_provider || "stripe"}
+            onChange={e => setForm(p => ({ ...p, payment_provider: e.target.value } as any))}>
+            <option value="stripe">Stripe only</option>
+            <option value="paypal">PayPal only</option>
+            <option value="both">Both (Stripe + PayPal)</option>
+          </select>
+          <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>
+            Controls which payment options are shown to patients at checkout
+          </div>
+        </Field>
+      </div>
+
+      {/* ── PayPal Keys ── */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 20, marginTop: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 14 }}>🅿️ PayPal Credentials</div>
+        <div style={s.grid2}>
+          <Field label="PayPal Mode">
+            <select style={s.input} value={(form as any).paypal_mode || "sandbox"}
+              onChange={e => setForm(p => ({ ...p, paypal_mode: e.target.value } as any))}>
+              <option value="sandbox">Sandbox (Test)</option>
+              <option value="live">Live (Production)</option>
+            </select>
+          </Field>
+          <Field label="PayPal Client ID">
+            <input style={s.input} value={(form as any).paypal_client_id || ""}
+              onChange={e => setForm(p => ({ ...p, paypal_client_id: e.target.value } as any))}
+              placeholder="AXxx... (from PayPal Developer Dashboard)" />
+          </Field>
+          <Field label="PayPal Client Secret">
+            <div style={{ position: "relative" }}>
+              <input style={{ ...s.input, paddingRight: 52 }} type={showSecret ? "text" : "password"}
+                value={(form as any).paypal_client_secret || ""}
+                onChange={e => setForm(p => ({ ...p, paypal_client_secret: e.target.value } as any))}
+                placeholder="EXxx... (from PayPal Developer Dashboard)" />
+              <button onClick={() => setShowSecret(p => !p)} style={s.showBtn}>{showSecret ? "Hide" : "Show"}</button>
+            </div>
+          </Field>
+        </div>
+      </div>
+
       {testResult && (
         <div style={{
           padding: "10px 16px", borderRadius: 8,
@@ -1998,6 +2053,342 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
         </button>
         <SaveBar saving={saving} status={status} onSave={save} inline />
       </div>
+    </div>
+  )
+}
+
+// ── Promotions Tab ────────────────────────────────────────────────────────
+function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
+  const isSuperAdmin = role === "super_admin"
+
+  // List state
+  const [assigned, setAssigned] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+
+  // Create form state
+  const [showCreate, setShowCreate] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState("")
+  const blankForm = () => ({
+    code: "",
+    type: "standard" as "standard" | "buyget",
+    is_automatic: false,
+    value_type: "percentage" as "percentage" | "fixed",
+    value: "",
+    min_subtotal: "",
+    usage_limit: "",
+    starts_at: "",
+    ends_at: "",
+  })
+  const [form, setForm] = useState(blankForm())
+
+  // Super-admin assign-existing state
+  const [allPromos, setAllPromos] = useState<any[]>([])
+  const [selectedPromoId, setSelectedPromoId] = useState("")
+  const [assigning, setAssigning] = useState(false)
+
+  useEffect(() => { load() }, [clinic.id])
+
+  const load = async () => {
+    setLoading(true); setError("")
+    try {
+      const [assignedRes, allRes] = await Promise.all([
+        fetch(`/admin/clinics/${clinic.id}/promotions`, { credentials: "include" }),
+        isSuperAdmin ? fetch(`/admin/promotions-list`, { credentials: "include" }) : Promise.resolve(null),
+      ])
+      const assignedData = await assignedRes.json()
+      setAssigned(assignedData.promotions || [])
+      if (allRes) {
+        const allData = await allRes.json()
+        setAllPromos(allData.promotions || [])
+      }
+    } catch (e: any) {
+      setError(e.message || "Failed to load")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Create a new Medusa promotion then auto-assign to this clinic
+  const createPromotion = async () => {
+    if (!form.code.trim()) { setCreateError("Promotion code is required"); return }
+    if (!form.value) { setCreateError("Discount value is required"); return }
+    setCreating(true); setCreateError("")
+    try {
+      // Medusa v2 promotion payload
+      // application_method.type = "fixed" | "percentage"
+      // application_method.target_type = "order" | "items" | "shipping_methods"
+      // application_method.value = the discount amount (cents for fixed, integer % for percentage)
+      const appMethodValue = form.value_type === "percentage"
+        ? Number(form.value)                        // e.g. 20 for 20%
+        : Math.round(Number(form.value) * 100)      // e.g. 1000 for $10.00
+
+      const payload: any = {
+        code: form.code.trim().toUpperCase(),
+        type: form.type,
+        is_automatic: form.is_automatic,
+        status: "active",
+        application_method: {
+          type: form.value_type,          // "fixed" or "percentage"
+          target_type: "order",
+          value: appMethodValue,
+          currency_code: "usd",
+        },
+      }
+
+      // Promotion-level rules (min subtotal)
+      if (form.min_subtotal) {
+        payload.rules = [{
+          attribute: "subtotal",
+          operator: "gte",
+          values: [String(Math.round(Number(form.min_subtotal) * 100))],
+        }]
+      }
+
+      // Campaign for usage limit and/or date range
+      // starts_at, ends_at, and usage_limit all live on the campaign in Medusa v2
+      const hasCampaign = form.usage_limit || form.starts_at || form.ends_at
+      if (hasCampaign) {
+        const campaignIdentifier = form.code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "_")
+        const campaign: any = {
+          name: `${clinic.name} — ${form.code.trim().toUpperCase()}`,
+          campaign_identifier: `${campaignIdentifier}_${Date.now()}`,
+        }
+        if (form.starts_at) campaign.starts_at = new Date(form.starts_at).toISOString()
+        if (form.ends_at)   campaign.ends_at   = new Date(form.ends_at).toISOString()
+        if (form.usage_limit) {
+          campaign.budget = {
+            type: "usage",
+            limit: Number(form.usage_limit),
+          }
+        }
+        payload.campaign = campaign
+      }
+
+      // Create via Medusa admin API
+      const createRes = await fetch("/admin/promotions", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      if (!createRes.ok) {
+        const err = await createRes.json().catch(() => ({}))
+        throw new Error(err.message || `Failed to create promotion (${createRes.status})`)
+      }
+      const { promotion } = await createRes.json()
+
+      // Auto-assign to this clinic
+      const assignRes = await fetch(`/admin/clinics/${clinic.id}/promotions`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ promotion_id: promotion.id }),
+      })
+      if (!assignRes.ok) {
+        const err = await assignRes.json().catch(() => ({}))
+        throw new Error(err.message || `Promotion created but failed to assign (${assignRes.status})`)
+      }
+
+      setForm(blankForm())
+      setShowCreate(false)
+      load()
+    } catch (e: any) {
+      setCreateError(e.message)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  // Super-admin: assign an existing promotion
+  const assignExisting = async () => {
+    if (!selectedPromoId) return
+    setAssigning(true)
+    try {
+      await fetch(`/admin/clinics/${clinic.id}/promotions`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ promotion_id: selectedPromoId }),
+      })
+      setSelectedPromoId(""); load()
+    } catch {} finally { setAssigning(false) }
+  }
+
+  const remove = async (promotionId: string) => {
+    try {
+      await fetch(`/admin/clinics/${clinic.id}/promotions/${promotionId}`, {
+        method: "DELETE", credentials: "include",
+      })
+      load()
+    } catch {}
+  }
+
+  const statusBadge = (status: string) => {
+    const map: Record<string, { bg: string; color: string }> = {
+      active:   { bg: "#d1fae5", color: "#065f46" },
+      inactive: { bg: "#f3f4f6", color: "#6b7280" },
+      draft:    { bg: "#fef3c7", color: "#92400e" },
+    }
+    const st = map[status] || map.inactive
+    return <span style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, ...st }}>{status}</span>
+  }
+
+  const assignedIds = new Set(assigned.map((a: any) => a.promotion_id))
+  const available = allPromos.filter(p => !assignedIds.has(p.id))
+
+  if (loading) return <div style={{ color: "#9ca3af", padding: 24 }}>Loading…</div>
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {error && <div style={{ color: "#dc2626", fontSize: 13 }}>⚠️ {error}</div>}
+
+      {/* Header row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 13, color: "#6b7280" }}>
+          Promotions for <strong style={{ color: "#111" }}>{clinic.name}</strong>
+        </div>
+        <button onClick={() => { setShowCreate(p => !p); setCreateError("") }} style={s.btnPrimary}>
+          {showCreate ? "Cancel" : "+ Create Promotion"}
+        </button>
+      </div>
+
+      {/* Create form */}
+      {showCreate && (
+        <div style={{ ...s.formBox, display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#111" }}>New Promotion</div>
+
+          {createError && (
+            <div style={{ padding: "8px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, fontSize: 13, color: "#dc2626" }}>
+              ⚠️ {createError}
+            </div>
+          )}
+
+          <div style={s.grid2}>
+            <Field label="Promo Code *">
+              <input style={{ ...s.input, textTransform: "uppercase" }}
+                value={form.code}
+                onChange={e => setForm(p => ({ ...p, code: e.target.value.toUpperCase() }))}
+                placeholder="e.g. SAVE20" />
+            </Field>
+            <Field label="Type">
+              <select style={s.input} value={form.type}
+                onChange={e => setForm(p => ({ ...p, type: e.target.value as any }))}>
+                <option value="standard">Standard (code required)</option>
+                <option value="buyget">Buy X Get Y</option>
+              </select>
+            </Field>
+            <Field label="Discount Value *">
+              <div style={{ display: "flex", gap: 8 }}>
+                <select style={{ ...s.input, width: 120, flexShrink: 0 }} value={form.value_type}
+                  onChange={e => setForm(p => ({ ...p, value_type: e.target.value as any }))}>
+                  <option value="percentage">% Off</option>
+                  <option value="fixed">$ Fixed</option>
+                </select>
+                <input style={s.input} type="number" min="0" step="0.01"
+                  value={form.value}
+                  onChange={e => setForm(p => ({ ...p, value: e.target.value }))}
+                  placeholder={form.value_type === "percentage" ? "e.g. 20" : "e.g. 10.00"} />
+              </div>
+            </Field>
+            <Field label="Min Order Subtotal ($)">
+              <input style={s.input} type="number" min="0" step="0.01"
+                value={form.min_subtotal}
+                onChange={e => setForm(p => ({ ...p, min_subtotal: e.target.value }))}
+                placeholder="Optional — e.g. 50.00" />
+            </Field>
+            <Field label="Usage Limit">
+              <input style={s.input} type="number" min="1"
+                value={form.usage_limit}
+                onChange={e => setForm(p => ({ ...p, usage_limit: e.target.value }))}
+                placeholder="Max times usable (blank = unlimited)" />
+            </Field>
+            <Field label="Starts At">
+              <input style={s.input} type="date"
+                value={form.starts_at}
+                onChange={e => setForm(p => ({ ...p, starts_at: e.target.value }))} />
+            </Field>
+            <Field label="Expires At">
+              <input style={s.input} type="date"
+                value={form.ends_at}
+                onChange={e => setForm(p => ({ ...p, ends_at: e.target.value }))} />
+            </Field>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div onClick={() => setForm(p => ({ ...p, is_automatic: !p.is_automatic }))}
+              style={{ width: 40, height: 22, borderRadius: 11, background: form.is_automatic ? "#10b981" : "#d1d5db", position: "relative", cursor: "pointer", transition: "background 0.2s" }}>
+              <div style={{ position: "absolute", top: 3, left: form.is_automatic ? 21 : 3, width: 16, height: 16, borderRadius: "50%", background: "#fff", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+            </div>
+            <span style={{ fontSize: 13 }}>Auto-apply (no code needed at checkout)</span>
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={createPromotion} disabled={creating || !form.code || !form.value}
+              style={{ ...s.btnPrimary, opacity: (!form.code || !form.value) ? 0.5 : 1 }}>
+              {creating ? "Creating…" : "Create & Assign to Clinic"}
+            </button>
+            <button onClick={() => { setShowCreate(false); setForm(blankForm()); setCreateError("") }} style={s.btnOutline}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Super-admin: assign existing promotion */}
+      {isSuperAdmin && !showCreate && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", padding: "12px 16px", background: "#f9fafb", borderRadius: 8, border: "1px solid #e5e7eb" }}>
+          <div style={{ flex: 1 }}>
+            <label style={s.label}>Assign Existing Promotion (Super Admin)</label>
+            <select style={s.input} value={selectedPromoId} onChange={e => setSelectedPromoId(e.target.value)}>
+              <option value="">Select a promotion…</option>
+              {available.map(p => (
+                <option key={p.id} value={p.id}>{p.code} — {p.type} ({p.status})</option>
+              ))}
+            </select>
+          </div>
+          <button onClick={assignExisting} disabled={assigning || !selectedPromoId}
+            style={{ ...s.btnOutline, opacity: !selectedPromoId ? 0.5 : 1 }}>
+            {assigning ? "Assigning…" : "Assign"}
+          </button>
+        </div>
+      )}
+
+      {/* Promotions list */}
+      {assigned.length === 0 ? (
+        <EmptyState icon="🎁" message="No promotions for this clinic yet — create one above" />
+      ) : (
+        <table style={s.table}>
+          <thead>
+            <tr>
+              {["Code", "Type", "Status", "Auto-apply", "Usage", "Expires", ""].map(h => (
+                <th key={h} style={s.th}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {assigned.map((a: any) => (
+              <tr key={a.assignment_id}>
+                <td style={{ ...s.td, fontWeight: 700, fontFamily: "monospace", fontSize: 13 }}>{a.code || "—"}</td>
+                <td style={s.td}>{a.type || "—"}</td>
+                <td style={s.td}>{statusBadge(a.status || "inactive")}</td>
+                <td style={s.td}>
+                  <span style={{ fontSize: 12, color: a.is_automatic ? "#065f46" : "#6b7280" }}>
+                    {a.is_automatic ? "✓ Yes" : "No"}
+                  </span>
+                </td>
+                <td style={s.td}>
+                  {a.usage_count != null ? `${a.usage_count}${a.usage_limit ? ` / ${a.usage_limit}` : ""}` : "—"}
+                </td>
+                <td style={s.td}>
+                  {a.ends_at ? new Date(a.ends_at).toLocaleDateString() : "No expiry"}
+                </td>
+                <td style={s.td}>
+                  <button onClick={() => remove(a.promotion_id)} style={s.btnDanger}>Remove</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 }

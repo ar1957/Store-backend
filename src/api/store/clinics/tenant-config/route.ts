@@ -62,6 +62,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         get_started_url: uiConfig.get_started_url || "/store",
         // Stripe key for client-side payment initialization
         stripe_publishable_key: clinic.stripe_publishable_key || "",
+        // PayPal
+        payment_provider: clinic.payment_provider || "stripe",
+        paypal_client_id: clinic.paypal_client_id || "",
+        paypal_mode: clinic.paypal_mode || "sandbox",
       }
     })
   } catch (err: unknown) {

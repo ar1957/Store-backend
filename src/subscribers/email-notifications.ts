@@ -55,7 +55,11 @@ async function getOrderDetails(orderId: string, pg: any) {
     LEFT JOIN "sales_channel" sc  ON sc.id = o.sales_channel_id
     LEFT JOIN "order_summary" os  ON os.order_id = o.id AND os.deleted_at IS NULL
     LEFT JOIN "order_workflow" wf ON wf.order_id = o.id AND wf.deleted_at IS NULL
-    LEFT JOIN "clinic" cl         ON wf.tenant_domain = ANY(cl.domains)
+    LEFT JOIN "clinic" cl ON (
+      wf.tenant_domain = ANY(cl.domains)
+      OR o.sales_channel_id = cl.sales_channel_id
+      OR (o.metadata->>'eligibility')::jsonb->>'domain' = ANY(cl.domains)
+    )
     WHERE o.id = ?
     LIMIT 1`,
     [orderId]
