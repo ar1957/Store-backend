@@ -145,12 +145,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     })
 
     const pharmData = await pharmRes.json()
-    if (!pharmRes.ok || !pharmData.QueueID) {
+    if (!pharmRes.ok || (!pharmData.QueueID && !pharmData.ID && !pharmData.id)) {
       console.error("[PharmacySubmit] API error:", pharmData)
       return res.status(502).json({ message: pharmData.Message || "Pharmacy API error" })
     }
 
-    const queueId = String(pharmData.QueueID)
+    const queueId = String(pharmData.ID || pharmData.QueueID || pharmData.id)
 
     // 7. Save QueueID to order_workflow
     await pg.raw(

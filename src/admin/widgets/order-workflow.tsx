@@ -127,6 +127,52 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
 
       setMyStaff(foundStaff)
 
+      // Inject CSS to hide Metadata and JSON sections for non-super-admin roles
+      const resolvedRole = foundStaff?.role || "super_admin"
+      const existingStyle = document.getElementById("mhc-order-detail-hide")
+      if (existingStyle) existingStyle.remove()
+      if (resolvedRole !== "super_admin") {
+        const style = document.createElement("style")
+        style.id = "mhc-order-detail-hide"
+        // Target the Metadata and JSON sections by their heading text
+        // Medusa renders these as containers with a heading span
+        style.textContent = `
+          [data-testid="metadata-section"],
+          [data-testid="json-section"] { display: none !important; }
+        `
+        document.head.appendChild(style)
+
+        // Also use a MutationObserver to hide by text content since Medusa
+        // doesn't always use consistent test IDs
+        const hideByText = () => {
+          document.querySelectorAll("h2, h3, span, div").forEach(el => {
+            const text = el.textContent?.trim()
+            if (text === "Metadata" || text === "JSON") {
+              // Walk up to find the section container
+              let parent = el.parentElement
+              for (let i = 0; i < 5; i++) {
+                if (parent && (parent.tagName === "SECTION" || (parent.className && parent.className.includes("bg-ui-bg-base")))) {
+                  (parent as HTMLElement).style.display = "none"
+                  break
+                }
+                parent = parent?.parentElement || null
+              }
+            }
+          })
+        }
+        hideByText()
+        const observer = new MutationObserver(hideByText)
+        observer.observe(document.body, { childList: true, subtree: true })
+        // Store observer reference for cleanup
+        ;(window as any).__mhcOrderObserver = observer
+      } else {
+        // Super admin — remove any existing observer
+        if ((window as any).__mhcOrderObserver) {
+          ;(window as any).__mhcOrderObserver.disconnect()
+          delete (window as any).__mhcOrderObserver
+        }
+      }
+
       // For super admin, search all clinics to find which one has this order
       let targetClinicId = foundStaff?.clinic_id || null
 
