@@ -117,10 +117,29 @@ async function pollDigitalRx(pg: any, logger: any, order: any) {
     return
   }
 
-  const data = await res.json()
-  const trackingNumber = data.TrackingNumber
-  const billingStatus = data.BillingStatus || ""
-  const packDateTime = data.PackDateTime
+  const text = await res.text()
+  if (!text || text.trim() === "") {
+    // Sandbox or no-status-yet — normal, just wait
+    logger.info(`[PharmacyPoll][DigitalRX] QueueID=${order.pharmacy_queue_id}: no status yet (empty response)`)
+    return
+  }
+
+  let data: any
+  try {
+    data = JSON.parse(text)
+  } catch {
+    logger.warn(`[PharmacyPoll][DigitalRX] QueueID=${order.pharmacy_queue_id}: non-JSON response: ${text.slice(0, 100)}`)
+    return
+  }
+
+  // Status endpoint returns an array of prescription records
+  const records = Array.isArray(data) ? data : [data]
+  const record = records[0] || {}
+
+  // Field is "Trackingnumber" (lowercase n) per API docs
+  const trackingNumber = record.Trackingnumber || record.TrackingNumber
+  const billingStatus = record.BillingStatus || ""
+  const packDateTime = record.approveddated || record.PackDateTime
 
   logger.info(`[PharmacyPoll][DigitalRX] QueueID=${order.pharmacy_queue_id} status=${billingStatus} tracking=${trackingNumber || "none"}`)
 

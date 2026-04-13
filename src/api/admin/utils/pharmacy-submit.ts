@@ -126,12 +126,15 @@ export async function submitToPharmacyIfEnabled(
     const pharmData = await pharmRes.json()
     console.log(`[PharmacySubmit] Response for order ${orderId}:`, JSON.stringify(pharmData))
 
-    if (pharmRes.ok && pharmData.QueueID) {
+    // API returns { "ID": "12345" } — field is "ID" not "QueueID"
+    const queueId = pharmData.ID || pharmData.QueueID || pharmData.id
+
+    if (pharmRes.ok && queueId) {
       await pg.raw(
         `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', updated_at = NOW() WHERE id = ?`,
-        [String(pharmData.QueueID), workflowId]
+        [String(queueId), workflowId]
       )
-      console.log(`[PharmacySubmit] Order ${orderId} submitted to DigitalRX. QueueID: ${pharmData.QueueID}`)
+      console.log(`[PharmacySubmit] Order ${orderId} submitted to DigitalRX. QueueID: ${queueId}`)
     } else {
       console.error(`[PharmacySubmit] DigitalRX error for order ${orderId}:`, pharmData)
     }
