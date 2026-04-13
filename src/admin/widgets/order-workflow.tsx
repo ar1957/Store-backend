@@ -86,6 +86,8 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [pharmacyResult, setPharmacyResult] = useState<string | null>(null)
   const [pharmacyConfigured, setPharmacyConfigured] = useState(false)
   const [gfePortalUrl, setGfePortalUrl] = useState<string | null>(null)
+  const [sendingReminder, setSendingReminder] = useState(false)
+  const [reminderResult, setReminderResult] = useState<string | null>(null)
 
   const role = myStaff?.role || "super_admin"
 
@@ -297,6 +299,25 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
     finally { setSubmittingPharmacy(false) }
   }
 
+  const sendProviderReminder = async () => {
+    if (!clinicId) return
+    setSendingReminder(true)
+    setReminderResult(null)
+    try {
+      const res = await fetch(`/admin/clinics/${clinicId}/orders/${order.id}/send-reminder`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      })
+      const data = await res.json()
+      setReminderResult(res.ok ? `✓ ${data.message}` : `✗ ${data.message}`)
+    } catch (e: any) {
+      setReminderResult(`✗ Error: ${e.message}`)
+    } finally {
+      setSendingReminder(false)
+    }
+  }
+
   if (loading) {
     return (
       <div style={ws.container}>
@@ -360,6 +381,30 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           Logged in as: <strong>{ROLE_LABELS[role]}</strong>
         </span>
       </div>
+
+      {/* Provider clearance reminder — only for pending_provider orders */}
+      {workflow.status === "pending_provider" && (
+        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#92400e", marginBottom: 4 }}>⏰ Awaiting Provider Clearance</div>
+          <div style={{ fontSize: 12, color: "#78350f", marginBottom: 10 }}>
+            Patient has not yet connected with a provider. Send a reminder email with their visit link.
+          </div>
+          {reminderResult && (
+            <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8,
+              background: reminderResult.startsWith("✓") ? "#f0fdf4" : "#fef2f2",
+              color: reminderResult.startsWith("✓") ? "#166534" : "#dc2626" }}>
+              {reminderResult}
+            </div>
+          )}
+          <button
+            onClick={sendProviderReminder}
+            disabled={sendingReminder}
+            style={{ padding: "8px 16px", background: "#d97706", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", opacity: sendingReminder ? 0.7 : 1 }}
+          >
+            {sendingReminder ? "Sending…" : "📧 Send Provider Clearance Reminder"}
+          </button>
+        </div>
+      )}
 
       {/* Dosages */}
       {workflow.treatment_dosages && workflow.treatment_dosages.length > 0 && (
