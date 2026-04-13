@@ -84,17 +84,34 @@ cd /var/app/current/.medusa/server && node /var/app/current/scripts/manual-migra
 - CORS for clinic domains handled dynamically by `src/api/middlewares.ts` (60s cache)
 
 ### Key Custom Tables
-- `clinic` — tenant config (domains, API keys, branding, pharmacy config, from_email, from_name)
+- `clinic` — tenant config (domains, API keys, branding, pharmacy config, from_email, from_name, **payment_provider, paypal_client_id, paypal_client_secret, paypal_mode**)
 - `clinic_staff` — staff members per clinic with roles
 - `order_workflow` — tracks GFE/telehealth order lifecycle + pharmacy submission
 - `order_comment` — comments on orders
 - `product_treatment_map` — maps Medusa products to GFE treatments
 - `clinic_ui_config` — nav/footer links, logo, contact info per clinic
+- `clinic_promotion` — maps Medusa promotion IDs to clinics (per-clinic promotion scoping)
 
 ### Roles
 - `super_admin` — sees everything including Clinic Dashboard
-- `clinic_admin` — sees clinic-orders, products, clinic operations (read-only on Details/API tabs)
+- `clinic_admin` — sees clinic-orders, products, clinic operations (read-only on Details/API tabs), **can manage their own clinic's promotions**
 - `pharmacist` / `medical_director` — sees clinic-orders only, no dashboard
+
+### Payment Providers (per-clinic)
+Each clinic can choose `payment_provider`: `stripe`, `paypal`, or `both`.
+- Stripe keys: `stripe_publishable_key`, `stripe_secret_key` on clinic table
+- PayPal keys: `paypal_client_id`, `paypal_client_secret`, `paypal_mode` on clinic table
+- Backend provider: `medusa-plugin-paypal` (id: `payment-paypal`)
+- Storefront reads `payment_provider` from `/store/clinics/tenant-config` and loads the appropriate SDK
+- Admin UI: API & Credentials tab has Payment Provider selector + PayPal fields
+
+### Per-Clinic Promotions
+- `clinic_promotion` table links Medusa promotion IDs to clinic IDs
+- API: `GET/POST /admin/clinics/:id/promotions`, `DELETE /admin/clinics/:id/promotions/:promotionId`
+- `GET /admin/promotions-list` — lists all Medusa promotions for the assignment dropdown
+- Admin UI: Promotions tab in Clinic Operations (visible to clinic_admin and super_admin)
+- clinic_admin can only see/manage their own clinic's promotions
+- super_admin can assign any promotion to any clinic and see all
 
 ### Email
 Uses Resend. Domain `mhc-clinic-admin.com` verified in Resend.

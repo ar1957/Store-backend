@@ -49,6 +49,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       "redirect_url", "publishable_api_key", "sales_channel_id",
       "stripe_publishable_key", "stripe_secret_key", "pharmacy_staff_id",
       "from_email", "from_name", "reply_to",
+      "payment_provider", "paypal_client_id", "paypal_client_secret", "paypal_mode",
       "pharmacy_type", "pharmacy_api_url", "pharmacy_api_key",
       "pharmacy_store_id", "pharmacy_vendor_name",
       "pharmacy_doctor_first_name", "pharmacy_doctor_last_name", "pharmacy_doctor_npi",

@@ -275,6 +275,28 @@ const steps = [
     `,
   },
   {
+    name: "Migration10 - PayPal fields on clinic + clinic_promotion table",
+    sql: `
+      ALTER TABLE "clinic"
+        ADD COLUMN IF NOT EXISTS "payment_provider"     VARCHAR(20)  DEFAULT 'stripe',
+        ADD COLUMN IF NOT EXISTS "paypal_client_id"     VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "paypal_client_secret" VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "paypal_mode"          VARCHAR(20)  DEFAULT 'sandbox';
+      CREATE TABLE IF NOT EXISTS "clinic_promotion" (
+        "id"           VARCHAR(255) NOT NULL,
+        "clinic_id"    VARCHAR(255) NOT NULL,
+        "promotion_id" VARCHAR(255) NOT NULL,
+        "created_at"   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        PRIMARY KEY ("id"),
+        UNIQUE ("clinic_id", "promotion_id"),
+        CONSTRAINT "clinic_promotion_clinic_fkey"
+          FOREIGN KEY ("clinic_id") REFERENCES "clinic" ("id") ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS "idx_clinic_promotion_clinic"     ON "clinic_promotion" ("clinic_id");
+      CREATE INDEX IF NOT EXISTS "idx_clinic_promotion_promotion"  ON "clinic_promotion" ("promotion_id");
+    `,
+  },
+  {
     name: "order_workflow gfe_id as text",
     sql: `ALTER TABLE "order_workflow" ALTER COLUMN "gfe_id" TYPE TEXT USING gfe_id::TEXT`,
   },
@@ -289,7 +311,8 @@ const steps = [
       ('Migration20240101000006'),
       ('Migration20240101000007'),
       ('Migration20240101000008'),
-      ('Migration20240101000009')
+      ('Migration20240101000009'),
+      ('Migration20240101000010')
       ON CONFLICT DO NOTHING`,
   },
 ]

@@ -70,13 +70,14 @@ const buildConfig = async () => {
               options: { apiKey: process.env.STRIPE_API_KEY, capture: true },
             },
             ...(process.env.PAYPAL_CLIENT_ID ? [{
-              resolve: '@medusajs/payment-paypal',
+              resolve: 'medusa-plugin-paypal/providers/payment-paypal',
               id: 'paypal',
               options: {
+                intent: 'CAPTURE',
                 sandbox: process.env.PAYPAL_MODE !== 'live',
                 clientId: process.env.PAYPAL_CLIENT_ID,
                 clientSecret: process.env.PAYPAL_CLIENT_SECRET,
-                authWebhookId: process.env.PAYPAL_WEBHOOK_ID,
+                webhookId: process.env.PAYPAL_WEBHOOK_ID,
               },
             }] : []),
           ],
