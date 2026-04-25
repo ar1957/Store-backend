@@ -10,7 +10,6 @@ export interface ProviderSettingsData {
   api_env: string
   connect_url_test: string | null
   connect_url_prod: string | null
-  connect_env: string
   redirect_url: string | null
   is_active: boolean
 }
@@ -279,7 +278,7 @@ class ProviderIntegrationService extends MedusaService({
     const { gfeId, roomNo } = data?.payload || {}
     if (!gfeId || roomNo === undefined) throw new Error("Invalid GFE response")
 
-    const connectBase = settings.connect_env === "prod"
+    const connectBase = settings.api_env === "prod"
       ? settings.connect_url_prod
       : settings.connect_url_test
     const birthYear = patientDob.split("-")[0] || ""

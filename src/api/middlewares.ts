@@ -298,6 +298,7 @@ export default defineMiddlewares({
     { matcher: "/store/orders/:gfeId/status",          method: ["GET", "POST"], middlewares: [] },
     { matcher: "/store/orders/:orderId/gfe-status",    method: "GET",           middlewares: [] },
     { matcher: "/store/clinics/stripe-config",         method: "GET",           middlewares: [] },
-    { matcher: "/store/clinics/create-payment-intent", method: "POST",          middlewares: [] },
+    { matcher: "/store/clinics/create-payment-intent",   method: "POST",          middlewares: [] },
+    { matcher: "/store/clinics/mark-payment-authorized", method: "POST",          middlewares: [] },
   ],
 })
