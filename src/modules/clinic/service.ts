@@ -15,7 +15,6 @@ export interface ClinicData {
   api_env: string
   api_base_url_test: string
   api_base_url_prod: string
-  connect_env: string
   connect_url_test: string
   connect_url_prod: string
   redirect_url: string | null
@@ -113,7 +112,7 @@ class ClinicService extends MedusaService({ Clinic }) {
   }
 
   getConnectUrl(clinic: ClinicData): string {
-    return clinic.connect_env === "prod"
+    return clinic.api_env === "prod"
       ? clinic.connect_url_prod
       : clinic.connect_url_test
   }

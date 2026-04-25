@@ -33,7 +33,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     // 2. Get token
     const token = await clinicSvc.getToken(clinic.id)
-    const baseUrl = clinic.connect_env === "production"
+    const baseUrl = clinic.api_env === "prod"
       ? clinic.api_base_url_prod
       : clinic.api_base_url_test
 
@@ -105,7 +105,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     }
 
     // 6. Build virtual room URL
-    const connectBase = clinic.connect_env === "production"
+    const connectBase = clinic.api_env === "prod"
       ? clinic.connect_url_prod
       : clinic.connect_url_test
     const redirectUrl = encodeURIComponent(clinic.redirect_url || `https://${domain}/order/status`)

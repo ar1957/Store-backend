@@ -203,7 +203,7 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           setPharmacyConfigured(hasPharmacy)
 
           // Build GFE portal URL
-          const connectUrl = c.connect_env === "prod" ? c.connect_url_prod : c.connect_url_test
+          const connectUrl = c.api_env === "prod" ? c.connect_url_prod : c.connect_url_test
           if (connectUrl) setGfePortalUrl(connectUrl.replace(/\/$/, ""))
         } catch {}
       }

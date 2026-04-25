@@ -11,7 +11,6 @@ const ProviderSettings = model.define("provider_settings", {
   api_env: model.text().default("test"),
   connect_url_test: model.text().nullable(),
   connect_url_prod: model.text().nullable(),
-  connect_env: model.text().default("test"),
   redirect_url: model.text().nullable(),
   is_active: model.boolean().default(false),
 })
