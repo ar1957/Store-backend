@@ -7,6 +7,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const body = req.body as any
     const { domain, amount, currency = "usd", cartId } = body
 
+    console.log("[create-payment-intent] Received domain:", domain, "amount:", amount)
+
     if (!domain || !amount) {
       return res.status(400).json({ message: "domain and amount are required" })
     }
@@ -31,6 +33,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       automatic_payment_methods: { enabled: true },
       metadata: { cartId: cartId || "", clinicId: clinic.id, clinicName: clinic.name, domain },
     })
+
+    console.log("[create-payment-intent] Created PaymentIntent:", paymentIntent.id)
 
     return res.json({
       clientSecret: paymentIntent.client_secret,

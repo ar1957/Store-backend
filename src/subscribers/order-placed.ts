@@ -148,7 +148,8 @@ export default async function orderPlacedHandler({
     }
 
     if (treatmentIds.length === 0) {
-      logger.warn(`[OrderPlaced] No treatment IDs found for order ${orderId} — using empty treatments`)
+      logger.warn(`[OrderPlaced] No treatment mappings found for order ${orderId} — skipping GFE creation. Order will be fulfilled outside the clinic workflow.`)
+      return
     }
 
     // 7. Create GFE
