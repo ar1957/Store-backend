@@ -1,7 +1,7 @@
 # MHC Store — Developer Handoff Context
 
 ## Project Overview
-Multi-tenant Medusa v2 backend + Next.js 15 storefront. Each clinic/store is a tenant with its own domain, branding, Stripe keys, and GFE (telehealth) API credentials. The admin UI is a custom Medusa admin extension.
+Multi-tenant Medusa v2 backend + Next.js 15 storefront. Each clinic/store is a tenant with its own domain, branding, Stripe keys, PayPal keys, and GFE (telehealth) API credentials. The admin UI is a custom Medusa admin extension.
 
 ## Workspaces
 - `my-medusa-store` — Medusa v2 backend (port 9000)
@@ -31,7 +31,7 @@ Multi-tenant Medusa v2 backend + Next.js 15 storefront. Each clinic/store is a t
 
 ### Critical: postbuild.js
 `scripts/postbuild.js` runs after `medusa build` and:
-1. Writes routes that Medusa build silently skips: `test-connection/route.js`, `test-pharmacy/route.js`, `dashboard/route.js`
+1. Writes routes that Medusa build silently skips: `test-connection/route.js`, `test-pharmacy/route.js`, `dashboard/route.js`, promotions routes, send-reminder route
 2. Patches admin login branding ("Welcome to Medusa" → "MHC Clinic Administration")
 3. Patches `@medusajs/file-s3` to disable ACL (bucket uses bucket policy)
 
@@ -48,6 +48,7 @@ Multi-tenant Medusa v2 backend + Next.js 15 storefront. Each clinic/store is a t
 - `DATABASE_URL`, `MEDUSA_BACKEND_URL`, `ADMIN_CORS`, `AUTH_CORS`, `STORE_CORS`
 - `JWT_SECRET`, `COOKIE_SECRET`, `STRIPE_API_KEY`
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`
+- `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PAYPAL_MODE`
 - `S3_BUCKET=gocbeglobal-dev`, `S3_REGION=us-west-1`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
 - `S3_PREFIX=prod-images/` (prod) or `test-images/` (test) — controls S3 folder
 - `NODE_ENV=production`, `PORT=9000`
@@ -266,6 +267,153 @@ Add to `C:\Windows\System32\drivers\etc\hosts`:
 127.0.0.1 myclassywellness.local
 127.0.0.1 contour-wellness.local
 ```
+
+---
+
+## Local Development
+
+### Backend
+```bash
+cd my-medusa-store
+npx medusa develop
+```
+Requires PostgreSQL running as Administrator on Windows.
+
+### Storefront
+```bash
+cd my-medusa-store-storefront
+npm run dev
+```
+
+### Run migration manually (local)
+```bash
+set DATABASE_URL=postgres://postgres:2190@localhost/medusa-my-medusa-store && node scripts/manual-migrate.js
+```
+
+### Test built version locally (to verify postbuild patches)
+```bash
+cd my-medusa-store
+npm run build
+set DATABASE_URL=postgres://postgres:2190@localhost/medusa-my-medusa-store && cd .medusa/server && node ../../node_modules/@medusajs/cli/dist/index.js start
+```
+
+---
+
+## SEV1 OPEN ISSUE: Per-Clinic Stripe Keys
+
+### Problem
+Medusa's payment module uses one global `STRIPE_API_KEY` to create payment sessions. When a clinic has their own live Stripe key (`pk_live_...`), the frontend loads Stripe with that live key but the backend created the session with the global test key (`sk_test_...`). Stripe rejects this mismatch — card fields don't appear.
+
+### Temporary Fix (Applied to PROD)
+Set `STRIPE_API_KEY` in backend EB environment to SpadeRx's live secret key. This makes Medusa create sessions with the live key matching SpadeRx's `pk_live_...`. Other test clinics break temporarily for new carts.
+
+### Proper Fix (In Progress — NOT yet working)
+New flow bypasses Medusa's payment session entirely for per-clinic Stripe:
+1. `PaymentWrapper` calls `/api/create-payment-intent` (Next.js proxy route)
+2. Proxy calls backend `POST /store/clinics/create-payment-intent` with clinic domain
+3. Backend uses `clinic.stripe_secret_key` (raw SQL, bypasses ORM cache) to create Stripe PaymentIntent
+4. `clientSecret` returned to frontend, passed to `StripeWrapper` directly
+5. `StripeWrapper` now accepts explicit `clientSecret` prop
+
+### Key Files Changed for Per-Clinic Stripe
+- `src/api/store/clinics/create-payment-intent/route.ts` — backend, uses raw SQL for clinic lookup
+- `src/app/api/create-payment-intent/route.ts` — storefront Next.js proxy (avoids cert issues)
+- `src/modules/checkout/components/payment-wrapper/index.tsx` — calls proxy, passes clientSecret
+- `src/modules/checkout/components/payment-wrapper/stripe-wrapper.tsx` — accepts `clientSecret` prop
+- `src/modules/checkout/components/payment-button/index.tsx` — reads clientSecret from session data
+
+### Status
+Backend route confirmed working via curl. Storefront proxy confirmed working manually. But automatic call from `PaymentWrapper` still failing — `cartTotal` is 0 at mount time (before shipping selected), causing the PaymentIntent creation to be skipped. After shipping is selected, `cartTotal` updates and triggers re-fetch via `useEffect([cartTotal])`. Still debugging why card fields don't appear after that.
+
+### Debug Logs Added
+`PaymentWrapper` logs `[PaymentWrapper] clinicClientSecret`, `effectiveClientSecret`, `stripePromise`, `loading`, `noPaymentNeeded` to browser console on every render.
+
+---
+
+## New Features Added (This Session)
+
+### PayPal Per-Clinic
+- Migration 10: `payment_provider`, `paypal_client_id`, `paypal_client_secret`, `paypal_mode` on `clinic` table
+- `medusa-plugin-paypal` installed, registered in `medusa-config.ts`
+- Admin UI: Payment Provider selector + PayPal fields in API & Credentials tab
+- Storefront: `PaypalWrapper` uses `NEXT_PUBLIC_PAYPAL_CLIENT_ID` env var
+- PayPal session initiated in `PayPalPaymentButton` on mount
+- Run `node scripts/add-paypal-to-regions.js` to add PayPal to all regions after backend deploy
+- **Important**: `medusa-plugin-paypal` provider identifier is `paypal`, registered as `pp_paypal_paypal`
+- PayPal `onApprove` must call `actions.order.capture()` before `placeOrder()` — plugin bug where `APPROVED` status isn't handled
+
+### Per-Clinic Promotions
+- Migration 10: `clinic_promotion` table
+- Promotions tab in Clinic Operations — clinic_admin can create promotions directly
+- Uses Medusa's `POST /admin/promotions` API with inline `campaign` for dates/limits
+- `GET /admin/clinics/:id/promotions` joins `promotion`, `promotion_campaign`, `promotion_campaign_budget` tables
+- Promotion table columns: `limit`, `used` (not `usage_limit`, `usage_count`)
+- Campaign tables: `promotion_campaign`, `promotion_campaign_budget`
+
+### Provider Clearance Reminder Button
+- `POST /admin/clinics/:id/orders/:orderId/send-reminder` — sends same email as daily cron
+- Button in Order Workflow Widget (order detail page) for `pending_provider` orders
+- In `postbuild.js` for compiled output
+
+### Order Workflow — Skip GFE for Unmapped Products
+- `src/subscribers/order-placed.ts` — if no treatment mappings found for order products, skip GFE creation entirely and return early
+- Order completes normally through Medusa without provider clearance workflow
+
+### Category Description HTML
+- `src/modules/categories/templates/index.tsx` — renders description as HTML (`dangerouslySetInnerHTML`) or `pre-line` text
+- Use inline styles on `<ul>` for bullet points since Tailwind resets list styles
+- Example: `<ul style="list-style:disc;padding-left:1.5em;margin:0.75em 0;"><li>...</li></ul>`
+
+### DigitalRX API v2 Fixes
+- Submit response field is `ID` not `QueueID` — fixed in `pharmacy-submit.ts` and manual route
+- Status response is an array `[{...}]` not single object — fixed in `pharmacy-poll.ts`
+- Tracking field is `Trackingnumber` (lowercase n) — fixed in poll
+- Status endpoint returns empty body when no status yet (sandbox behavior) — handled gracefully
+
+### Storefront Category Caching Fix
+- `src/lib/data/categories.ts` — changed from `cache: "force-cache"` to `cache: "no-store"`
+- New categories added in admin now appear immediately without redeploy
+
+### Metadata/JSON Section Hidden for Non-Super-Admin
+- `src/admin/widgets/order-workflow.tsx` — injects CSS + MutationObserver to hide Metadata and JSON sections on order detail page for non-super-admin roles
+
+---
+
+## Known Issues / Gotchas
+
+### 1. Medusa build silently skips some routes
+Routes in `[id]` subdirectories sometimes don't compile. Fixed via `scripts/postbuild.js` which manually writes the compiled JS. Currently handles: `test-connection`, `test-pharmacy`, `dashboard`, promotions routes, send-reminder route.
+
+### 2. DB connection pool exhaustion after failed deploy
+If `medusa db:migrate` runs and times out, it leaves idle connections that fill the pool. Fix:
+```bash
+psql $DATABASE_URL -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'medusa_prod' AND state = 'idle' AND pid <> pg_backend_pid();"
+sudo systemctl restart web
+sudo systemctl reload nginx
+```
+
+### 3. Storefront build fails if backend is down
+`generateStaticParams` calls backend during CodeBuild. Fixed with `export const dynamic = "force-dynamic"` on categories and products pages.
+
+### 4. nginx reload required after web restart
+The `.platform/nginx` config is loaded at deploy time. After manual `sudo systemctl restart web`, run `sudo systemctl reload nginx` to restore `X-Forwarded-Host` header.
+
+### 5. Local testing domains
+Add to `C:\Windows\System32\drivers\etc\hosts`:
+```
+127.0.0.1 spaderx.local
+127.0.0.1 myclassywellness.local
+127.0.0.1 contour-wellness.local
+```
+
+### 6. Live Stripe keys require HTTPS
+Cannot test live Stripe keys locally (HTTP). Must test on TEST or PROD EB environment.
+
+### 7. PayPal sandbox status returns empty body
+Normal behavior — sandbox doesn't return status data until pharmacy processes. Production will return real data.
+
+### 8. DigitalRX sandbox QueueID
+Sandbox submissions return a QueueID but status endpoint returns empty. This is expected sandbox behavior.
 
 ---
 
