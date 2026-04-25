@@ -300,5 +300,6 @@ export default defineMiddlewares({
     { matcher: "/store/clinics/stripe-config",         method: "GET",           middlewares: [] },
     { matcher: "/store/clinics/create-payment-intent",   method: "POST",          middlewares: [] },
     { matcher: "/store/clinics/mark-payment-authorized", method: "POST",          middlewares: [] },
+    { matcher: "/store/clinics/complete-cart",           method: "POST",          middlewares: [] },
   ],
 })
