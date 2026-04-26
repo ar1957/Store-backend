@@ -20,6 +20,9 @@ const buildConfig = async () => {
     admin: { disable: false },
     projectConfig: {
       databaseUrl: process.env.DATABASE_URL,
+      databaseDriverOptions: {
+        pool: { min: 2, max: 25 },
+      },
       http: {
         storeCors,
         adminCors,

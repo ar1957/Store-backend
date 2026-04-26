@@ -65,7 +65,7 @@ export default async function orderPlacedHandler({
 
     // 3. Get token
     const token = await clinicSvc.getToken(clinic.id)
-    const baseUrl = clinic.connect_env === "production"
+    const baseUrl = clinic.api_env === "prod"
       ? clinic.api_base_url_prod
       : clinic.api_base_url_test
 
@@ -94,6 +94,8 @@ export default async function orderPlacedHandler({
         "6": sex === "female" && pregnancy && pregnancy !== "none" ? pregnancy : "false",
       },
     }
+
+    logger.info(`[OrderPlaced] Patient request body: ${JSON.stringify(patientPayload)}`)
 
     const patientRes = await fetch(`${baseUrl}/patient`, {
       method: "POST",
@@ -180,7 +182,7 @@ export default async function orderPlacedHandler({
     }
 
     // 7. Build virtual room URL
-    const connectBase = (clinic.connect_env === "production"
+    const connectBase = (clinic.api_env === "prod"
       ? clinic.connect_url_prod
       : clinic.connect_url_test).replace(/\/+$/, "")
     const redirectUrl = encodeURIComponent(

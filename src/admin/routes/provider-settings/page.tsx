@@ -28,7 +28,6 @@ interface Clinic {
   api_env: "test" | "prod"
   api_base_url_test: string
   api_base_url_prod: string
-  connect_env: "test" | "prod"
   connect_url_test: string
   connect_url_prod: string
   redirect_url: string
@@ -93,7 +92,6 @@ const BLANK_CLINIC: Partial<Clinic> = {
   api_env: "test",
   api_base_url_test: "https://api-dev.healthcoversonline.com/endpoint/v2",
   api_base_url_prod: "https://api.healthcoversonline.com/endpoint/v2",
-  connect_env: "test",
   connect_url_test: "https://app.healthcoversonline.com/connect/patient",
   connect_url_prod: "https://app.healthcoversonline.com/connect/patient",
 }
@@ -696,7 +694,6 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
         api_env: form.api_env,
         api_base_url_test: form.api_base_url_test,
         api_base_url_prod: form.api_base_url_prod,
-        connect_env: form.connect_env,
         connect_url_test: form.connect_url_test,
         connect_url_prod: form.connect_url_prod,
         redirect_url: form.redirect_url,
@@ -768,12 +765,6 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
         </Field>
         <Field label="API Base URL (Production)">
           <input style={{ ...s.input, fontSize: 12 }} value={form.api_base_url_prod || ""} onChange={e => setForm(p => ({ ...p, api_base_url_prod: e.target.value }))} />
-        </Field>
-        <Field label="Patient Connect Environment">
-          <select style={s.input} value={form.connect_env} onChange={e => setForm(p => ({ ...p, connect_env: e.target.value as "test" | "prod" }))}>
-            <option value="test">Test</option>
-            <option value="prod">Production</option>
-          </select>
         </Field>
         <Field label="Connect URL (Test)">
           <input style={{ ...s.input, fontSize: 12 }} value={form.connect_url_test || ""} onChange={e => setForm(p => ({ ...p, connect_url_test: e.target.value }))} />

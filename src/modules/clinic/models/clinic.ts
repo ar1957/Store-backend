@@ -26,7 +26,6 @@ const Clinic = model.define("clinic", {
   ),
 
   // Patient connect
-  connect_env: model.text().default("test"),
   connect_url_test: model.text().default(
     "https://app.healthcoversonline.com/connect/patient"
   ),
