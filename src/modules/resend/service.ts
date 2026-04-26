@@ -84,10 +84,12 @@ function OrderConfirmationEmail({ data }: { data: any }) {
             e("td", { colSpan: 2, style: { padding: "8px 12px", fontWeight: 700, color: "#111" } }, "Subtotal:"),
             e("td", { style: { padding: "8px 12px", textAlign: "right", color: "#374151" } }, data.subtotal || ""),
           ),
-          // Discount (only if present)
+          // Discount (only if present) — shows promo code and amount in green
           ...(data.discount ? [e("tr", { style: { borderTop: "1px solid #f3f4f6" } },
-            e("td", { colSpan: 2, style: { padding: "8px 12px", fontWeight: 700, color: "#111" } }, "Discount:"),
-            e("td", { style: { padding: "8px 12px", textAlign: "right", color: "#374151" } }, data.discount),
+            e("td", { colSpan: 2, style: { padding: "8px 12px", fontWeight: 700, color: "#111" } },
+              data.discount_codes ? `Discount (${data.discount_codes}):` : "Discount:"
+            ),
+            e("td", { style: { padding: "8px 12px", textAlign: "right", color: "#10b981", fontWeight: 600 } }, data.discount),
           )] : []),
           // Shipping
           e("tr", { style: { borderTop: "1px solid #f3f4f6" } },
@@ -97,7 +99,7 @@ function OrderConfirmationEmail({ data }: { data: any }) {
           // Total
           e("tr", { style: { borderTop: "1px solid #e5e7eb" } },
             e("td", { colSpan: 2, style: { padding: "8px 12px", fontWeight: 700, color: "#111" } }, "Total:"),
-            e("td", { style: { padding: "8px 12px", textAlign: "right", color: "#374151" } }, data.total || ""),
+            e("td", { style: { padding: "8px 12px", textAlign: "right", fontWeight: 700, color: "#111" } }, data.total || ""),
           ),
         )
       ),
@@ -206,8 +208,6 @@ function RefundEmail({ data }: { data: any }) {
     ),
   )
 }
-
-// ── Template map ───────────────────────────────────────────────────────────
 
 function PendingProviderReminderEmail({ data }: { data: any }) {
   const e = React.createElement

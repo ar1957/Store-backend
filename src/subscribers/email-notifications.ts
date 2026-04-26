@@ -83,7 +83,6 @@ async function getOrderDetails(orderId: string, pg: any) {
 
   const lineItems = (itemsResult.rows || []).map((li: any) => {
     const meta = li.metadata || {}
-    // Pull eligibility answers from metadata for display (e.g. pregnancy)
     const notes: string[] = []
     if (meta.is_pregnant !== undefined) notes.push(`Is pregnant: ${meta.is_pregnant}`)
     return {
@@ -94,15 +93,58 @@ async function getOrderDetails(orderId: string, pg: any) {
     }
   })
 
-  // Totals
-  let subtotal = "", discount = "", shipping = "", total = ""
+  // ── Totals: calculate directly from line items and adjustments ──────────
+  // order_summary.totals does NOT have subtotal/discount/shipping fields,
+  // so we query the actual tables instead.
+  let subtotal = "", discount = "", shipping = "", total = "", discountCodes = ""
   try {
-    const totals = typeof row.order_totals === "string" ? JSON.parse(row.order_totals) : row.order_totals
-    subtotal = fmt(Number(totals?.subtotal ?? 0))
-    discount = totals?.discount_total ? `-${fmt(Number(totals.discount_total))}` : ""
-    shipping = totals?.shipping_total === 0 ? "Free Standard Shipping" : fmt(Number(totals?.shipping_total ?? 0))
-    total = fmt(Number(totals?.current_order_total ?? totals?.total ?? 0))
-  } catch { /* ignore */ }
+    // Subtotal = sum of (unit_price × quantity) across all line items
+    const subtotalResult = await pg.raw(
+      `SELECT COALESCE(SUM(li.unit_price * oi.quantity), 0) AS subtotal
+       FROM order_item oi
+       JOIN order_line_item li ON li.id = oi.item_id
+       WHERE oi.order_id = ?`,
+      [orderId]
+    )
+    const subtotalVal = Number(subtotalResult.rows?.[0]?.subtotal ?? 0)
+
+    // Discount = sum of all line item adjustments (promo codes)
+    const discountResult = await pg.raw(
+      `SELECT
+         COALESCE(SUM(DISTINCT lia.amount), 0) AS discount_total,
+         STRING_AGG(DISTINCT lia.code, ', ') AS codes
+       FROM order_line_item_adjustment lia
+       JOIN order_line_item li ON li.id = lia.item_id
+       JOIN order_item oi ON oi.item_id = li.id
+       WHERE oi.order_id = ?`,
+      [orderId]
+    )
+    const discountVal = Number(discountResult.rows?.[0]?.discount_total ?? 0)
+    discountCodes = discountResult.rows?.[0]?.codes || ""
+
+    // Shipping = sum of shipping method amounts
+    const shippingResult = await pg.raw(
+      `SELECT COALESCE(SUM(osm.amount), 0) AS shipping_total
+       FROM order_shipping os
+       JOIN order_shipping_method osm ON osm.id = os.shipping_method_id
+       WHERE os.order_id = ?`,
+      [orderId]
+    )
+    const shippingVal = Number(shippingResult.rows?.[0]?.shipping_total ?? 0)
+
+    // Total = from order_summary.totals.original_order_total
+    const totals = typeof row.order_totals === "string"
+      ? JSON.parse(row.order_totals)
+      : row.order_totals
+    const totalVal = Number(totals?.original_order_total ?? (subtotalVal - discountVal + shippingVal))
+
+    subtotal = fmt(subtotalVal)
+    discount = discountVal > 0 ? `-${fmt(discountVal)}` : ""
+    shipping = shippingVal === 0 ? "Free Standard Shipping" : fmt(shippingVal)
+    total = fmt(totalVal)
+  } catch (err) {
+    console.error("[Email] Failed to calculate order totals:", err)
+  }
 
   const firstName = row.ship_first || row.cust_first || ""
   const lastName  = row.ship_last  || row.cust_last  || ""
@@ -129,6 +171,7 @@ async function getOrderDetails(orderId: string, pg: any) {
     line_items: lineItems,
     subtotal,
     discount,
+    discount_codes: discountCodes,
     shipping,
     total,
     shipping_address: {
