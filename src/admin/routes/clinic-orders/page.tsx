@@ -12,6 +12,7 @@ export const config = defineRouteConfig({
 
 type WorkflowStatus =
   | "pending_provider"
+  | "pending_pharmacy"
   | "pending_md_review"
   | "provider_deferred"
   | "processing_pharmacy"
@@ -95,6 +96,11 @@ const STATUS_CONFIG: Record<WorkflowStatus, { label: string; color: string; bg: 
     label: "Refunded",
     color: "#374151",
     bg: "#F3F4F6",
+  },
+  pending_pharmacy: {
+    label: "Pending Pharmacy",
+    color: "#0E7490",
+    bg: "#CFFAFE",
   },
 }
 
@@ -438,6 +444,7 @@ export default function ClinicOrdersPage() {
         >
           <option value="all">All Statuses</option>
           <option value="pending_provider">Pending Provider Clearance</option>
+          <option value="pending_pharmacy">Pending Pharmacy</option>
           <option value="pending_md_review">Pending Physician Review</option>
           <option value="processing_pharmacy">Processing Pharmacy</option>
           <option value="shipped">Shipped</option>
