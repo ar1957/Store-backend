@@ -107,6 +107,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   sent_to_pharmacy:         { label: "Sent to Pharmacy",   color: "#1e40af", bg: "#dbeafe" },
   pharmacy_processing:      { label: "Processing",         color: "#1e40af", bg: "#dbeafe" },
   shipped:                  { label: "Shipped",            color: "#065f46", bg: "#d1fae5" },
+  pending_pharmacy:         { label: "Pending Pharmacy",   color: "#0e7490", bg: "#cffafe" },
   refund_issued:            { label: "Refund Issued",      color: "#991b1b", bg: "#fee2e2" },
 }
 
@@ -419,8 +420,6 @@ function ClinicDetail({
   // Default filter per role
   const defaultOrderFilter = role === "medical_director"
     ? "provider_deferred"
-    : role === "pharmacist"
-    ? "processing_pharmacy"
     : ""
 
   return (
@@ -1099,8 +1098,52 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
     loadMappings()
   }
 
+  const mappedProductIds = new Set(mappings.map(m => m.product_id))
+  const unmappedProducts = products.filter(p => !mappedProductIds.has(p.id))
+
   return (
     <div>
+      {/* Warning: products with no mapping */}
+      {products.length > 0 && unmappedProducts.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "flex-start", gap: 10,
+          background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 10,
+          padding: "12px 16px", marginBottom: 20,
+        }}>
+          <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>⚠️</span>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e", marginBottom: 4 }}>
+              {unmappedProducts.length} product{unmappedProducts.length !== 1 ? "s" : ""} not yet mapped to a treatment
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 8px" }}>
+              {unmappedProducts.map(p => (
+                <span key={p.id} style={{
+                  fontSize: 11, fontWeight: 600, background: "#fef3c7",
+                  color: "#92400e", border: "1px solid #fcd34d",
+                  borderRadius: 6, padding: "2px 8px",
+                }}>
+                  {p.title}
+                </span>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "#b45309", marginTop: 6 }}>
+              Orders containing unmapped products will bypass provider review and go directly to pharmacy.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {products.length > 0 && unmappedProducts.length === 0 && mappings.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10,
+          padding: "10px 16px", marginBottom: 20,
+        }}>
+          <span style={{ fontSize: 16 }}>✓</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#166534" }}>All products are mapped to a treatment</span>
+        </div>
+      )}
+
       {mappings.length > 0 && (
         <table style={{ ...s.table, marginBottom: 24 }}>
           <thead>
@@ -1141,7 +1184,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
           <Field label="Product">
             <select style={s.input} value={form.product_id} onChange={e => setForm(p => ({ ...p, product_id: e.target.value }))}>
               <option value="">Select product…</option>
-              {products.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
+              {unmappedProducts.map(p => <option key={p.id} value={p.id}>{p.title}</option>)}
             </select>
           </Field>
           <Field label="Treatment">
@@ -1151,6 +1194,9 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
             </select>
           </Field>
         </div>
+        {unmappedProducts.length === 0 && products.length > 0 && (
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 8 }}>All products have been mapped.</div>
+        )}
         <button onClick={addMapping} disabled={!form.product_id || !form.treatment_id}
           style={{ ...s.btnPrimary, marginTop: 12, opacity: (!form.product_id || !form.treatment_id) ? 0.5 : 1 }}>
           + Add Mapping
@@ -1274,7 +1320,7 @@ function OrdersTab({
                     {canMdReview && o.status === "provider_deferred" && (
                       <button onClick={() => { setSelectedOrder(o); setMdNotes("") }} style={s.btnAction}>MD Review</button>
                     )}
-                    {canShip && (o.status === "sent_to_pharmacy" || o.status === "pharmacy_processing" || o.status === "processing_pharmacy") && (
+                    {canShip && (o.status === "sent_to_pharmacy" || o.status === "pharmacy_processing" || o.status === "processing_pharmacy" || o.status === "pending_pharmacy") && (
                       <button onClick={() => { setSelectedOrder(o); setTracking({ number: "", carrier: "UPS" }) }} style={s.btnAction}>Ship</button>
                     )}
                     {o.status === "shipped" && o.tracking_number && (
@@ -1357,7 +1403,7 @@ function OrdersTab({
       )}
 
       {/* Ship Modal */}
-      {selectedOrder && (selectedOrder.status === "sent_to_pharmacy" || selectedOrder.status === "pharmacy_processing" || selectedOrder.status === "processing_pharmacy") && (
+      {selectedOrder && (selectedOrder.status === "sent_to_pharmacy" || selectedOrder.status === "pharmacy_processing" || selectedOrder.status === "processing_pharmacy" || selectedOrder.status === "pending_pharmacy") && (
         <Modal onClose={() => setSelectedOrder(null)}>
           <h3 style={s.modalTitle}>Mark as Shipped</h3>
           <p style={s.modalSubtitle}>Order {selectedOrder.order_id?.slice(0, 14)}… — Patient #{selectedOrder.patient_id}</p>
