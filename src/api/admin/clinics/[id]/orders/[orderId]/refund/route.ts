@@ -1,14 +1,15 @@
 /**
  * POST /admin/clinics/:id/orders/:orderId/refund
  *
- * Issues a real payment refund via Medusa's refundPaymentWorkflow
- * (which calls Stripe / the payment provider), then updates the
- * order_workflow status to 'refund_issued'.
+ * Issues a real Stripe refund using the clinic's own stripe_secret_key
+ * (since payments go through pp_system_default, Medusa's refundPaymentWorkflow
+ * won't call Stripe — we must do it directly).
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { refundPaymentWorkflow } from "@medusajs/core-flows"
 import { Modules } from "@medusajs/framework/utils"
 import { INotificationModuleService } from "@medusajs/framework/types"
+import { generateEntityId } from "@medusajs/utils"
+import Stripe from "stripe"
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
@@ -20,10 +21,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "Refund reason is required" })
     }
 
-    // ── 1. Get the captured payment for this order ────────────────────────
-    // order → order_payment_collection → payment_collection → payment
+    // ── 1. Get the captured payment + its Stripe PaymentIntent ID ─────────
     const paymentResult = await pg.raw(
-      `SELECT p.id AS payment_id, p.amount, p.currency_code, p.captured_at
+      `SELECT p.id AS payment_id, p.amount, p.raw_amount, p.currency_code, p.captured_at, p.data
        FROM order_payment_collection opc
        JOIN payment_collection pc ON pc.id = opc.payment_collection_id
        JOIN payment p ON p.payment_collection_id = pc.id
@@ -43,20 +43,66 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     const payment = paymentResult.rows[0]
 
-    // ── 2. Get actor id for audit trail ───────────────────────────────────
+    // ── 2. Get clinic's Stripe secret key ────────────────────────────────
+    const clinicResult = await pg.raw(
+      `SELECT stripe_secret_key FROM clinic WHERE id = ? LIMIT 1`,
+      [clinicId]
+    )
+    if (!clinicResult.rows[0]?.stripe_secret_key) {
+      return res.status(400).json({ message: "Stripe not configured for this clinic" })
+    }
+    const stripeKey = clinicResult.rows[0].stripe_secret_key
+
+    // ── 3. Extract PaymentIntent ID from payment.data ─────────────────────
+    // payment.data stores { id: "pi_xxx", status: "succeeded", ... }
+    let paymentIntentId: string | null = null
+    try {
+      const data = typeof payment.data === "string" ? JSON.parse(payment.data) : payment.data
+      paymentIntentId = data?.id || null
+    } catch {}
+
+    if (!paymentIntentId || !paymentIntentId.startsWith("pi_")) {
+      return res.status(400).json({
+        message: `Cannot refund — no Stripe PaymentIntent ID found in payment record. Payment data: ${JSON.stringify(payment.data)}`
+      })
+    }
+
+    // ── 4. Call Stripe to issue the actual refund ─────────────────────────
+    const stripe = new Stripe(stripeKey, { apiVersion: "2024-06-20" as any })
+    const stripeRefund = await stripe.refunds.create({
+      payment_intent: paymentIntentId,
+      reason: "requested_by_customer",
+      metadata: { order_id: orderId, clinic_id: clinicId, internal_reason: reason.trim() },
+    })
+    console.log(`[Refund] Stripe refund created: ${stripeRefund.id} status: ${stripeRefund.status}`)
+
+    // ── 5. Create refund record in Medusa DB ──────────────────────────────
+    const amount = payment.amount
+    const rawAmount = JSON.stringify({ value: String(amount), precision: 20 })
+    const refundId = generateEntityId("", "ref")
     const actorId = (req.session as any)?.auth_context?.actor_id
 
-    // ── 3. Run Medusa's refundPaymentWorkflow (calls Stripe) ──────────────
-    await refundPaymentWorkflow(req.scope).run({
-      input: {
-        payment_id: payment.payment_id,
-        created_by: actorId,
-        note: reason.trim(),
-        // no amount = full refund
-      },
-    })
+    await pg.raw(`
+      INSERT INTO refund (id, amount, raw_amount, payment_id, created_by, note, created_at, updated_at)
+      VALUES (?, ?, ?::jsonb, ?, ?, ?, NOW(), NOW())
+      ON CONFLICT DO NOTHING
+    `, [refundId, amount, rawAmount, payment.payment_id, actorId || null, reason.trim()])
 
-    // ── 4. Update our workflow status to refund_issued ────────────────────
+    // ── 7. Update payment_collection status ──────────────────────────────
+    const payColResult = await pg.raw(
+      `SELECT pc.id FROM order_payment_collection opc
+       JOIN payment_collection pc ON pc.id = opc.payment_collection_id
+       WHERE opc.order_id = ? AND opc.deleted_at IS NULL LIMIT 1`,
+      [orderId]
+    )
+    if (payColResult.rows.length) {
+      await pg.raw(
+        `UPDATE payment_collection SET status = 'canceled', updated_at = NOW() WHERE id = ?`,
+        [payColResult.rows[0].id]
+      )
+    }
+
+    // ── 8. Update our workflow status to refund_issued ────────────────────
     await pg.raw(
       `UPDATE order_workflow
        SET status = 'refund_issued',
@@ -67,15 +113,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       [reason.trim(), orderId]
     )
 
-    // ── 5. Save refund reason as a comment ───────────────────────────────
+    // ── 9. Save refund reason as a comment ───────────────────────────────
     try {
-      // Get the workflow id
       const wfResult = await pg.raw(
         `SELECT id FROM order_workflow WHERE order_id = ? AND deleted_at IS NULL LIMIT 1`,
         [orderId]
       )
       if (wfResult.rows.length) {
-        // Get the actor's email + name for the comment
         let userEmail = ""
         let userName = "Admin"
         if (actorId) {
@@ -102,7 +146,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             userEmail,
             userName,
             "refund",
-            `💸 Refund issued — ${reason.trim()}`,
+            `💸 Refund issued (Stripe: ${stripeRefund.id}) — ${reason.trim()}`,
           ]
         )
       }
@@ -110,7 +154,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       console.error("[Refund] Comment save error:", commentErr.message)
     }
 
-    // ── 6. Send refund email to patient ───────────────────────────────────
+    // ── 10. Send refund email to patient ──────────────────────────────────
     try {
       const orderResult = await pg.raw(
         `SELECT
@@ -164,6 +208,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.json({
       success: true,
       message: "Refund issued successfully",
+      stripe_refund_id: stripeRefund.id,
     })
   } catch (err: any) {
     console.error("[Refund] Error:", err.message)
