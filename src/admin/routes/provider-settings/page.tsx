@@ -2080,6 +2080,10 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
   const [allPromos, setAllPromos] = useState<any[]>([])
   const [selectedPromoId, setSelectedPromoId] = useState("")
   const [assigning, setAssigning] = useState(false)
+  const [editingPromo, setEditingPromo] = useState<any | null>(null)
+  const [editForm, setEditForm] = useState({ value: "", status: "active", ends_at: "", usage_limit: "" })
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState("")
 
   useEffect(() => { load() }, [clinic.id])
 
@@ -2115,7 +2119,7 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
       // application_method.value = the discount amount (cents for fixed, integer % for percentage)
       const appMethodValue = form.value_type === "percentage"
         ? Number(form.value)                        // e.g. 20 for 20%
-        : Math.round(Number(form.value) * 100)      // e.g. 1000 for $10.00
+        : Number(form.value)                        // stored in dollars, not cents
 
       const payload: any = {
         code: form.code.trim().toUpperCase(),
@@ -2148,8 +2152,8 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
           name: `${clinic.name} — ${form.code.trim().toUpperCase()}`,
           campaign_identifier: `${campaignIdentifier}_${Date.now()}`,
         }
-        if (form.starts_at) campaign.starts_at = new Date(form.starts_at).toISOString()
-        if (form.ends_at)   campaign.ends_at   = new Date(form.ends_at).toISOString()
+        if (form.starts_at) { const d = new Date(form.starts_at); if (!isNaN(d.getTime())) campaign.starts_at = d.toISOString() }
+        if (form.ends_at)   { const d = new Date(form.ends_at);   if (!isNaN(d.getTime())) campaign.ends_at   = d.toISOString() }
         if (form.usage_limit) {
           campaign.budget = {
             type: "usage",
@@ -2213,6 +2217,42 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
       })
       load()
     } catch {}
+  }
+
+  const openEdit = (a: any) => {
+    setEditingPromo(a)
+    setEditForm({
+      value: a.discount_value != null ? String(a.discount_value) : "",
+      status: a.status || "active",
+      ends_at: a.ends_at ? a.ends_at.substring(0, 10) : "",
+      usage_limit: a.usage_limit ? String(a.usage_limit) : "",
+    })
+    setEditError("")
+  }
+
+  const saveEdit = async () => {
+    if (!editingPromo) return
+    setEditSaving(true); setEditError("")
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/promotions/${editingPromo.promotion_id}`, {
+        method: "PATCH", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: editForm.status,
+          discount_value: editForm.value ? Number(editForm.value) : undefined,
+          application_method_id: editingPromo.application_method_id,
+          ends_at: editForm.ends_at || null,
+          usage_limit: editForm.usage_limit || null,
+        }),
+      })
+      if (!res.ok) throw new Error("Failed to update promotion")
+      setEditingPromo(null)
+      load()
+    } catch (e: any) {
+      setEditError(e.message)
+    } finally {
+      setEditSaving(false)
+    }
   }
 
   const statusBadge = (status: string) => {
@@ -2352,7 +2392,7 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
         <table style={s.table}>
           <thead>
             <tr>
-              {["Code", "Type", "Status", "Auto-apply", "Usage", "Expires", ""].map(h => (
+              {["Code", "Value", "Type", "Status", "Auto-apply", "Usage", "Expires", ""].map(h => (
                 <th key={h} style={s.th}>{h}</th>
               ))}
             </tr>
@@ -2361,6 +2401,13 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
             {assigned.map((a: any) => (
               <tr key={a.assignment_id}>
                 <td style={{ ...s.td, fontWeight: 700, fontFamily: "monospace", fontSize: 13 }}>{a.code || "—"}</td>
+                <td style={s.td}>
+                  {a.discount_value != null
+                    ? a.discount_type === "percentage"
+                      ? `${a.discount_value}% off`
+                      : `$${Number(a.discount_value).toFixed(2)}`
+                    : "—"}
+                </td>
                 <td style={s.td}>{a.type || "—"}</td>
                 <td style={s.td}>{statusBadge(a.status || "inactive")}</td>
                 <td style={s.td}>
@@ -2374,13 +2421,53 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
                 <td style={s.td}>
                   {a.ends_at ? new Date(a.ends_at).toLocaleDateString() : "No expiry"}
                 </td>
-                <td style={s.td}>
+                <td style={{ ...s.td, display: "flex", gap: 6 }}>
+                  <button onClick={() => openEdit(a)} style={s.btnAction}>✏️ Edit</button>
                   <button onClick={() => remove(a.promotion_id)} style={s.btnDanger}>Remove</button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+      {editingPromo && (
+        <div style={s.modalOverlay} onClick={e => e.target === e.currentTarget && setEditingPromo(null)}>
+          <div style={s.modalBox}>
+            <p style={s.modalTitle}>Edit Promotion — {editingPromo.code}</p>
+            {editError && <div style={{ color: "#dc2626", fontSize: 13, marginBottom: 12 }}>⚠️ {editError}</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <Field label="Status">
+                <select style={s.input} value={editForm.status} onChange={e => setEditForm(p => ({ ...p, status: e.target.value }))}>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </Field>
+              <Field label={editingPromo.discount_type === "percentage" ? "Discount Value (%)" : "Discount Value ($)"}>
+                <input style={s.input} type="number" min="0" step="0.01"
+                  value={editForm.value}
+                  onChange={e => setEditForm(p => ({ ...p, value: e.target.value }))}
+                  placeholder={editingPromo.discount_type === "percentage" ? "e.g. 20" : "e.g. 50.00"} />
+              </Field>
+              <Field label="Usage Limit (blank = unlimited)">
+                <input style={s.input} type="number" min="1"
+                  value={editForm.usage_limit}
+                  onChange={e => setEditForm(p => ({ ...p, usage_limit: e.target.value }))}
+                  placeholder="e.g. 100" />
+              </Field>
+              <Field label="Expires At">
+                <input style={s.input} type="date"
+                  value={editForm.ends_at}
+                  onChange={e => setEditForm(p => ({ ...p, ends_at: e.target.value }))} />
+              </Field>
+              <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                <button onClick={saveEdit} disabled={editSaving} style={s.btnPrimary}>
+                  {editSaving ? "Saving…" : "Save Changes"}
+                </button>
+                <button onClick={() => setEditingPromo(null)} style={s.btnOutline}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
