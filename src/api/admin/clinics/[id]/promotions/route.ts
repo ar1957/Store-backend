@@ -1,10 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework"
 
-/**
- * GET  /admin/clinics/:id/promotions  — list promotions for a clinic
- * POST /admin/clinics/:id/promotions  — assign an existing promotion to a clinic
- */
-
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
@@ -20,25 +15,26 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         p.type,
         p.status,
         p.is_automatic,
-        p.used AS usage_count,
         p.created_at AS promotion_created_at,
-        COALESCE(cb.limit, p.limit) AS usage_limit,
-        COALESCE(c.starts_at) AS starts_at,
-        COALESCE(c.ends_at) AS ends_at,
         am.id AS application_method_id,
         am.value AS discount_value,
-        am.type AS discount_type
+        am.type AS discount_type,
+        pc.starts_at,
+        pc.ends_at,
+        pcb.limit AS usage_limit,
+        pcb.used AS usage_count
       FROM clinic_promotion cp
-      LEFT JOIN promotion p ON p.id = cp.promotion_id
-      LEFT JOIN promotion_campaign c ON c.id = p.campaign_id
-      LEFT JOIN promotion_campaign_budget cb ON cb.campaign_id = c.id AND cb.type = 'usage'
-      LEFT JOIN promotion_application_method am ON am.promotion_id = p.id
+      LEFT JOIN promotion p ON p.id = cp.promotion_id AND p.deleted_at IS NULL
+      LEFT JOIN promotion_application_method am ON am.promotion_id = p.id AND am.deleted_at IS NULL
+      LEFT JOIN promotion_campaign pc ON pc.id = p.campaign_id AND pc.deleted_at IS NULL
+      LEFT JOIN promotion_campaign_budget pcb ON pcb.campaign_id = pc.id AND pcb.deleted_at IS NULL
       WHERE cp.clinic_id = ?
       ORDER BY cp.created_at DESC
     `, [clinicId])
 
     return res.json({ promotions: result.rows })
   } catch (err: unknown) {
+    console.error("[GET clinic promotions] error:", err)
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })
   }
 }
@@ -70,6 +66,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     return res.json({ success: true })
   } catch (err: unknown) {
+    console.error("[POST clinic promotions] error:", err)
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })
   }
 }
