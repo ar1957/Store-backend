@@ -109,6 +109,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       pending_provider:    "Pending Provider Clearance",
       pending_md_review:   "Pending Physician Review",
       processing_pharmacy: "Processing by Pharmacy",
+      pending_pharmacy:    "Being Prepared by Pharmacy",
       shipped:             "Medication Shipped",
       refund_pending:      "Refund Processing",
       refunded:            "Refund Issued",
@@ -122,9 +123,11 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           ? `Order Received by Pharmacy (${row.pharmacy_status})`
           : "Order Received by Pharmacy"
       }
+      // For pending_pharmacy orders, gfe_id is null — use workflow_id so the status page link works
+      const statusPageId = row.gfe_id || row.workflow_id
       return {
         orderId: row.order_id,
-        gfeId: row.gfe_id,
+        gfeId: statusPageId,
         status: row.status || "pending_provider",
         statusLabel,
         providerName: row.provider_name,

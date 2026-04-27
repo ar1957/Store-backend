@@ -48,7 +48,41 @@ export default async function orderPlacedHandler({
     const eligibility = metadata.eligibility
 
     if (!eligibility) {
-      logger.info(`[OrderPlaced] Order ${orderId} has no eligibility data — skipping GFE creation`)
+      logger.info(`[OrderPlaced] Order ${orderId} has no eligibility data — recording as pending_pharmacy`)
+      try {
+        // Resolve tenant domain from metadata or from the clinic tied to the sales channel
+        let tenantDomain: string | null = metadata.tenant_domain || null
+        if (!tenantDomain) {
+          const domainResult = await pgConnection.raw(`
+            SELECT domains[1] AS domain
+            FROM clinic
+            WHERE sales_channel_id = (
+              SELECT sales_channel_id FROM "order" WHERE id = ? LIMIT 1
+            )
+            AND deleted_at IS NULL
+            LIMIT 1
+          `, [orderId])
+          tenantDomain = domainResult.rows[0]?.domain || null
+        }
+        if (tenantDomain) {
+          const workflowId = `wf_${Date.now()}`
+          await pgConnection.raw(`
+            INSERT INTO order_workflow
+              (id, order_id, tenant_domain, gfe_id, patient_id, room_no,
+               virtual_room_url, status, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'pending_pharmacy', NOW(), NOW())
+            ON CONFLICT DO NOTHING
+          `, [workflowId, orderId, tenantDomain])
+          await pgConnection.raw(`
+            UPDATE "order" SET metadata = ?, updated_at = NOW() WHERE id = ?
+          `, [JSON.stringify({ ...metadata, workflowStatus: "pending_pharmacy" }), orderId])
+          logger.info(`[OrderPlaced] ✓ Order ${orderId} recorded as pending_pharmacy (no eligibility data)`)
+        } else {
+          logger.warn(`[OrderPlaced] Could not determine tenant domain for order ${orderId} — skipping workflow record`)
+        }
+      } catch (e: any) {
+        logger.error(`[OrderPlaced] Failed to create pending_pharmacy record: ${e.message}`)
+      }
       return
     }
 
@@ -148,7 +182,29 @@ export default async function orderPlacedHandler({
     }
 
     if (treatmentIds.length === 0) {
-      logger.warn(`[OrderPlaced] No treatment IDs found for order ${orderId} — using empty treatments`)
+      // No products in this order are mapped to MHC treatments.
+      // Skip patient/GFE creation entirely — order goes straight to pharmacy.
+      logger.info(`[OrderPlaced] No mapped treatments for order ${orderId} — recording as pending_pharmacy, skipping MHC API`)
+
+      const workflowId = `wf_${Date.now()}`
+      await pgConnection.raw(`
+        INSERT INTO order_workflow
+          (id, order_id, tenant_domain, gfe_id, patient_id, room_no,
+           virtual_room_url, status, created_at, updated_at)
+        VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'pending_pharmacy', NOW(), NOW())
+        ON CONFLICT (gfe_id) DO NOTHING
+      `, [workflowId, orderId, domain])
+
+      const updatedMetadata = {
+        ...metadata,
+        workflowStatus: "pending_pharmacy",
+      }
+      await pgConnection.raw(`
+        UPDATE "order" SET metadata = ?, updated_at = NOW() WHERE id = ?
+      `, [JSON.stringify(updatedMetadata), orderId])
+
+      logger.info(`[OrderPlaced] ✓ Order ${orderId} recorded as pending_pharmacy (no MHC GFE)`)
+      return
     }
 
     // 7. Create GFE
