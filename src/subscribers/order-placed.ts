@@ -320,7 +320,7 @@ async function createLedgerEntries(
 
     if (!itemsRes.rows.length) return
 
-    const productIds: string[] = [...new Set(itemsRes.rows.map((r: any) => r.product_id))]
+    const productIds: string[] = [...new Set<string>(itemsRes.rows.map((r: any) => r.product_id as string))]
     const placeholders = productIds.map(() => "?").join(", ")
 
     // Look up configured pharmacy costs for these products
