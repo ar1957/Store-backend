@@ -109,6 +109,17 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     const statusFilter2 = statusParam ? `AND wf.status = ?` : ""
     const statusParams = statusParam ? [statusParam] : []
 
+    const referenceParam = ((req.query?.reference as string) ?? "").trim()
+    const referenceFilter = referenceParam
+      ? `AND EXISTS (
+          SELECT 1 FROM vendor_ledger vl2
+          JOIN vendor_payout vp2 ON vp2.id = vl2.payout_id
+          WHERE vl2.order_id = o.id
+            AND vp2.reference_number = ?
+        )`
+      : ""
+    const referenceParams = referenceParam ? [referenceParam] : []
+
     // ── 5. Count ──────────────────────────────────────────────────────────
     const countSql = `SELECT COUNT(DISTINCT o.id) AS total
        FROM "order" o
@@ -119,8 +130,9 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          AND o.is_draft_order = false
          ${clinicFilter}
          ${searchFilter}
-         ${statusFilter2}`
-    const countBindings = [...clinicParams, ...searchParams, ...statusParams]
+         ${statusFilter2}
+         ${referenceFilter}`
+    const countBindings = [...clinicParams, ...searchParams, ...statusParams, ...referenceParams]
 
     const countResult = await pg.raw(countSql, countBindings)
     const total = parseInt(countResult.rows[0]?.total ?? "0", 10)
@@ -146,7 +158,15 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
         wf.treatment_dosages,
         wf.shipped_at,
         wf.tracking_number,
-        wf.carrier
+        wf.carrier,
+        vl_agg.clinic_payout_status,
+        vl_agg.clinic_payout_amount,
+        vp_c.reference_number AS clinic_payout_ref,
+        vp_c.paid_at          AS clinic_paid_at,
+        vl_agg.pharmacy_payout_status,
+        vl_agg.pharmacy_payout_amount,
+        vp_p.reference_number AS pharmacy_payout_ref,
+        vp_p.paid_at          AS pharmacy_paid_at
        FROM "order" o
        LEFT JOIN "customer" c         ON c.id  = o.customer_id
        LEFT JOIN "order_address" oa   ON oa.id = o.shipping_address_id
@@ -157,14 +177,27 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          ORDER BY created_at DESC LIMIT 1
        ) os ON true
        INNER JOIN "order_workflow" wf  ON wf.order_id = o.id AND wf.deleted_at IS NULL
+       LEFT JOIN LATERAL (
+         SELECT
+           MAX(CASE WHEN vendor_type = 'clinic'   THEN status     END) AS clinic_payout_status,
+           MAX(CASE WHEN vendor_type = 'clinic'   THEN amount_owed END) AS clinic_payout_amount,
+           MAX(CASE WHEN vendor_type = 'clinic'   THEN payout_id  END) AS clinic_payout_id,
+           MAX(CASE WHEN vendor_type = 'pharmacy' THEN status     END) AS pharmacy_payout_status,
+           MAX(CASE WHEN vendor_type = 'pharmacy' THEN amount_owed END) AS pharmacy_payout_amount,
+           MAX(CASE WHEN vendor_type = 'pharmacy' THEN payout_id  END) AS pharmacy_payout_id
+         FROM vendor_ledger WHERE order_id = o.id
+       ) vl_agg ON true
+       LEFT JOIN vendor_payout vp_c ON vp_c.id = vl_agg.clinic_payout_id
+       LEFT JOIN vendor_payout vp_p ON vp_p.id = vl_agg.pharmacy_payout_id
        WHERE o.deleted_at IS NULL
          AND o.is_draft_order = false
          ${clinicFilter}
          ${searchFilter}
          ${statusFilter2}
+         ${referenceFilter}
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
-      [...clinicParams, ...searchParams, ...statusParams, limit, offset]
+      [...clinicParams, ...searchParams, ...statusParams, ...referenceParams, limit, offset]
     )
 
     const rows = dataResult.rows ?? []
@@ -216,6 +249,20 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
           tracking_number: row.tracking_number,
           carrier: row.carrier,
         } : null,
+        payout: {
+          clinic: row.clinic_payout_status ? {
+            status: row.clinic_payout_status,
+            amount: row.clinic_payout_amount ? Number(row.clinic_payout_amount) : null,
+            reference: row.clinic_payout_ref ?? null,
+            paid_at: row.clinic_paid_at ?? null,
+          } : null,
+          pharmacy: row.pharmacy_payout_status ? {
+            status: row.pharmacy_payout_status,
+            amount: row.pharmacy_payout_amount ? Number(row.pharmacy_payout_amount) : null,
+            reference: row.pharmacy_payout_ref ?? null,
+            paid_at: row.pharmacy_paid_at ?? null,
+          } : null,
+        },
       }
     })
 

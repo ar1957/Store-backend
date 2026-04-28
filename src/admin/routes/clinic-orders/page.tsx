@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { useNavigate, useLocation } from "react-router-dom"
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { ShoppingCart } from "@medusajs/icons"
@@ -37,6 +37,22 @@ interface OrderWorkflow {
   carrier: string | null
 }
 
+interface PayoutInfo {
+  status: "pending" | "paid"
+  amount: number | null
+  reference: string | null
+  paid_at: string | null
+}
+
+interface RefOption {
+  id: string
+  reference_number: string
+  paid_at: string | null
+  total_amount: number | null
+  vendor_type: string
+  order_count: number
+}
+
 interface ClinicOrder {
   id: string
   display_id: number
@@ -57,6 +73,10 @@ interface ClinicOrder {
   total: number
   currency_code: string
   workflow: OrderWorkflow | null
+  payout?: {
+    clinic: PayoutInfo | null
+    pharmacy: PayoutInfo | null
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -145,6 +165,25 @@ function formatDate(dateStr: string | null) {
   })
 }
 
+function PayoutCell({ info }: { info: PayoutInfo | null }) {
+  if (!info) return <span style={{ color: "#D1D5DB", fontSize: 12 }}>—</span>
+  if (info.status === "paid") {
+    const date = info.paid_at ? new Date(info.paid_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""
+    const tooltip = [info.reference ? `Ref: ${info.reference}` : "", date].filter(Boolean).join(" · ")
+    return (
+      <span title={tooltip} style={{ fontSize: 12, color: "#065F46", cursor: "default" }}>
+        ✓ {info.amount != null ? `$${Number(info.amount).toFixed(2)}` : "Paid"}
+        {date && <span style={{ color: "#6B7280", marginLeft: 4 }}>{date}</span>}
+      </span>
+    )
+  }
+  return (
+    <span style={{ fontSize: 12, color: "#92400E" }}>
+      ⏳ {info.amount != null ? `$${Number(info.amount).toFixed(2)}` : "Pending"}
+    </span>
+  )
+}
+
 function StatusBadge({ status }: { status: WorkflowStatus | null }) {
   if (!status) {
     return (
@@ -177,6 +216,153 @@ function StatusBadge({ status }: { status: WorkflowStatus | null }) {
     }}>
       {cfg.label}
     </span>
+  )
+}
+
+// ─── Reference Number Combobox ────────────────────────────────────────────────
+
+function ReferenceCombobox({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (ref: string) => void
+}) {
+  const [inputVal, setInputVal] = useState(value)
+  const [options, setOptions] = useState<RefOption[]>([])
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Sync inputVal when value is cleared externally
+  useEffect(() => { setInputVal(value) }, [value])
+
+  // Fetch options whenever input changes or dropdown opens
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(
+          `/admin/payouts/references?q=${encodeURIComponent(inputVal)}`,
+          { credentials: "include" }
+        )
+        const d = await r.json()
+        setOptions(d.references ?? [])
+      } catch { setOptions([]) }
+      setLoading(false)
+    }, 200)
+    return () => clearTimeout(t)
+  }, [inputVal, open])
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
+
+  const select = (opt: RefOption) => {
+    setInputVal(opt.reference_number)
+    onChange(opt.reference_number)
+    setOpen(false)
+  }
+
+  const clear = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setInputVal("")
+    onChange("")
+    setOpen(false)
+  }
+
+  const inputStyle: React.CSSProperties = {
+    padding: "8px 32px 8px 14px",
+    borderRadius: "8px",
+    border: "1px solid #E5E7EB",
+    fontSize: "14px",
+    outline: "none",
+    width: "100%",
+    background: "#fff",
+    color: "#111827",
+    boxSizing: "border-box",
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: "relative", width: 240 }}>
+      <div style={{ position: "relative" }}>
+        <input
+          value={inputVal}
+          placeholder="Filter by ref # (ACH/wire)…"
+          onFocus={() => setOpen(true)}
+          onChange={e => { setInputVal(e.target.value); setOpen(true) }}
+          style={inputStyle}
+        />
+        {inputVal ? (
+          <button
+            onClick={clear}
+            style={{
+              position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+              background: "none", border: "none", cursor: "pointer",
+              color: "#9CA3AF", fontSize: 16, lineHeight: 1, padding: 0,
+            }}
+          >
+            ×
+          </button>
+        ) : (
+          <span style={{
+            position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+            color: "#9CA3AF", fontSize: 11, pointerEvents: "none",
+          }}>▾</span>
+        )}
+      </div>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
+          background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 100,
+          maxHeight: 280, overflowY: "auto",
+        }}>
+          {loading ? (
+            <div style={{ padding: "10px 14px", color: "#9CA3AF", fontSize: 13 }}>
+              Loading…
+            </div>
+          ) : options.length === 0 ? (
+            <div style={{ padding: "10px 14px", color: "#9CA3AF", fontSize: 13 }}>
+              No reference numbers found
+            </div>
+          ) : (
+            options.map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => select(opt)}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  width: "100%", padding: "9px 14px", background: "none", border: "none",
+                  borderBottom: "1px solid #F3F4F6", cursor: "pointer", textAlign: "left",
+                  gap: 8,
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = "#F9FAFB")}
+                onMouseLeave={e => (e.currentTarget.style.background = "none")}
+              >
+                <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color: "#111827", flexShrink: 0 }}>
+                  {opt.reference_number}
+                </span>
+                <span style={{ fontSize: 11, color: "#6B7280", textAlign: "right" }}>
+                  {opt.order_count} order{opt.order_count !== 1 ? "s" : ""}
+                  {opt.paid_at ? ` · ${new Date(opt.paid_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                  {opt.total_amount != null ? ` · $${Number(opt.total_amount).toFixed(2)}` : ""}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -272,6 +458,8 @@ export default function ClinicOrdersPage() {
     return params.get("status") || "all"
   })
   const [clinicFilter, setClinicFilter] = useState<string>("all")
+  const [payoutFilter, setPayoutFilter] = useState<string>("all")
+  const [referenceFilter, setReferenceFilter] = useState<string>("")
 
   // Sync status filter when URL changes (e.g. drill-down from dashboard)
   useEffect(() => {
@@ -297,6 +485,7 @@ export default function ClinicOrdersPage() {
       })
       if (search) params.set("q", search)
       if (statusFilter && statusFilter !== "all") params.set("status", statusFilter)
+      if (referenceFilter) params.set("reference", referenceFilter)
 
       const res = await fetch(`/admin/order-workflow?${params}`, {
         credentials: "include",
@@ -313,7 +502,7 @@ export default function ClinicOrdersPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search, statusFilter])
+  }, [page, search, statusFilter, referenceFilter])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -355,6 +544,8 @@ export default function ClinicOrdersPage() {
 
   const filtered = orders.filter((o) => {
     if (clinicFilter !== "all" && o.sales_channel?.name !== clinicFilter) return false
+    if (payoutFilter === "pharmacy_unpaid" && o.payout?.pharmacy?.status === "paid") return false
+    if (payoutFilter === "pharmacy_paid"   && o.payout?.pharmacy?.status !== "paid") return false
     return true
   })
 
@@ -452,6 +643,29 @@ export default function ClinicOrdersPage() {
           <option value="refund_issued">Refunded</option>
         </select>
 
+        <select
+          value={payoutFilter}
+          onChange={(e) => { setPayoutFilter(e.target.value); setPage(1) }}
+          style={{
+            padding: "8px 14px",
+            borderRadius: "8px",
+            border: "1px solid #E5E7EB",
+            fontSize: "14px",
+            background: "#fff",
+            color: "#111827",
+            cursor: "pointer",
+          }}
+        >
+          <option value="all">All Pharmacy Payout</option>
+          <option value="pharmacy_unpaid">Pharmacy Unpaid</option>
+          <option value="pharmacy_paid">Pharmacy Paid</option>
+        </select>
+
+        <ReferenceCombobox
+          value={referenceFilter}
+          onChange={(ref) => { setReferenceFilter(ref); setPage(1) }}
+        />
+
         <button
           onClick={handleRefresh}
           disabled={refreshing}
@@ -516,6 +730,7 @@ export default function ClinicOrdersPage() {
                     "Order", "Date", "Patient", "Clinic", "State",
                     "Medication & Dosage", "GFE Status", "Workflow Status",
                     "Ship Date", "Tracking #", "Amount",
+                    "Pharmacy Payout",
                   ].map((h) => (
                     <th key={h} style={{
                       padding: "10px 16px",
@@ -559,9 +774,19 @@ export default function ClinicOrdersPage() {
                     >
                       {/* Order # */}
                       <td style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
-                        <span style={{ fontWeight: 600, color: "#111827" }}>
-                          #{order.display_id}
-                        </span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontWeight: 600, color: "#111827" }}>
+                            #{order.display_id}
+                          </span>
+                          {order.payout?.pharmacy?.status === "paid" && (
+                            <span
+                              title={`Pharmacy paid${order.payout.pharmacy.reference ? ` · Ref: ${order.payout.pharmacy.reference}` : ""}${order.payout.pharmacy.paid_at ? ` · ${new Date(order.payout.pharmacy.paid_at).toLocaleDateString()}` : ""}`}
+                              style={{ fontSize: 10, fontWeight: 700, background: "#d1fae5", color: "#065f46", borderRadius: 4, padding: "1px 5px", border: "1px solid #a7f3d0", cursor: "default" }}
+                            >
+                              ✓ PAID
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Date */}
@@ -632,6 +857,11 @@ export default function ClinicOrdersPage() {
                       {/* Amount */}
                       <td style={{ padding: "14px 16px", fontWeight: 600, whiteSpace: "nowrap", color: "#111827" }}>
                         {formatCurrency(order.total, order.currency_code)}
+                      </td>
+
+                      {/* Pharmacy Payout */}
+                      <td style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
+                        <PayoutCell info={order.payout?.pharmacy ?? null} />
                       </td>
                     </tr>
                   )

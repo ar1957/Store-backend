@@ -397,13 +397,13 @@ function ClinicDetail({
 }) {
   // MD and Pharmacist go straight to orders tab
   const defaultTab = (role === "medical_director" || role === "pharmacist") ? "orders" : "details"
-  const [activeTab, setActiveTab] = useState<"details" | "api" | "staff" | "mappings" | "orders" | "uiconfig" | "pharmacy">(defaultTab as any)
+  const [activeTab, setActiveTab] = useState<"details" | "api" | "staff" | "mappings" | "orders" | "uiconfig" | "pharmacy" | "promotions" | "payouts">(defaultTab as any)
 
   // Tabs visible per role
   const visibleTabs = (() => {
     if (role === "medical_director" || role === "pharmacist") return ["orders"]
-    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions"]
-    return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions"] // super_admin
+    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions", "payouts"]
+    return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions", "payouts"] // super_admin
   })()
 
   const TAB_LABELS: Record<string, string> = {
@@ -415,6 +415,7 @@ function ClinicDetail({
     uiconfig: "🎨 Storefront UI",
     pharmacy: "💊 Pharmacy",
     promotions: "🎁 Promotions",
+    payouts: "💰 Payouts",
   }
 
   // Default filter per role
@@ -475,6 +476,7 @@ function ClinicDetail({
         {activeTab === "uiconfig" && <UiConfigTab clinic={clinic} />}
         {activeTab === "pharmacy" && <PharmacyTab clinic={clinic} onUpdated={onUpdated} />}
         {activeTab === "promotions" && <PromotionsTab clinic={clinic} role={role} />}
+        {activeTab === "payouts"    && <PayoutsTab    clinic={clinic} />}
       </div>
     </div>
   )
@@ -2092,6 +2094,465 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
         </button>
         <SaveBar saving={saving} status={status} onSave={save} inline />
       </div>
+    </div>
+  )
+}
+
+// ── Payouts Tab ───────────────────────────────────────────────────────────
+function PayoutsTab({ clinic }: { clinic: Clinic }) {
+  const [config, setConfig] = useState<any | null>(null)
+  const [pending, setPending] = useState<Record<string, { total: number; count: number; entries: any[] }>>({
+    clinic: { total: 0, count: 0, entries: [] },
+    pharmacy: { total: 0, count: 0, entries: [] },
+  })
+  const [history, setHistory] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [dateFrom, setDateFrom] = useState("")
+  const [dateTo, setDateTo]   = useState("")
+
+  // Product costs state
+  const [products, setProducts] = useState<{ id: string; title: string }[]>([])
+  const [costEdits, setCostEdits] = useState<Record<string, string>>({})
+  const [savingCosts, setSavingCosts] = useState(false)
+  const [costsMsg, setCostsMsg] = useState("")
+
+  const [editingConfig, setEditingConfig] = useState(false)
+  const [configForm, setConfigForm] = useState({
+    clinic_name: "", clinic_bank_routing: "", clinic_bank_account: "",
+    clinic_bank_name: "", clinic_account_name: "",
+    pharmacy_name: "", pharmacy_bank_routing: "", pharmacy_bank_account: "",
+    pharmacy_bank_name: "", pharmacy_account_name: "",
+    notes: "",
+  })
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [configError, setConfigError] = useState("")
+  const [payingOut, setPayingOut] = useState<"clinic" | "pharmacy" | null>(null)
+  const [payoutRef, setPayoutRef] = useState("")
+  const [payoutNotes, setPayoutNotes] = useState("")
+  const [payoutError, setPayoutError] = useState("")
+  const [submittingPayout, setSubmittingPayout] = useState(false)
+  const [successMsg, setSuccessMsg] = useState("")
+
+  const load = async (from?: string, to?: string) => {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (from) params.set("from", from)
+      if (to)   params.set("to",   to)
+      const qs = params.toString() ? `?${params}` : ""
+      const [cfgRes, payRes] = await Promise.all([
+        fetch(`/admin/clinics/${clinic.id}/payout-config`),
+        fetch(`/admin/clinics/${clinic.id}/payouts${qs}`),
+      ])
+      const cfgData = await cfgRes.json()
+      const payData = await payRes.json()
+      setConfig(cfgData.config || null)
+      setPending(payData.pending || { clinic: { total: 0, count: 0, entries: [] }, pharmacy: { total: 0, count: 0, entries: [] } })
+      setHistory(payData.history || [])
+    } catch { /* silent */ }
+    setLoading(false)
+  }
+
+  const loadProductCosts = async () => {
+    try {
+      const [prodRes, costsRes] = await Promise.all([
+        fetch(`/admin/products?sales_channel_id[]=${clinic.sales_channel_id}&limit=200&fields=id,title`),
+        fetch(`/admin/clinics/${clinic.id}/product-costs`),
+      ])
+      const prodData  = await prodRes.json()
+      const costsData = await costsRes.json()
+      const prods: { id: string; title: string }[] = (prodData.products || []).map((p: any) => ({ id: p.id, title: p.title }))
+      setProducts(prods)
+      // Build edits map from saved costs; unsaved products default to ""
+      const saved: Record<string, string> = {}
+      for (const c of (costsData.costs || [])) {
+        saved[c.product_id] = String(c.pharmacy_cost)
+      }
+      setCostEdits(saved)
+    } catch { /* silent */ }
+  }
+
+  useEffect(() => { load(); loadProductCosts() }, [clinic.id])
+  useEffect(() => { load(dateFrom || undefined, dateTo || undefined) }, [dateFrom, dateTo])
+
+  const openConfigEdit = () => {
+    setConfigForm({
+      clinic_name:          config?.clinic_name          || "",
+      clinic_bank_routing:  config?.clinic_bank_routing  || "",
+      clinic_bank_account:  config?.clinic_bank_account  || "",
+      clinic_bank_name:     config?.clinic_bank_name     || "",
+      clinic_account_name:  config?.clinic_account_name  || "",
+      pharmacy_name:         config?.pharmacy_name         || "",
+      pharmacy_bank_routing: config?.pharmacy_bank_routing || "",
+      pharmacy_bank_account: config?.pharmacy_bank_account || "",
+      pharmacy_bank_name:    config?.pharmacy_bank_name    || "",
+      pharmacy_account_name: config?.pharmacy_account_name || "",
+      notes:                 config?.notes                 || "",
+    })
+    setConfigError("")
+    setEditingConfig(true)
+  }
+
+  const saveConfig = async () => {
+    setSavingConfig(true)
+    setConfigError("")
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/payout-config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(configForm),
+      })
+      const data = await res.json()
+      if (!res.ok) { setConfigError(data.message || "Save failed"); setSavingConfig(false); return }
+      setConfig(data.config)
+      setEditingConfig(false)
+    } catch (e: any) { setConfigError(e.message) }
+    setSavingConfig(false)
+  }
+
+  const saveProductCosts = async () => {
+    setSavingCosts(true)
+    setCostsMsg("")
+    try {
+      const costs = Object.entries(costEdits)
+        .filter(([, v]) => v !== "" && !isNaN(Number(v)))
+        .map(([product_id, pharmacy_cost]) => ({
+          product_id,
+          pharmacy_cost: Number(pharmacy_cost),
+          product_title: products.find(p => p.id === product_id)?.title || "",
+        }))
+      if (costs.length === 0) { setCostsMsg("No costs to save"); setSavingCosts(false); return }
+      const res = await fetch(`/admin/clinics/${clinic.id}/product-costs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ costs }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setCostsMsg(data.message || "Save failed"); setSavingCosts(false); return }
+      setCostsMsg(`✓ Saved costs for ${data.costs?.length} products`)
+    } catch (e: any) { setCostsMsg(e.message) }
+    setSavingCosts(false)
+  }
+
+  const submitPayout = async () => {
+    if (!payingOut) return
+    if (!payoutRef.trim()) { setPayoutError("Reference number is required"); return }
+    setSubmittingPayout(true)
+    setPayoutError("")
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/payouts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendor_type: payingOut, reference_number: payoutRef, notes: payoutNotes, from: dateFrom || undefined, to: dateTo || undefined }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setPayoutError(data.message || "Payout failed"); setSubmittingPayout(false); return }
+      setPayingOut(null)
+      setPayoutRef("")
+      setPayoutNotes("")
+      setSuccessMsg(`✓ $${data.total_paid?.toFixed(2)} payout recorded for ${payingOut} (${data.entries_paid} orders)`)
+      await load(dateFrom || undefined, dateTo || undefined)
+    } catch (e: any) { setPayoutError(e.message) }
+    setSubmittingPayout(false)
+  }
+
+  const VENDOR_LABELS: Record<string, string> = { clinic: "Clinic", pharmacy: "Pharmacy" }
+
+  return (
+    <div style={{ padding: 4 }}>
+      {successMsg && (
+        <div style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#065f46" }}>
+          {successMsg}
+          <button onClick={() => setSuccessMsg("")} style={{ marginLeft: 12, background: "none", border: "none", cursor: "pointer", color: "#065f46" }}>✕</button>
+        </div>
+      )}
+
+      {/* Bank Details */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, color: "#111", margin: 0 }}>Bank Details</h3>
+          <button onClick={openConfigEdit} style={{ ...s.btnAction, fontSize: 12 }}>
+            {config ? "Edit" : "Configure"}
+          </button>
+        </div>
+
+        {config ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {[
+              { label: "Clinic", prefix: "clinic" },
+              { label: "Pharmacy", prefix: "pharmacy" },
+            ].map(({ label, prefix }) => (
+              <div key={prefix} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, fontSize: 12, color: "#374151", lineHeight: 1.8 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>{label} — {(config as any)[`${prefix}_name`] || "—"}</div>
+                <div><strong>Bank:</strong> {(config as any)[`${prefix}_bank_name`] || "—"}</div>
+                <div><strong>Routing:</strong> {(config as any)[`${prefix}_bank_routing`] ? `••••${String((config as any)[`${prefix}_bank_routing`]).slice(-4)}` : "—"}</div>
+                <div><strong>Account:</strong> {(config as any)[`${prefix}_bank_account`] ? `••••${String((config as any)[`${prefix}_bank_account`]).slice(-4)}` : "—"}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: "#9ca3af", padding: "12px 0" }}>
+            No bank details configured yet. Click Configure to add clinic and pharmacy bank information.
+          </div>
+        )}
+      </div>
+
+      {/* Product Pharmacy Costs */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: "#111", margin: 0 }}>Product Pharmacy Costs</h3>
+            <p style={{ fontSize: 12, color: "#6b7280", margin: "4px 0 0" }}>
+              Set the pharmacy cost per product. For each order, pharmacy receives the sum of (cost × qty), clinic receives the remainder.
+            </p>
+          </div>
+          <button
+            onClick={saveProductCosts}
+            disabled={savingCosts}
+            style={{ ...s.btnAction, background: "#0e7490", color: "#fff", borderColor: "#0e7490", fontSize: 12 }}
+          >
+            {savingCosts ? "Saving…" : "Save All"}
+          </button>
+        </div>
+        {costsMsg && (
+          <div style={{ marginBottom: 10, fontSize: 12, color: costsMsg.startsWith("✓") ? "#065f46" : "#dc2626" }}>
+            {costsMsg}
+          </div>
+        )}
+        {products.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#9ca3af" }}>No products found.</div>
+        ) : (
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#f9fafb" }}>
+                  <th style={{ ...s.th, textAlign: "left", padding: "8px 12px" }}>Product</th>
+                  <th style={{ ...s.th, textAlign: "right", padding: "8px 12px", width: 140 }}>Pharmacy Cost ($)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map((prod, i) => (
+                  <tr key={prod.id} style={{ borderTop: i > 0 ? "1px solid #f3f4f6" : undefined }}>
+                    <td style={{ padding: "8px 12px", color: "#374151" }}>{prod.title}</td>
+                    <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                      <input
+                        type="number" min="0" step="0.01"
+                        placeholder="0.00"
+                        value={costEdits[prod.id] ?? ""}
+                        onChange={e => setCostEdits(prev => ({ ...prev, [prod.id]: e.target.value }))}
+                        style={{ ...s.input, width: 100, fontSize: 12, textAlign: "right", padding: "4px 8px" }}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Date Range Filter */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>Date range:</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              style={{ ...s.input, fontSize: 13, width: 150, padding: "6px 10px" }} />
+            <span style={{ color: "#6b7280", fontSize: 13 }}>to</span>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              style={{ ...s.input, fontSize: 13, width: 150, padding: "6px 10px" }} />
+          </div>
+          {(dateFrom || dateTo) && (
+            <button onClick={() => { setDateFrom(""); setDateTo("") }}
+              style={{ fontSize: 12, color: "#6b7280", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>
+              Clear
+            </button>
+          )}
+          {(dateFrom || dateTo) && (
+            <span style={{ fontSize: 12, color: "#6b7280" }}>
+              Showing {dateFrom || "all"} → {dateTo || "all"}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Pending Balances */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, color: "#111", margin: 0 }}>Pending Payouts</h3>
+          {loading && <span style={{ fontSize: 11, color: "#9ca3af" }}>Refreshing…</span>}
+        </div>
+        {(() => {
+          const p = pending["pharmacy"] || { total: 0, count: 0, entries: [] }
+          const hasPending = p.count > 0
+          return (
+            <div style={{ border: `1px solid ${hasPending ? "#fbbf24" : "#e5e7eb"}`, borderRadius: 10, padding: 16, background: hasPending ? "#fffbeb" : "#fafafa", maxWidth: 420 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>Pharmacy</span>
+                {hasPending && (
+                  <button
+                    onClick={() => { setPayingOut("pharmacy"); setPayoutRef(""); setPayoutNotes(""); setPayoutError("") }}
+                    style={{ ...s.btnAction, background: "#0e7490", color: "#fff", borderColor: "#0e7490", fontSize: 12 }}
+                  >
+                    Pay Out
+                  </button>
+                )}
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: hasPending ? "#92400e" : "#9ca3af" }}>
+                ${p.total.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                {p.count} order{p.count !== 1 ? "s" : ""} unpaid
+              </div>
+              {hasPending && p.entries.length > 0 && (
+                <div style={{ marginTop: 10, maxHeight: 120, overflowY: "auto" }}>
+                  {p.entries.map((e: any) => (
+                    <div key={e.order_id} style={{ fontSize: 11, color: "#374151", borderTop: "1px solid #f3f4f6", padding: "4px 0", display: "flex", justifyContent: "space-between" }}>
+                      <span>Order #{e.display_id || e.order_id?.slice(0, 8)}</span>
+                      <span>${Number(e.amount_owed).toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })()}
+      </div>
+
+      {/* Payout History */}
+      <div>
+        <h3 style={{ fontSize: 14, fontWeight: 600, color: "#111", marginBottom: 12 }}>Payout History</h3>
+        {history.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#9ca3af", padding: "16px 0" }}>No payouts recorded yet</div>
+        ) : (
+          <table style={{ ...s.table, fontSize: 12 }}>
+            <thead>
+              <tr>{["Date", "Vendor", "Amount", "Reference #", "Notes"].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {history.map((p: any) => (
+                <tr key={p.id}>
+                  <td style={s.td}>{new Date(p.paid_at).toLocaleDateString()}</td>
+                  <td style={s.td}>{VENDOR_LABELS[p.vendor_type] || p.vendor_type}</td>
+                  <td style={{ ...s.td, fontWeight: 600 }}>${Number(p.total_amount).toFixed(2)}</td>
+                  <td style={{ ...s.td, fontFamily: "monospace", fontSize: 11 }}>{p.reference_number || "—"}</td>
+                  <td style={s.td}>{p.notes || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Edit Config Modal */}
+      {editingConfig && (
+        <Modal onClose={() => setEditingConfig(false)}>
+          <h3 style={s.modalTitle}>Bank Details Configuration</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+            {/* Clinic bank details */}
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#0e7490", marginBottom: 8 }}>Clinic Bank Details</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {([
+                  ["Clinic Name", "clinic_name"],
+                  ["Bank Name", "clinic_bank_name"],
+                  ["Routing Number", "clinic_bank_routing"],
+                  ["Account Number", "clinic_bank_account"],
+                  ["Account Holder Name", "clinic_account_name"],
+                ] as [string, string][]).map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    <label style={{ fontSize: 11, color: "#6b7280" }}>{label}</label>
+                    <input type="text" value={(configForm as any)[key]}
+                      onChange={e => setConfigForm(p => ({ ...p, [key]: e.target.value }))}
+                      style={{ ...s.input, fontSize: 12 }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Pharmacy bank details */}
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#7c3aed", marginBottom: 8 }}>Pharmacy Bank Details</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {([
+                  ["Pharmacy Name", "pharmacy_name"],
+                  ["Bank Name", "pharmacy_bank_name"],
+                  ["Routing Number", "pharmacy_bank_routing"],
+                  ["Account Number", "pharmacy_bank_account"],
+                  ["Account Holder Name", "pharmacy_account_name"],
+                ] as [string, string][]).map(([label, key]) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    <label style={{ fontSize: 11, color: "#6b7280" }}>{label}</label>
+                    <input type="text" value={(configForm as any)[key]}
+                      onChange={e => setConfigForm(p => ({ ...p, [key]: e.target.value }))}
+                      style={{ ...s.input, fontSize: 12 }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <label style={{ fontSize: 11, color: "#6b7280" }}>Internal Notes</label>
+              <input type="text" value={configForm.notes}
+                onChange={e => setConfigForm(p => ({ ...p, notes: e.target.value }))}
+                style={{ ...s.input, fontSize: 12 }} />
+            </div>
+
+            {configError && <div style={{ color: "#dc2626", fontSize: 12 }}>{configError}</div>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setEditingConfig(false)} style={s.btnSecondary}>Cancel</button>
+              <button onClick={saveConfig} disabled={savingConfig} style={s.btnPrimary}>
+                {savingConfig ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Pay Out Modal */}
+      {payingOut && (
+        <Modal onClose={() => setPayingOut(null)}>
+          <h3 style={s.modalTitle}>Record {VENDOR_LABELS[payingOut]} Payout</h3>
+          <div style={{ fontSize: 13, color: "#374151", marginBottom: 16, background: "#f9fafb", borderRadius: 8, padding: 12 }}>
+            <div><strong>Vendor:</strong> {(config as any)?.[`${payingOut}_name`] || VENDOR_LABELS[payingOut]}</div>
+            <div><strong>Total Amount:</strong> ${(pending[payingOut]?.total || 0).toFixed(2)}</div>
+            <div><strong>Orders Covered:</strong> {pending[payingOut]?.count || 0}</div>
+            {(dateFrom || dateTo) && <div><strong>Date Range:</strong> {dateFrom || "—"} → {dateTo || "—"}</div>}
+            {(config as any)?.[`${payingOut}_bank_name`] && <div><strong>Bank:</strong> {(config as any)[`${payingOut}_bank_name`]}</div>}
+            {(config as any)?.[`${payingOut}_bank_account`] && (
+              <div><strong>Account:</strong> ••••{String((config as any)[`${payingOut}_bank_account`]).slice(-4)}</div>
+            )}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                ACH / Wire Reference Number <span style={{ color: "#dc2626" }}>*</span>
+              </label>
+              <input type="text" placeholder="e.g. ACH trace #, wire confirmation #"
+                value={payoutRef} onChange={e => setPayoutRef(e.target.value)}
+                style={{ ...s.input, fontSize: 13 }} />
+              <span style={{ fontSize: 11, color: "#6b7280" }}>
+                Stored permanently as proof of payment — both parties can verify against their bank statement.
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 500, color: "#374151" }}>Notes (optional)</label>
+              <input type="text" placeholder="e.g. April settlement"
+                value={payoutNotes} onChange={e => setPayoutNotes(e.target.value)}
+                style={{ ...s.input, fontSize: 13 }} />
+            </div>
+            {payoutError && <div style={{ color: "#dc2626", fontSize: 12 }}>{payoutError}</div>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setPayingOut(null)} style={s.btnSecondary}>Cancel</button>
+              <button onClick={submitPayout} disabled={submittingPayout}
+                style={{ ...s.btnPrimary, background: "#0e7490", borderColor: "#0e7490" }}>
+                {submittingPayout ? "Recording…" : "Confirm Payout"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
