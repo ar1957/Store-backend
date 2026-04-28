@@ -37,6 +37,13 @@ interface OrderWorkflow {
   carrier: string | null
 }
 
+interface PayoutInfo {
+  status: "pending" | "paid"
+  amount: number | null
+  reference: string | null
+  paid_at: string | null
+}
+
 interface ClinicOrder {
   id: string
   display_id: number
@@ -57,6 +64,10 @@ interface ClinicOrder {
   total: number
   currency_code: string
   workflow: OrderWorkflow | null
+  payout?: {
+    clinic: PayoutInfo | null
+    pharmacy: PayoutInfo | null
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -143,6 +154,25 @@ function formatDate(dateStr: string | null) {
     day: "numeric",
     year: "numeric",
   })
+}
+
+function PayoutCell({ info }: { info: PayoutInfo | null }) {
+  if (!info) return <span style={{ color: "#D1D5DB", fontSize: 12 }}>—</span>
+  if (info.status === "paid") {
+    const date = info.paid_at ? new Date(info.paid_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""
+    const tooltip = [info.reference ? `Ref: ${info.reference}` : "", date].filter(Boolean).join(" · ")
+    return (
+      <span title={tooltip} style={{ fontSize: 12, color: "#065F46", cursor: "default" }}>
+        ✓ {info.amount != null ? `$${Number(info.amount).toFixed(2)}` : "Paid"}
+        {date && <span style={{ color: "#6B7280", marginLeft: 4 }}>{date}</span>}
+      </span>
+    )
+  }
+  return (
+    <span style={{ fontSize: 12, color: "#92400E" }}>
+      ⏳ {info.amount != null ? `$${Number(info.amount).toFixed(2)}` : "Pending"}
+    </span>
+  )
 }
 
 function StatusBadge({ status }: { status: WorkflowStatus | null }) {
@@ -272,6 +302,7 @@ export default function ClinicOrdersPage() {
     return params.get("status") || "all"
   })
   const [clinicFilter, setClinicFilter] = useState<string>("all")
+  const [payoutFilter, setPayoutFilter] = useState<string>("all")
 
   // Sync status filter when URL changes (e.g. drill-down from dashboard)
   useEffect(() => {
@@ -355,6 +386,8 @@ export default function ClinicOrdersPage() {
 
   const filtered = orders.filter((o) => {
     if (clinicFilter !== "all" && o.sales_channel?.name !== clinicFilter) return false
+    if (payoutFilter === "pharmacy_unpaid" && o.payout?.pharmacy?.status === "paid") return false
+    if (payoutFilter === "pharmacy_paid"   && o.payout?.pharmacy?.status !== "paid") return false
     return true
   })
 
@@ -452,6 +485,24 @@ export default function ClinicOrdersPage() {
           <option value="refund_issued">Refunded</option>
         </select>
 
+        <select
+          value={payoutFilter}
+          onChange={(e) => { setPayoutFilter(e.target.value); setPage(1) }}
+          style={{
+            padding: "8px 14px",
+            borderRadius: "8px",
+            border: "1px solid #E5E7EB",
+            fontSize: "14px",
+            background: "#fff",
+            color: "#111827",
+            cursor: "pointer",
+          }}
+        >
+          <option value="all">All Pharmacy Payout</option>
+          <option value="pharmacy_unpaid">Pharmacy Unpaid</option>
+          <option value="pharmacy_paid">Pharmacy Paid</option>
+        </select>
+
         <button
           onClick={handleRefresh}
           disabled={refreshing}
@@ -516,6 +567,7 @@ export default function ClinicOrdersPage() {
                     "Order", "Date", "Patient", "Clinic", "State",
                     "Medication & Dosage", "GFE Status", "Workflow Status",
                     "Ship Date", "Tracking #", "Amount",
+                    "Pharmacy Payout",
                   ].map((h) => (
                     <th key={h} style={{
                       padding: "10px 16px",
@@ -559,9 +611,19 @@ export default function ClinicOrdersPage() {
                     >
                       {/* Order # */}
                       <td style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
-                        <span style={{ fontWeight: 600, color: "#111827" }}>
-                          #{order.display_id}
-                        </span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontWeight: 600, color: "#111827" }}>
+                            #{order.display_id}
+                          </span>
+                          {order.payout?.pharmacy?.status === "paid" && (
+                            <span
+                              title={`Pharmacy paid${order.payout.pharmacy.reference ? ` · Ref: ${order.payout.pharmacy.reference}` : ""}${order.payout.pharmacy.paid_at ? ` · ${new Date(order.payout.pharmacy.paid_at).toLocaleDateString()}` : ""}`}
+                              style={{ fontSize: 10, fontWeight: 700, background: "#d1fae5", color: "#065f46", borderRadius: 4, padding: "1px 5px", border: "1px solid #a7f3d0", cursor: "default" }}
+                            >
+                              ✓ PAID
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Date */}
@@ -632,6 +694,11 @@ export default function ClinicOrdersPage() {
                       {/* Amount */}
                       <td style={{ padding: "14px 16px", fontWeight: 600, whiteSpace: "nowrap", color: "#111827" }}>
                         {formatCurrency(order.total, order.currency_code)}
+                      </td>
+
+                      {/* Pharmacy Payout */}
+                      <td style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
+                        <PayoutCell info={order.payout?.pharmacy ?? null} />
                       </td>
                     </tr>
                   )
