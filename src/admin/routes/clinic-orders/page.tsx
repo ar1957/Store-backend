@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { useNavigate, useLocation } from "react-router-dom"
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { ShoppingCart } from "@medusajs/icons"
@@ -42,6 +42,15 @@ interface PayoutInfo {
   amount: number | null
   reference: string | null
   paid_at: string | null
+}
+
+interface RefOption {
+  id: string
+  reference_number: string
+  paid_at: string | null
+  total_amount: number | null
+  vendor_type: string
+  order_count: number
 }
 
 interface ClinicOrder {
@@ -210,6 +219,153 @@ function StatusBadge({ status }: { status: WorkflowStatus | null }) {
   )
 }
 
+// ─── Reference Number Combobox ────────────────────────────────────────────────
+
+function ReferenceCombobox({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (ref: string) => void
+}) {
+  const [inputVal, setInputVal] = useState(value)
+  const [options, setOptions] = useState<RefOption[]>([])
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Sync inputVal when value is cleared externally
+  useEffect(() => { setInputVal(value) }, [value])
+
+  // Fetch options whenever input changes or dropdown opens
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(
+          `/admin/payouts/references?q=${encodeURIComponent(inputVal)}`,
+          { credentials: "include" }
+        )
+        const d = await r.json()
+        setOptions(d.references ?? [])
+      } catch { setOptions([]) }
+      setLoading(false)
+    }, 200)
+    return () => clearTimeout(t)
+  }, [inputVal, open])
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
+
+  const select = (opt: RefOption) => {
+    setInputVal(opt.reference_number)
+    onChange(opt.reference_number)
+    setOpen(false)
+  }
+
+  const clear = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setInputVal("")
+    onChange("")
+    setOpen(false)
+  }
+
+  const inputStyle: React.CSSProperties = {
+    padding: "8px 32px 8px 14px",
+    borderRadius: "8px",
+    border: "1px solid #E5E7EB",
+    fontSize: "14px",
+    outline: "none",
+    width: "100%",
+    background: "#fff",
+    color: "#111827",
+    boxSizing: "border-box",
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: "relative", width: 240 }}>
+      <div style={{ position: "relative" }}>
+        <input
+          value={inputVal}
+          placeholder="Filter by ref # (ACH/wire)…"
+          onFocus={() => setOpen(true)}
+          onChange={e => { setInputVal(e.target.value); setOpen(true) }}
+          style={inputStyle}
+        />
+        {inputVal ? (
+          <button
+            onClick={clear}
+            style={{
+              position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+              background: "none", border: "none", cursor: "pointer",
+              color: "#9CA3AF", fontSize: 16, lineHeight: 1, padding: 0,
+            }}
+          >
+            ×
+          </button>
+        ) : (
+          <span style={{
+            position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+            color: "#9CA3AF", fontSize: 11, pointerEvents: "none",
+          }}>▾</span>
+        )}
+      </div>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
+          background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 100,
+          maxHeight: 280, overflowY: "auto",
+        }}>
+          {loading ? (
+            <div style={{ padding: "10px 14px", color: "#9CA3AF", fontSize: 13 }}>
+              Loading…
+            </div>
+          ) : options.length === 0 ? (
+            <div style={{ padding: "10px 14px", color: "#9CA3AF", fontSize: 13 }}>
+              No reference numbers found
+            </div>
+          ) : (
+            options.map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => select(opt)}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  width: "100%", padding: "9px 14px", background: "none", border: "none",
+                  borderBottom: "1px solid #F3F4F6", cursor: "pointer", textAlign: "left",
+                  gap: 8,
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = "#F9FAFB")}
+                onMouseLeave={e => (e.currentTarget.style.background = "none")}
+              >
+                <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color: "#111827", flexShrink: 0 }}>
+                  {opt.reference_number}
+                </span>
+                <span style={{ fontSize: 11, color: "#6B7280", textAlign: "right" }}>
+                  {opt.order_count} order{opt.order_count !== 1 ? "s" : ""}
+                  {opt.paid_at ? ` · ${new Date(opt.paid_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                  {opt.total_amount != null ? ` · $${Number(opt.total_amount).toFixed(2)}` : ""}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const RESTRICTED_ROLES = ["medical_director", "pharmacist"]
@@ -303,6 +459,7 @@ export default function ClinicOrdersPage() {
   })
   const [clinicFilter, setClinicFilter] = useState<string>("all")
   const [payoutFilter, setPayoutFilter] = useState<string>("all")
+  const [referenceFilter, setReferenceFilter] = useState<string>("")
 
   // Sync status filter when URL changes (e.g. drill-down from dashboard)
   useEffect(() => {
@@ -328,6 +485,7 @@ export default function ClinicOrdersPage() {
       })
       if (search) params.set("q", search)
       if (statusFilter && statusFilter !== "all") params.set("status", statusFilter)
+      if (referenceFilter) params.set("reference", referenceFilter)
 
       const res = await fetch(`/admin/order-workflow?${params}`, {
         credentials: "include",
@@ -344,7 +502,7 @@ export default function ClinicOrdersPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search, statusFilter])
+  }, [page, search, statusFilter, referenceFilter])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -502,6 +660,11 @@ export default function ClinicOrdersPage() {
           <option value="pharmacy_unpaid">Pharmacy Unpaid</option>
           <option value="pharmacy_paid">Pharmacy Paid</option>
         </select>
+
+        <ReferenceCombobox
+          value={referenceFilter}
+          onChange={(ref) => { setReferenceFilter(ref); setPage(1) }}
+        />
 
         <button
           onClick={handleRefresh}

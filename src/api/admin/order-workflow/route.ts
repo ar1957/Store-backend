@@ -109,6 +109,17 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     const statusFilter2 = statusParam ? `AND wf.status = ?` : ""
     const statusParams = statusParam ? [statusParam] : []
 
+    const referenceParam = ((req.query?.reference as string) ?? "").trim()
+    const referenceFilter = referenceParam
+      ? `AND EXISTS (
+          SELECT 1 FROM vendor_ledger vl2
+          JOIN vendor_payout vp2 ON vp2.id = vl2.payout_id
+          WHERE vl2.order_id = o.id
+            AND vp2.reference_number = ?
+        )`
+      : ""
+    const referenceParams = referenceParam ? [referenceParam] : []
+
     // ── 5. Count ──────────────────────────────────────────────────────────
     const countSql = `SELECT COUNT(DISTINCT o.id) AS total
        FROM "order" o
@@ -119,8 +130,9 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          AND o.is_draft_order = false
          ${clinicFilter}
          ${searchFilter}
-         ${statusFilter2}`
-    const countBindings = [...clinicParams, ...searchParams, ...statusParams]
+         ${statusFilter2}
+         ${referenceFilter}`
+    const countBindings = [...clinicParams, ...searchParams, ...statusParams, ...referenceParams]
 
     const countResult = await pg.raw(countSql, countBindings)
     const total = parseInt(countResult.rows[0]?.total ?? "0", 10)
@@ -182,9 +194,10 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          ${clinicFilter}
          ${searchFilter}
          ${statusFilter2}
+         ${referenceFilter}
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
-      [...clinicParams, ...searchParams, ...statusParams, limit, offset]
+      [...clinicParams, ...searchParams, ...statusParams, ...referenceParams, limit, offset]
     )
 
     const rows = dataResult.rows ?? []
