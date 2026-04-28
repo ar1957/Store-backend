@@ -128,6 +128,7 @@ export default function ClinicOpsPage() {
   const [loading, setLoading] = useState(true)
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
   const [myStaffRecord, setMyStaffRecord] = useState<StaffRecord | null>(null)
+  const [myClinicIds, setMyClinicIds] = useState<string[]>([])
   const [userLoading, setUserLoading] = useState(true)
 
   // Fetch current user on mount
@@ -161,24 +162,30 @@ export default function ClinicOpsPage() {
     finally { setLoading(false) }
   }
 
-  // Once we have both user and clinics, find their staff record
+  // Once we have both user and clinics, find ALL their staff records across clinics
   useEffect(() => {
     if (!currentUser || clinics.length === 0) return
     const findStaffRecord = async () => {
+      const matches: { record: StaffRecord; clinicId: string }[] = []
       for (const clinic of clinics) {
         try {
           const res = await fetch(`/admin/clinics/${clinic.id}/staff`, { credentials: "include" })
           const data = await res.json()
           const match = (data.staff || []).find((s: any) => s.email === currentUser.email)
           if (match) {
-            setMyStaffRecord({ ...match, clinic_id: clinic.id })
-            setSelectedId(clinic.id) // auto-select their clinic
-            return
+            matches.push({ record: { ...match, clinic_id: clinic.id }, clinicId: clinic.id })
           }
         } catch {}
       }
-      // Not found in any clinic = super admin
-      setMyStaffRecord(null)
+      if (matches.length === 0) {
+        // Not found in any clinic = super admin
+        setMyStaffRecord(null)
+        setMyClinicIds([])
+        return
+      }
+      setMyStaffRecord(matches[0].record)
+      setMyClinicIds(matches.map(m => m.clinicId))
+      setSelectedId(matches[0].clinicId)
     }
     findStaffRecord()
   }, [currentUser, clinics.length])
@@ -239,10 +246,7 @@ export default function ClinicOpsPage() {
   // Filter clinics visible to this user
   const visibleClinics = isSuperAdmin
     ? clinics
-    : clinics.filter(c =>
-        c.id === myStaffRecord?.clinic_id ||
-        (myStaffRecord?.tenant_domain && (c.domains || []).includes(myStaffRecord.tenant_domain))
-      )
+    : clinics.filter(c => myClinicIds.includes(c.id))
 
   const createClinic = async () => {
     if (!newClinic.name || !newClinic.slug) return

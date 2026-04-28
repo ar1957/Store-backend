@@ -457,7 +457,8 @@ export default function ClinicOrdersPage() {
     const params = new URLSearchParams(location.search)
     return params.get("status") || "all"
   })
-  const [clinicFilter, setClinicFilter] = useState<string>("all")
+  const [clinicFilter, setClinicFilter] = useState<string>("")   // clinic ID, empty = all
+  const [availableClinics, setAvailableClinics] = useState<{ id: string; name: string }[]>([])
   const [payoutFilter, setPayoutFilter] = useState<string>("all")
   const [referenceFilter, setReferenceFilter] = useState<string>("")
 
@@ -485,6 +486,7 @@ export default function ClinicOrdersPage() {
       })
       if (search) params.set("q", search)
       if (statusFilter && statusFilter !== "all") params.set("status", statusFilter)
+      if (clinicFilter) params.set("clinicId", clinicFilter)
       if (referenceFilter) params.set("reference", referenceFilter)
 
       const res = await fetch(`/admin/order-workflow?${params}`, {
@@ -502,7 +504,7 @@ export default function ClinicOrdersPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search, statusFilter, referenceFilter])
+  }, [page, search, statusFilter, clinicFilter, referenceFilter])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -522,6 +524,14 @@ export default function ClinicOrdersPage() {
     }
   }
 
+  // Fetch full clinic list once on mount for the filter dropdown
+  useEffect(() => {
+    fetch("/admin/clinics", { credentials: "include" })
+      .then(r => r.json())
+      .then(d => setAvailableClinics((d.clinics || []).map((c: any) => ({ id: c.id, name: c.name }))))
+      .catch(() => {})
+  }, [])
+
   // Apply nav restrictions on mount + redirect /app/orders to here for restricted roles
   useEffect(() => {
     resolveMyRole().then(role => {
@@ -537,13 +547,8 @@ export default function ClinicOrdersPage() {
     fetchOrders()
   }, [fetchOrders])
 
-  // ── Derived filter values ──────────────────────────────────────────────
-  const clinics = Array.from(
-    new Set(orders.map((o) => o.sales_channel?.name).filter(Boolean))
-  ) as string[]
-
+  // ── Client-side payout filter only (clinic filter is now server-side) ────
   const filtered = orders.filter((o) => {
-    if (clinicFilter !== "all" && o.sales_channel?.name !== clinicFilter) return false
     if (payoutFilter === "pharmacy_unpaid" && o.payout?.pharmacy?.status === "paid") return false
     if (payoutFilter === "pharmacy_paid"   && o.payout?.pharmacy?.status !== "paid") return false
     return true
@@ -614,9 +619,9 @@ export default function ClinicOrdersPage() {
             cursor: "pointer",
           }}
         >
-          <option value="all">All Clinics</option>
-          {clinics.map((c) => (
-            <option key={c} value={c}>{c}</option>
+          <option value="">All Clinics</option>
+          {availableClinics.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
 
