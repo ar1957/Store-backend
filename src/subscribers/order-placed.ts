@@ -28,12 +28,23 @@ export default async function orderPlacedHandler({
   logger.info(`[OrderPlaced] Processing order ${orderId}`)
 
   try {
-    // 1. Get order with metadata
+    // 1. Get order with metadata + total (total lives in order_summary.totals JSONB)
     const orderResult = await pgConnection.raw(`
       SELECT o.id, o.metadata, o.email,
+             COALESCE(
+               (os.totals->>'current_order_total')::numeric,
+               (os.totals->>'original_order_total')::numeric,
+               (os.totals->>'total')::numeric,
+               0
+             ) AS total,
              oa.first_name, oa.last_name
       FROM "order" o
       LEFT JOIN order_address oa ON oa.id = o.shipping_address_id
+      LEFT JOIN LATERAL (
+        SELECT totals FROM order_summary
+        WHERE order_id = o.id AND deleted_at IS NULL
+        ORDER BY created_at DESC LIMIT 1
+      ) os ON true
       WHERE o.id = ?
       LIMIT 1
     `, [orderId])
@@ -52,9 +63,10 @@ export default async function orderPlacedHandler({
       try {
         // Resolve tenant domain from metadata or from the clinic tied to the sales channel
         let tenantDomain: string | null = metadata.tenant_domain || null
+        let clinicIdNoElig: string | null = null
         if (!tenantDomain) {
           const domainResult = await pgConnection.raw(`
-            SELECT domains[1] AS domain
+            SELECT id, domains[1] AS domain
             FROM clinic
             WHERE sales_channel_id = (
               SELECT sales_channel_id FROM "order" WHERE id = ? LIMIT 1
@@ -63,6 +75,7 @@ export default async function orderPlacedHandler({
             LIMIT 1
           `, [orderId])
           tenantDomain = domainResult.rows[0]?.domain || null
+          clinicIdNoElig = domainResult.rows[0]?.id || null
         }
         if (tenantDomain) {
           const workflowId = `wf_${Date.now()}`
@@ -76,6 +89,9 @@ export default async function orderPlacedHandler({
           await pgConnection.raw(`
             UPDATE "order" SET metadata = ?, updated_at = NOW() WHERE id = ?
           `, [JSON.stringify({ ...metadata, workflowStatus: "pending_pharmacy" }), orderId])
+          if (clinicIdNoElig) {
+            await createLedgerEntries(pgConnection, clinicIdNoElig, orderId, Number(order.total || 0), logger)
+          }
           logger.info(`[OrderPlaced] ✓ Order ${orderId} recorded as pending_pharmacy (no eligibility data)`)
         } else {
           logger.warn(`[OrderPlaced] Could not determine tenant domain for order ${orderId} — skipping workflow record`)
@@ -203,6 +219,7 @@ export default async function orderPlacedHandler({
         UPDATE "order" SET metadata = ?, updated_at = NOW() WHERE id = ?
       `, [JSON.stringify(updatedMetadata), orderId])
 
+      await createLedgerEntries(pgConnection, clinic.id, orderId, Number(order.total || 0), logger)
       logger.info(`[OrderPlaced] ✓ Order ${orderId} recorded as pending_pharmacy (no MHC GFE)`)
       return
     }
@@ -269,6 +286,7 @@ export default async function orderPlacedHandler({
       UPDATE "order" SET metadata = ?, updated_at = NOW() WHERE id = ?
     `, [JSON.stringify(updatedMetadata), orderId])
 
+    await createLedgerEntries(pgConnection, clinic.id, orderId, Number(order.total || 0), logger)
     logger.info(`[OrderPlaced] ✓ Patient ${patientId} + GFE ${gfeId} created for order ${orderId}`)
 
   } catch (err) {
@@ -278,4 +296,78 @@ export default async function orderPlacedHandler({
 
 export const config = {
   event: "order.placed",
+}
+
+/**
+ * Creates vendor_ledger entries for both vendor types if a payout config exists.
+ * Called after every order_workflow row is inserted.
+ */
+async function createLedgerEntries(
+  pgConnection: any,
+  clinicId: string,
+  orderId: string,
+  orderTotal: number,
+  logger: any,
+) {
+  try {
+    // Get line items for this order (product_id + quantity)
+    const itemsRes = await pgConnection.raw(`
+      SELECT ol.product_id, oi.quantity
+      FROM order_line_item ol
+      INNER JOIN order_item oi ON oi.item_id = ol.id
+      WHERE oi.order_id = ? AND ol.product_id IS NOT NULL
+    `, [orderId])
+
+    if (!itemsRes.rows.length) return
+
+    const productIds: string[] = [...new Set(itemsRes.rows.map((r: any) => r.product_id))]
+    const placeholders = productIds.map(() => "?").join(", ")
+
+    // Look up configured pharmacy costs for these products
+    const costsRes = await pgConnection.raw(`
+      SELECT product_id, pharmacy_cost
+      FROM product_payout_cost
+      WHERE clinic_id = ? AND product_id IN (${placeholders})
+    `, [clinicId, ...productIds])
+
+    if (!costsRes.rows.length) return  // no costs configured — nothing to split
+
+    const costMap = new Map<string, number>(
+      costsRes.rows.map((r: any) => [r.product_id, Number(r.pharmacy_cost)])
+    )
+
+    // pharmacy amount = sum of (cost × quantity) per line item
+    let pharmacyAmount = 0
+    for (const item of itemsRes.rows) {
+      const cost = costMap.get(item.product_id) ?? 0
+      pharmacyAmount += cost * (Number(item.quantity) || 1)
+    }
+    pharmacyAmount = Number(pharmacyAmount.toFixed(2))
+
+    // clinic gets the remainder
+    const clinicAmount = Number(Math.max(0, orderTotal - pharmacyAmount).toFixed(2))
+
+    const ts = Date.now()
+    if (pharmacyAmount > 0) {
+      const ledgerId = `vl_${ts}_pharmacy_${orderId.slice(-6)}`
+      await pgConnection.raw(`
+        INSERT INTO vendor_ledger (id, clinic_id, vendor_type, order_id, order_total, amount_owed, currency, status)
+        VALUES (?, ?, 'pharmacy', ?, ?, ?, 'usd', 'pending')
+        ON CONFLICT DO NOTHING
+      `, [ledgerId, clinicId, orderId, orderTotal, pharmacyAmount])
+    }
+
+    if (clinicAmount > 0) {
+      const ledgerId = `vl_${ts + 1}_clinic_${orderId.slice(-6)}`
+      await pgConnection.raw(`
+        INSERT INTO vendor_ledger (id, clinic_id, vendor_type, order_id, order_total, amount_owed, currency, status)
+        VALUES (?, ?, 'clinic', ?, ?, ?, 'usd', 'pending')
+        ON CONFLICT DO NOTHING
+      `, [ledgerId, clinicId, orderId, orderTotal, clinicAmount])
+    }
+
+    logger.info(`[OrderPlaced] ✓ Ledger entries for order ${orderId} — pharmacy $${pharmacyAmount} / clinic $${clinicAmount}`)
+  } catch (e: any) {
+    logger.error(`[OrderPlaced] Failed to create ledger entries: ${e.message}`)
+  }
 }

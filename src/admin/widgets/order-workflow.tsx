@@ -88,11 +88,19 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [gfePortalUrl, setGfePortalUrl] = useState<string | null>(null)
   const [sendingReminder, setSendingReminder] = useState(false)
   const [reminderResult, setReminderResult] = useState<string | null>(null)
+  const [pharmacyPayout, setPharmacyPayout] = useState<{
+    status: string; amount: number | null; reference: string | null; paid_at: string | null; notes: string | null
+  } | null>(null)
 
   const role = myStaff?.role || "super_admin"
 
   useEffect(() => {
     init()
+    // Load payout status independently — non-blocking
+    fetch(`/admin/order-workflow/${order.id}/payout-status`, { credentials: "include" })
+      .then(r => r.json())
+      .then(d => { if (d.pharmacy) setPharmacyPayout(d.pharmacy) })
+      .catch(() => {})
   }, [order.id])
 
   const init = async () => {
@@ -427,6 +435,28 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           Logged in as: <strong>{ROLE_LABELS[role]}</strong>
         </span>
       </div>
+
+      {/* Pharmacy Payout Status — visible on all shipped orders */}
+      {(workflow.status === "shipped" || pharmacyPayout) && (
+        pharmacyPayout?.status === "paid" ? (
+          <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>✓ Pharmacy Paid</span>
+            {pharmacyPayout.amount != null && (
+              <span style={{ fontSize: 12, color: "#374151" }}>${Number(pharmacyPayout.amount).toFixed(2)}</span>
+            )}
+            {pharmacyPayout.reference && (
+              <span style={{ fontSize: 12, color: "#6b7280" }}>Ref: <span style={{ fontFamily: "monospace" }}>{pharmacyPayout.reference}</span></span>
+            )}
+            {pharmacyPayout.paid_at && (
+              <span style={{ fontSize: 12, color: "#6b7280" }}>{new Date(pharmacyPayout.paid_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
+            )}
+          </div>
+        ) : (
+          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px", marginBottom: 16 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#92400e" }}>⏳ Pharmacy Payment Pending</span>
+          </div>
+        )
+      )}
 
       {/* Provider clearance reminder — only for pending_provider orders */}
       {workflow.status === "pending_provider" && (

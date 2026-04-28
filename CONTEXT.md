@@ -67,7 +67,7 @@ Multi-tenant Medusa v2 backend + Next.js 15 storefront. Each clinic/store is a t
 After any manual `sudo systemctl restart web`, must also run `sudo systemctl reload nginx` to re-apply this config.
 
 ### Migrations
-Custom migrations in `src/modules/provider-integration/migrations/` (Migration20240101000001 through Migration20240101000009).
+Custom migrations in `src/modules/provider-integration/migrations/` (Migration20240101000001 through **Migration20240101000012**).
 Run manually on server:
 ```bash
 export DATABASE_URL=$(/opt/elasticbeanstalk/bin/get-config environment --key DATABASE_URL)
@@ -91,6 +91,10 @@ cd /var/app/current/.medusa/server && node /var/app/current/scripts/manual-migra
 - `product_treatment_map` — maps Medusa products to GFE treatments
 - `clinic_ui_config` — nav/footer links, logo, contact info per clinic
 - `clinic_promotion` — maps Medusa promotion IDs to clinics (per-clinic promotion scoping)
+- `vendor_payout_config` — bank details for clinic + pharmacy vendors (routing, account numbers). One row per clinic. No split % — amounts derived from product costs.
+- `product_payout_cost` — pharmacy cost per product per clinic. `pharmacy_cost` × qty = what pharmacy receives per line item. Clinic receives remainder.
+- `vendor_ledger` — one row per vendor type ('clinic'|'pharmacy') per order. Created when payment is recorded. `status` = 'pending'|'paid'. `payout_id` links to vendor_payout.
+- `vendor_payout` — one disbursement record per Pay Out action. Stores `reference_number` (ACH/wire trace #), `total_amount`, `paid_at`. One payout can cover many orders.
 
 ### Roles
 - `super_admin` — sees everything including Clinic Dashboard
@@ -174,10 +178,27 @@ This handles historical orders with old domains after domain changes.
 ### Clinic Operations (`/app/provider-settings`)
 - Details tab and API & Credentials tab: **read-only for `clinic_admin`** (shows lock banner)
 - Pharmacy tab: fully editable by clinic_admin
+- **Payouts tab**: bank details, product pharmacy costs, pending pharmacy payout card, payout history
+  - Products list filtered by clinic's `sales_channel_id` (not all products)
+  - Pending amounts calculated live from `order_workflow` + `product_payout_cost` — no pre-population needed
+  - Pharmacy payout only includes `workflow_status = 'shipped'` orders
+  - Refunded orders (`workflow_status = 'refund_issued'`) are excluded
+  - Pay Out modal requires a reference number (ACH trace # / wire confirmation)
+  - Date range filter based on `order_workflow.created_at`
+
+### Clinic Orders (`/app/clinic-orders`)
+- Filter bar includes: search, clinic, workflow status, pharmacy payout status (Unpaid / Paid)
+- Order # cell shows green `✓ PAID` badge when pharmacy has been paid (tooltip shows ref # + date)
+- "Pharmacy Payout" column shows amount, paid date, ref # for each order
+- `pending_pharmacy` status shown as "Pending Pharmacy" (teal badge)
 
 ### Order Workflow Widget
 - Shows GFE portal link: `{connect_url}/gfe-pro?id={gfe_id}`
 - Submit to Pharmacy API button: only shown if `pharmacy_enabled = true` AND credentials exist
+- **Pharmacy payout bar**: shown on all `shipped` orders
+  - Green "✓ Pharmacy Paid · $X · Ref: Y · Date" when paid
+  - Amber "⏳ Pharmacy Payment Pending" when shipped but not yet paid
+  - Fetches from `GET /admin/order-workflow/:orderId/payout-status`
 
 ---
 
@@ -240,6 +261,45 @@ Both `GET /admin/clinics` and `GET /admin/clinics/:id` use raw SQL (`SELECT *`) 
 
 ---
 
+## Vendor Payout System
+
+### How It Works
+1. Admin sets pharmacy cost per product in **Payouts tab** of Clinic Operations
+2. When orders are shipped, they appear in **Pending Payouts → Pharmacy** card
+3. Admin selects date range → clicks **Pay Out** → enters ACH/wire reference number → confirms
+4. One `vendor_payout` record created; all covered orders get a `vendor_ledger` row marked `paid` with the `payout_id`
+5. Each order shows payout status in Clinic Orders list (badge on order #) and in the Order Detail widget
+
+### Key API Routes
+- `GET/POST /admin/clinics/:id/payout-config` — bank details (no split %)
+- `GET/POST /admin/clinics/:id/product-costs` — pharmacy cost per product
+- `GET /admin/clinics/:id/payouts?from=&to=` — pending amounts (live-calculated) + history
+- `POST /admin/clinics/:id/payouts` — record a payout with reference number
+- `GET /admin/order-workflow/:orderId/payout-status` — payout status for order detail widget
+
+### Amount Calculation
+```
+pharmacy_amount = SUM(product_payout_cost.pharmacy_cost × order_item.quantity)
+                  for each line item in the order
+clinic_amount   = order_total - pharmacy_amount
+```
+- Uses `order_item.quantity` (NOT `order_line_item.quantity` — that column does not exist)
+- Uses `order_summary.totals` JSONB for order total (NOT `order.total` — that column does not exist)
+- Orders matched to clinic via `order.sales_channel_id = clinic.sales_channel_id` (reliable; domain matching was unreliable)
+
+### Payout Rules
+- Pharmacy only paid for orders with `order_workflow.status = 'shipped'`
+- Refunded orders (`status = 'refund_issued'`) excluded from all payout calculations
+- No cron job — manual process with reference number until Mercury Bank API is integrated
+
+### Migration 12 — Tables to create manually
+```sql
+vendor_payout_config, product_payout_cost, vendor_ledger, vendor_payout
+```
+See `Migration20240101000012.ts` for full DDL. Run DROP + CREATE when first deploying.
+
+---
+
 ## Known Issues / Gotchas
 
 ### 1. Medusa build silently skips some routes
@@ -259,7 +319,26 @@ sudo systemctl reload nginx
 ### 4. nginx reload required after web restart
 The `.platform/nginx` config is loaded at deploy time. After manual `sudo systemctl restart web`, run `sudo systemctl reload nginx` to restore `X-Forwarded-Host` header.
 
-### 5. Local testing domains
+### 5. `order.total` does not exist as a column
+In Medusa v2, the order total is stored in `order_summary.totals` as JSONB, not as a column on `order`. Always use:
+```sql
+LEFT JOIN LATERAL (
+  SELECT totals FROM order_summary
+  WHERE order_id = o.id AND deleted_at IS NULL
+  ORDER BY created_at DESC LIMIT 1
+) os ON true
+-- then: COALESCE((os.totals->>'current_order_total')::numeric, (os.totals->>'original_order_total')::numeric, (os.totals->>'total')::numeric, 0)
+```
+
+### 6. `order_line_item.quantity` does not exist
+Quantity is on `order_item.quantity`, not `order_line_item`. The join pattern is:
+```sql
+FROM order_item oi
+JOIN order_line_item oli ON oli.id = oi.item_id
+-- use oi.quantity, oli.product_id
+```
+
+### 7. Local testing domains
 Add to `C:\Windows\System32\drivers\etc\hosts`:
 ```
 127.0.0.1 spaderx.local
