@@ -34,7 +34,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     // ── Resolve caller's role and auto-scope non-super-admins ────────────────
     const actorId = (req as any).session?.auth_context?.actor_id
     let callerRole = "super_admin"
-    let callerClinicId: string | null = null
+    let callerClinicIds: string[] = []
 
     if (actorId) {
       const userResult = await pg.raw(`SELECT email FROM "user" WHERE id = ? LIMIT 1`, [actorId])
@@ -45,24 +45,32 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           FROM clinic_staff cs
           JOIN clinic c ON cs.tenant_domain = ANY(c.domains)
           WHERE cs.email = ? AND cs.is_active = true AND cs.deleted_at IS NULL
-          LIMIT 1
         `, [email])
         if (staffResult.rows.length) {
           callerRole = staffResult.rows[0].role
-          callerClinicId = staffResult.rows[0].clinic_id
+          callerClinicIds = staffResult.rows.map((r: any) => r.clinic_id)
         }
       }
     }
 
-    if (callerRole !== "super_admin" && callerClinicId) {
-      clinicId = callerClinicId
+    // For non-super-admins: if they pass a clinicId, validate it's one of theirs;
+    // otherwise scope to all their clinics
+    if (callerRole !== "super_admin") {
+      if (clinicId && !callerClinicIds.includes(clinicId)) clinicId = ""
     }
 
     // ── Build WHERE clauses ──────────────────────────────────────────────────
     const conditions: string[] = ["ow.deleted_at IS NULL"]
     const bindings: any[] = []
 
-    if (clinicId) { conditions.push(`c.id = ?`); bindings.push(clinicId) }
+    if (clinicId) {
+      conditions.push(`c.id = ?`)
+      bindings.push(clinicId)
+    } else if (callerRole !== "super_admin" && callerClinicIds.length > 0) {
+      const ids = callerClinicIds.map(() => "?").join(", ")
+      conditions.push(`c.id IN (${ids})`)
+      bindings.push(...callerClinicIds)
+    }
     if (dateFrom) { conditions.push(`o.created_at >= ?`); bindings.push(dateFrom) }
     if (dateTo)   { conditions.push(`o.created_at <= ?`); bindings.push(dateTo + "T23:59:59Z") }
 
@@ -97,6 +105,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     let clinics: any[] = []
     if (callerRole === "super_admin") {
       const cr = await pg.raw(`SELECT id, name FROM clinic WHERE deleted_at IS NULL ORDER BY name`)
+      clinics = cr.rows
+    } else if (callerClinicIds.length > 1) {
+      // Multi-clinic admin — return their clinics so the frontend can show a picker
+      const ids = callerClinicIds.map(() => "?").join(", ")
+      const cr = await pg.raw(
+        `SELECT id, name FROM clinic WHERE id IN (${ids}) AND deleted_at IS NULL ORDER BY name`,
+        callerClinicIds
+      )
       clinics = cr.rows
     }
 

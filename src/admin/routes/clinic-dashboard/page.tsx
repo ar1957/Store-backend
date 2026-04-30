@@ -184,7 +184,7 @@ export default function ClinicDashboardPage() {
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 12, marginBottom: 28, flexWrap: "wrap", alignItems: "flex-end" }}>
-        {isSuperAdmin && (
+        {clinics.length > 0 && (
           <div>
             <label style={s.label}>Clinic</label>
             <select style={s.select} value={clinicId} onChange={e => setClinicId(e.target.value)}>

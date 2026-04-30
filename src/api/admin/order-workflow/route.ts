@@ -109,6 +109,10 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     const statusFilter2 = statusParam ? `AND wf.status = ?` : ""
     const statusParams = statusParam ? [statusParam] : []
 
+    const clinicIdParam = ((req.query?.clinicId as string) ?? "").trim()
+    const clinicIdFilter = clinicIdParam ? `AND c2.id = ?` : ""
+    const clinicIdParams = clinicIdParam ? [clinicIdParam] : []
+
     const referenceParam = ((req.query?.reference as string) ?? "").trim()
     const referenceFilter = referenceParam
       ? `AND EXISTS (
@@ -126,13 +130,15 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
        LEFT JOIN "customer" c     ON c.id  = o.customer_id
        LEFT JOIN "order_address" oa ON oa.id = o.shipping_address_id
        INNER JOIN "order_workflow" wf ON wf.order_id = o.id AND wf.deleted_at IS NULL
+       LEFT JOIN clinic c2 ON c2.sales_channel_id = o.sales_channel_id AND c2.deleted_at IS NULL
        WHERE o.deleted_at IS NULL
          AND o.is_draft_order = false
          ${clinicFilter}
          ${searchFilter}
          ${statusFilter2}
+         ${clinicIdFilter}
          ${referenceFilter}`
-    const countBindings = [...clinicParams, ...searchParams, ...statusParams, ...referenceParams]
+    const countBindings = [...clinicParams, ...searchParams, ...statusParams, ...clinicIdParams, ...referenceParams]
 
     const countResult = await pg.raw(countSql, countBindings)
     const total = parseInt(countResult.rows[0]?.total ?? "0", 10)
@@ -177,6 +183,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          ORDER BY created_at DESC LIMIT 1
        ) os ON true
        INNER JOIN "order_workflow" wf  ON wf.order_id = o.id AND wf.deleted_at IS NULL
+       LEFT JOIN clinic c2 ON c2.sales_channel_id = o.sales_channel_id AND c2.deleted_at IS NULL
        LEFT JOIN LATERAL (
          SELECT
            MAX(CASE WHEN vendor_type = 'clinic'   THEN status     END) AS clinic_payout_status,
@@ -194,10 +201,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          ${clinicFilter}
          ${searchFilter}
          ${statusFilter2}
+         ${clinicIdFilter}
          ${referenceFilter}
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
-      [...clinicParams, ...searchParams, ...statusParams, ...referenceParams, limit, offset]
+      [...clinicParams, ...searchParams, ...statusParams, ...clinicIdParams, ...referenceParams, limit, offset]
     )
 
     const rows = dataResult.rows ?? []
