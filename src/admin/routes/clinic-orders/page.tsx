@@ -366,6 +366,85 @@ function ReferenceCombobox({
   )
 }
 
+// ─── Export ───────────────────────────────────────────────────────────────────
+
+function escapeCSV(value: string | number | null | undefined): string {
+  if (value == null) return ""
+  const str = String(value)
+  // Wrap in quotes if contains comma, quote, or newline
+  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+    return `"${str.replace(/"/g, '""')}"`
+  }
+  return str
+}
+
+function exportToCSV(orders: ClinicOrder[]) {
+  const headers = [
+    "Order #",
+    "Date",
+    "Patient",
+    "Email",
+    "Clinic",
+    "State",
+    "Medication & Dosage",
+    "GFE Status",
+    "Workflow Status",
+    "Ship Date",
+    "Carrier",
+    "Tracking #",
+    "Amount",
+    "Currency",
+    "Pharmacy Payout Status",
+    "Pharmacy Payout Amount",
+    "Pharmacy Payout Reference",
+    "Pharmacy Payout Date",
+  ]
+
+  const rows = orders.map((order) => {
+    const patientName = [
+      order.shipping_address?.first_name || order.customer?.first_name,
+      order.shipping_address?.last_name || order.customer?.last_name,
+    ].filter(Boolean).join(" ") || order.customer?.email || ""
+
+    const workflowStatusLabel = order.workflow?.status
+      ? (STATUS_CONFIG[order.workflow.status]?.label ?? order.workflow.status)
+      : ""
+
+    return [
+      `#${order.display_id}`,
+      formatDate(order.created_at),
+      patientName,
+      order.customer?.email ?? "",
+      order.sales_channel?.name ?? "",
+      order.shipping_address?.province ?? "",
+      parseMedDosage(order.workflow?.treatment_dosages ?? null),
+      order.workflow?.provider_status ?? "",
+      workflowStatusLabel,
+      formatDate(order.workflow?.shipped_at ?? null),
+      order.workflow?.carrier ?? "",
+      order.workflow?.tracking_number ?? "",
+      order.total,
+      order.currency_code.toUpperCase(),
+      order.payout?.pharmacy?.status ?? "",
+      order.payout?.pharmacy?.amount ?? "",
+      order.payout?.pharmacy?.reference ?? "",
+      order.payout?.pharmacy?.paid_at ? formatDate(order.payout.pharmacy.paid_at) : "",
+    ].map(escapeCSV).join(",")
+  })
+
+  const csv = [headers.join(","), ...rows].join("\n")
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  const timestamp = new Date().toISOString().slice(0, 10)
+  link.download = `clinic-orders-${timestamp}.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const RESTRICTED_ROLES = ["medical_director", "pharmacist"]
@@ -688,6 +767,55 @@ export default function ClinicOrdersPage() {
           }}
         >
           {refreshing ? "⏳ Checking GFE…" : "↻ Refresh"}
+        </button>
+
+        {/* Excel export */}
+        <button
+          onClick={async () => {
+            // Fetch ALL records matching current filters (not just current page)
+            try {
+              const params = new URLSearchParams({ limit: "9999", offset: "0" })
+              if (search) params.set("q", search)
+              if (statusFilter && statusFilter !== "all") params.set("status", statusFilter)
+              if (clinicFilter) params.set("clinicId", clinicFilter)
+              if (referenceFilter) params.set("reference", referenceFilter)
+
+              const res = await fetch(`/admin/order-workflow?${params}`, {
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+              })
+              if (!res.ok) throw new Error(`Export fetch failed (${res.status})`)
+              const data = await res.json()
+
+              // Apply client-side payout filter (same as the table)
+              const allOrders: ClinicOrder[] = (data.orders ?? []).filter((o: ClinicOrder) => {
+                if (payoutFilter === "pharmacy_unpaid" && o.payout?.pharmacy?.status === "paid") return false
+                if (payoutFilter === "pharmacy_paid"   && o.payout?.pharmacy?.status !== "paid") return false
+                return true
+              })
+
+              exportToCSV(allOrders)
+            } catch (err: any) {
+              alert(`Export failed: ${err.message}`)
+            }
+          }}
+          title="Export all matching orders to Excel"
+          style={{
+            padding: "8px 12px",
+            borderRadius: "8px",
+            border: "1px solid #D1FAE5",
+            background: "#F0FDF4",
+            fontSize: "18px",
+            cursor: "pointer",
+            color: "#15803D",
+            lineHeight: 1,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span>📊</span>
+          <span style={{ fontSize: 13, fontWeight: 500 }}>Export</span>
         </button>
       </div>
 

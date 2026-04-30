@@ -1,0 +1,22 @@
+{
+	"folders": [
+		{
+			"path": "../../.."
+		},
+		{
+			"path": "../../../../my-medusa-store-storefront"
+		},
+		{
+			"path": "../../../../../New Git Rep"
+		},
+		{
+			"path": "../../../../../New Git Rep/HCO_BACKEND"
+		},
+		{
+			"path": "../../../../../New Git Rep/HCO_FRONTEND_Source"
+		}
+	],
+	"settings": {
+		"kiroAgent.configureMCP": "Disabled"
+	}
+}

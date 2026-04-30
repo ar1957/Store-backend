@@ -172,8 +172,9 @@ This handles historical orders with old domains after domain changes.
 ### Clinic Dashboard (`/app/clinic-dashboard`)
 - Shows order analytics: by status (pie chart, clickable drill-down to clinic-orders), by product
 - Revenue from `order_transaction` table (`reference = 'capture'`)
-- Filters: date range, clinic (super_admin only)
+- Filters: date range, clinic picker shown when `clinics.length > 0` (super_admin gets all clinics; multi-clinic admin gets their assigned clinics)
 - Visible to: `super_admin`, `clinic_admin` only (hidden from pharmacist/medical_director)
+- **Multi-clinic admin fix**: backend no longer uses `LIMIT 1` on staff query — returns ALL clinic IDs for the user; `WHERE c.id IN (...)` scopes data to all assigned clinics
 
 ### Clinic Operations (`/app/provider-settings`)
 - Details tab and API & Credentials tab: **read-only for `clinic_admin`** (shows lock banner)
@@ -185,9 +186,12 @@ This handles historical orders with old domains after domain changes.
   - Refunded orders (`workflow_status = 'refund_issued'`) are excluded
   - Pay Out modal requires a reference number (ACH trace # / wire confirmation)
   - Date range filter based on `order_workflow.created_at`
+- **Multi-clinic admin fix**: `findStaffRecord` no longer returns after first match — collects ALL matching clinics; `visibleClinics` filters by `myClinicIds` array (not single `myStaffRecord.clinic_id`)
 
 ### Clinic Orders (`/app/clinic-orders`)
-- Filter bar includes: search, clinic, workflow status, pharmacy payout status (Unpaid / Paid)
+- Filter bar includes: search, clinic, workflow status, pharmacy payout status (Unpaid / Paid), **payout reference number combobox**
+- Clinic filter uses clinic ID (server-side) — fetched from `/admin/clinics` on mount, NOT derived from current page's orders
+- Reference combobox: debounced text search → `/admin/payouts/references?q=...` → floating dropdown → server-side `reference` param filters orders by payout reference number
 - Order # cell shows green `✓ PAID` badge when pharmacy has been paid (tooltip shows ref # + date)
 - "Pharmacy Payout" column shows amount, paid date, ref # for each order
 - `pending_pharmacy` status shown as "Pending Pharmacy" (teal badge)
@@ -223,8 +227,18 @@ This handles historical orders with old domains after domain changes.
 - Footer logo → `/store`
 
 ### Track Order
-- `/us/order/status` — search by email or order ID
-- `/us/order/status/[gfeId]` — 5-step timeline with pharmacy status
+- `/us/order/status` — search by email or order ID; shows "🕐 Providers Offline" badge + schedule when provider hours are closed and order is `pending_provider`
+- `/us/order/status/[gfeId]` — 5-step timeline with pharmacy status; "Join Virtual Visit" button hidden + schedule shown when provider hours are closed
+
+### Virtual Room / Provider Hours Gate
+- `GET /store/operating-hours` — backend route that resolves clinic from `x-forwarded-host`, fetches MHC operating hours, returns `{ isOpen, schedule, formattedHours, timezone }`
+  - Clinic's `api_env` controls which MHC host to use: `api_base_url_test` (dev) or `api_base_url_prod` (prod)
+  - MHC operating hours URL derived from: `new URL(api_base_url).origin + "/api/operatinghour"` (strips `/endpoint/v2` path)
+  - MHC auth: Basic auth header (`Authorization: Basic base64(clientId:clientSecret)`) + `ClientId`/`ClientSecret` custom headers, **NO JSON body**
+  - Token cached 50 min; hours response cached 60 s; **fails open** (`isOpen: true`) on any error
+  - Timezone: **`America/Los_Angeles`** (PST/PDT)
+- `GET /api/operating-hours` — storefront Next.js proxy; passes `x-forwarded-host` and `x-publishable-api-key` to backend; `cache: "no-store"`
+- Components: `virtual-room-redirect/index.tsx` and both order status pages fetch `/api/operating-hours` on mount (non-blocking, fail-open while loading)
 
 ### Important Patterns
 - `window.__TENANT_API_KEY__` and `window.__TENANT_DOMAIN__` injected by layout
@@ -276,6 +290,7 @@ Both `GET /admin/clinics` and `GET /admin/clinics/:id` use raw SQL (`SELECT *`) 
 - `GET /admin/clinics/:id/payouts?from=&to=` — pending amounts (live-calculated) + history
 - `POST /admin/clinics/:id/payouts` — record a payout with reference number
 - `GET /admin/order-workflow/:orderId/payout-status` — payout status for order detail widget
+- `GET /admin/payouts/references?q=<search>` — typeahead for payout reference numbers; returns `reference_number`, `paid_at`, `total_amount`, `vendor_type`, `order_count`; limit 50
 
 ### Amount Calculation
 ```
@@ -297,6 +312,19 @@ clinic_amount   = order_total - pharmacy_amount
 vendor_payout_config, product_payout_cost, vendor_ledger, vendor_payout
 ```
 See `Migration20240101000012.ts` for full DDL. Run DROP + CREATE when first deploying.
+
+---
+
+## `/admin/order-workflow` Query Params
+| Param | Description |
+|---|---|
+| `q` | Full-text search: order display_id, customer name/email, shipping name |
+| `status` | Filter by `order_workflow.status` |
+| `clinicId` | Filter by clinic ID (joined via `c2` alias — `c` is already customer) |
+| `reference` | Filter by `vendor_payout.reference_number` via EXISTS subquery on `vendor_ledger` |
+| `limit` / `offset` | Pagination |
+
+**Important**: In this query, `c` = `customer`, `c2` = `clinic`. Never use `c` for clinic here.
 
 ---
 
@@ -338,7 +366,36 @@ JOIN order_line_item oli ON oli.id = oi.item_id
 -- use oi.quantity, oli.product_id
 ```
 
-### 7. Local testing domains
+### 7. Medusa `/store/*` routes require `x-publishable-api-key`
+All `/store/*` routes are protected by Medusa middleware that validates a publishable API key, even for public/unauthenticated endpoints. When building storefront proxies that call `/store/*` backend routes, always pass `x-publishable-api-key` (use `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY` from env). Bypassing via `middlewares: []` in the route file does not work reliably without a server restart.
+
+### 8. MHC API authentication
+The MHC provider API login requires **Basic auth + custom headers with NO body** (not JSON):
+```typescript
+const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64")
+fetch(`${baseUrl}/login`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": `Basic ${basicAuth}`,
+    "ClientId": clientId,
+    "ClientSecret": clientSecret,
+  },
+  // NO body
+})
+```
+See `src/modules/provider-integration/clinic/service.ts` for reference.
+
+### 9. MHC operating hours URL differs from endpoint URL
+The `api_base_url` stored on the clinic record looks like `https://api-dev.healthcoversonline.com/endpoint/v2`. For the operating hours endpoint, strip the path: `new URL(api_base_url).origin + "/api/operatinghour"`. Do NOT append to the full URL.
+
+### 10. TypeScript `new Set()` infers `Set<unknown>` without explicit type param
+In `src/subscribers/order-placed.ts`, `new Set(array.map(...))` was inferred as `Set<unknown>`, causing TS2322. Fix: `new Set<string>(array.map((r: any) => r.field as string))`.
+
+### 11. Multi-clinic admin: never use LIMIT 1 on clinic_staff queries
+`clinic_staff` has one row per (email, clinic) pair. Using `LIMIT 1` silently breaks multi-clinic admin support — the user will only see one clinic's data. Always collect ALL rows: `staffResult.rows.map(r => r.clinic_id)`.
+
+### 12. Local testing domains
 Add to `C:\Windows\System32\drivers\etc\hosts`:
 ```
 127.0.0.1 spaderx.local
