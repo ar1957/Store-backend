@@ -258,6 +258,64 @@ function PendingProviderReminderEmail({ data }: { data: any }) {
   )
 }
 
+function InviteEmail({ data }: { data: any }) {
+  const e = React.createElement
+  const brand = "#111827"
+  return e("div", { style: { fontFamily: "Arial, sans-serif", maxWidth: 600, margin: "0 auto", background: "#fff" } },
+    e("div", { style: { background: brand, padding: "32px 40px" } },
+      e("h1", { style: { color: "#fff", fontSize: 24, fontWeight: 700, margin: 0 } }, "You've Been Invited")
+    ),
+    e("div", { style: { padding: "28px 40px" } },
+      e("p", { style: { fontSize: 14, color: "#374151", margin: "0 0 16px" } },
+        "You have been invited to join the admin panel. Click the button below to accept your invitation and set up your account."
+      ),
+      e("a", {
+        href: data.url || "#",
+        style: {
+          display: "inline-block", padding: "12px 28px",
+          background: brand, color: "#fff", borderRadius: 8,
+          fontWeight: 700, fontSize: 14, textDecoration: "none", margin: "8px 0 20px",
+        }
+      }, "Accept Invitation →"),
+      e("p", { style: { fontSize: 13, color: "#6b7280", margin: "0 0 8px" } },
+        "If you didn't expect this invitation, you can safely ignore this email."
+      ),
+      e("p", { style: { fontSize: 13, color: "#6b7280", margin: 0 } },
+        "This invitation link will expire in 24 hours."
+      ),
+    ),
+  )
+}
+
+function PasswordResetEmail({ data }: { data: any }) {
+  const e = React.createElement
+  const brand = "#111827"
+  return e("div", { style: { fontFamily: "Arial, sans-serif", maxWidth: 600, margin: "0 auto", background: "#fff" } },
+    e("div", { style: { background: brand, padding: "32px 40px" } },
+      e("h1", { style: { color: "#fff", fontSize: 24, fontWeight: 700, margin: 0 } }, "Reset Your Password")
+    ),
+    e("div", { style: { padding: "28px 40px" } },
+      e("p", { style: { fontSize: 14, color: "#374151", margin: "0 0 16px" } },
+        "You requested a password reset for your admin account. Click the button below to set a new password."
+      ),
+      e("a", {
+        href: data.url || "#",
+        style: {
+          display: "inline-block", padding: "12px 28px",
+          background: brand, color: "#fff", borderRadius: 8,
+          fontWeight: 700, fontSize: 14, textDecoration: "none", margin: "8px 0 20px",
+        }
+      }, "Reset Password →"),
+      e("p", { style: { fontSize: 13, color: "#6b7280", margin: "0 0 8px" } },
+        "If you didn't request this, you can safely ignore this email."
+      ),
+      e("p", { style: { fontSize: 13, color: "#6b7280", margin: 0 } },
+        "This link will expire in 24 hours."
+      ),
+    ),
+  )
+}
+
 const TEMPLATES: Record<string, { subject: string; component: (props: { data: any }) => any }> = {
   "order.confirmation": {
     subject: "Your Order Has Been Received",
@@ -282,6 +340,14 @@ const TEMPLATES: Record<string, { subject: string; component: (props: { data: an
   "order.pending_provider_reminder": {
     subject: "Action Required: Complete Your Provider Consultation",
     component: PendingProviderReminderEmail,
+  },
+  "auth.password_reset": {
+    subject: "Reset Your Admin Password",
+    component: PasswordResetEmail,
+  },
+  "auth.invite": {
+    subject: "You've Been Invited to the Admin Panel",
+    component: InviteEmail,
   },
 }
 
