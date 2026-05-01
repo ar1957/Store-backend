@@ -108,7 +108,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const connectBase = clinic.api_env === "prod"
       ? clinic.connect_url_prod
       : clinic.connect_url_test
-    const redirectUrl = encodeURIComponent(clinic.redirect_url || `https://${domain}/order/status`)
+    const redirectUrl = encodeURIComponent(clinic.redirect_url || `https://${domain}/us/order/status`)
     const virtualRoomUrl = `${connectBase}/connect/patient/${roomNo}${birthYear}?isFromExternal=true&redirectUrl=${redirectUrl}`
 
     // 7. Store GFE record for polling later (keyed to gfeId)

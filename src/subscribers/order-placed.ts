@@ -259,7 +259,7 @@ export default async function orderPlacedHandler({
       ? clinic.connect_url_prod
       : clinic.connect_url_test).replace(/\/+$/, "")
     const redirectUrl = encodeURIComponent(
-      clinic.redirect_url || `https://${domain}/order/status`
+      clinic.redirect_url || `https://${domain}/us/order/status`
     )
     const virtualRoomUrl = `${connectBase}/connect/patient/${roomNo}${birthYear}?isFromExternal=true&redirectUrl=${redirectUrl}`
 
