@@ -282,7 +282,7 @@ class ProviderIntegrationService extends MedusaService({
       ? settings.connect_url_prod
       : settings.connect_url_test
     const birthYear = patientDob.split("-")[0] || ""
-    const redirectUrl = settings.redirect_url || `https://${tenantDomain}/order-status`
+    const redirectUrl = settings.redirect_url || `https://${tenantDomain}/us/order/status`
     const virtualRoomUrl = `${connectBase}/${roomNo}${birthYear}?isFromExternal=true&redirectUrl=${encodeURIComponent(redirectUrl)}`
 
     return { gfeId, roomNo, virtualRoomUrl }
