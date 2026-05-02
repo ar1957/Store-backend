@@ -290,6 +290,11 @@ function InviteEmail({ data }: { data: any }) {
 function PasswordResetEmail({ data }: { data: any }) {
   const e = React.createElement
   const brand = "#111827"
+  // Medusa v2 sends { token, email } for password reset
+  // The reset URL format is: {admin_url}/reset-password?token={token}&email={email}
+  const resetUrl = data.url || (data.token
+    ? `https://api-dev.mhc-clinic-admin.com/app/reset-password?token=${data.token}&email=${encodeURIComponent(data.email || "")}`
+    : "#")
   return e("div", { style: { fontFamily: "Arial, sans-serif", maxWidth: 600, margin: "0 auto", background: "#fff" } },
     e("div", { style: { background: brand, padding: "32px 40px" } },
       e("h1", { style: { color: "#fff", fontSize: 24, fontWeight: 700, margin: 0 } }, "Reset Your Password")
@@ -299,7 +304,7 @@ function PasswordResetEmail({ data }: { data: any }) {
         "You requested a password reset for your admin account. Click the button below to set a new password."
       ),
       e("a", {
-        href: data.url || "#",
+        href: resetUrl,
         style: {
           display: "inline-block", padding: "12px 28px",
           background: brand, color: "#fff", borderRadius: 8,
@@ -393,6 +398,16 @@ class ResendNotificationProviderService extends AbstractNotificationProviderServ
 
   async send(notification: any): Promise<any> {
     const { to, template, data, content } = notification
+
+    this.logger.info(`[Resend] send() called — template: ${template}, to: ${to}, data keys: ${Object.keys(data || {}).join(", ")}`)
+
+    // For auth emails, inject the admin base URL from options or env
+    if (data && data.token && !data.url) {
+      const adminBase = (this.options as any).admin_url
+        || process.env.MEDUSA_BACKEND_URL
+        || "https://api-dev.mhc-clinic-admin.com"
+      data.url = `${adminBase}/app/reset-password?token=${data.token}&email=${encodeURIComponent(data.email || "")}`
+    }
 
     let subject: string
     let html: string
