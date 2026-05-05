@@ -51,12 +51,17 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           )                          AS order_total,
           ow.created_at,
           COALESCE((
-            SELECT SUM(ppc.pharmacy_cost * oi.quantity)
-            FROM order_item       oi
-            JOIN order_line_item  oli ON oli.id = oi.item_id
-            JOIN product_payout_cost ppc
-              ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
-            WHERE oi.order_id = o.id
+            SELECT SUM(cost_calc.line_cost)
+            FROM (
+              SELECT DISTINCT ON (oli.id)
+                ppc.pharmacy_cost * oi.quantity AS line_cost
+              FROM order_item       oi
+              JOIN order_line_item  oli ON oli.id = oi.item_id
+              JOIN product_payout_cost ppc
+                ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
+              WHERE oi.order_id = o.id
+              ORDER BY oli.id, oi.created_at DESC
+            ) cost_calc
           ), 0)                      AS pharmacy_amount,
           EXISTS(
             SELECT 1 FROM vendor_ledger
@@ -167,12 +172,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           0
         ) AS order_total,
         COALESCE((
-          SELECT SUM(ppc.pharmacy_cost * oi.quantity)
-          FROM order_item       oi
-          JOIN order_line_item  oli ON oli.id = oi.item_id
-          JOIN product_payout_cost ppc
-            ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
-          WHERE oi.order_id = o.id
+          SELECT SUM(cost_calc.line_cost)
+          FROM (
+            SELECT DISTINCT ON (oli.id)
+              ppc.pharmacy_cost * oi.quantity AS line_cost
+            FROM order_item       oi
+            JOIN order_line_item  oli ON oli.id = oi.item_id
+            JOIN product_payout_cost ppc
+              ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
+            WHERE oi.order_id = o.id
+            ORDER BY oli.id, oi.created_at DESC
+          ) cost_calc
         ), 0) AS pharmacy_amount
       FROM order_workflow ow
       JOIN "order" o

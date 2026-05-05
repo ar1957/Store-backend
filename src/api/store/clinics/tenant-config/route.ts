@@ -43,7 +43,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     const clinicResult = await pool.query(
       `SELECT id, name, logo_url, brand_color, contact_email,
               publishable_api_key, stripe_publishable_key,
-              payment_provider, paypal_client_id, paypal_mode
+              payment_provider, paypal_client_id, paypal_mode,
+              is_translation_allowed
        FROM clinic
        WHERE ($1 = ANY(domains) OR $2 = ANY(domains))
          AND deleted_at IS NULL
@@ -91,6 +92,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         payment_provider: clinic.payment_provider || "stripe",
         paypal_client_id: clinic.paypal_client_id || "",
         paypal_mode: clinic.paypal_mode || "sandbox",
+        is_translation_allowed: clinic.is_translation_allowed === true || clinic.is_translation_allowed === 1,
       }
     }
 

@@ -495,8 +495,12 @@ function DetailsTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: ()
   const [domainInput, setDomainInput] = useState("")
   const [salesChannels, setSalesChannels] = useState<{ id: string; name: string }[]>([])
   const [loadingPubKey, setLoadingPubKey] = useState(false)
+  const [isTranslationAllowed, setIsTranslationAllowed] = useState(true)
 
-  useEffect(() => { setForm({ ...clinic, domains: clinic.domains || [] }) }, [clinic.id])
+  useEffect(() => { 
+    setForm({ ...clinic, domains: clinic.domains || [] })
+    setIsTranslationAllowed((clinic as any).is_translation_allowed !== false)
+  }, [clinic.id])
 
   // Load sales channels on mount
   useEffect(() => {
@@ -545,6 +549,7 @@ function DetailsTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: ()
         from_email: (form as any).from_email || null,
         from_name: (form as any).from_name || null,
         reply_to: (form as any).reply_to || null,
+        is_translation_allowed: isTranslationAllowed,
       }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
@@ -671,6 +676,22 @@ function DetailsTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: ()
         </div>
         <span style={{ fontSize: 13 }}>Clinic {form.is_active ? "Active" : "Inactive"}</span>
       </div>
+      
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div onClick={() => !readOnly && setIsTranslationAllowed(p => !p)} style={{
+          width: 40, height: 22, borderRadius: 11, background: isTranslationAllowed ? "#10b981" : "#d1d5db",
+          position: "relative", cursor: readOnly ? "default" : "pointer", transition: "background 0.2s",
+          opacity: readOnly ? 0.5 : 1,
+        }}>
+          <div style={{
+            position: "absolute", top: 3, left: isTranslationAllowed ? 21 : 3,
+            width: 16, height: 16, borderRadius: "50%", background: "#fff",
+            transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+          }} />
+        </div>
+        <span style={{ fontSize: 13 }}>Translation {isTranslationAllowed ? "Enabled" : "Disabled"}</span>
+      </div>
+      
       {!readOnly && <SaveBar saving={saving} status={status} onSave={save} />}
     </div>
   )

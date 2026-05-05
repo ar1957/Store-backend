@@ -58,6 +58,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       "pharmacy_prescriber_address", "pharmacy_prescriber_city", "pharmacy_prescriber_state",
       "pharmacy_prescriber_zip", "pharmacy_prescriber_phone", "pharmacy_prescriber_dea",
       "pharmacy_ship_type", "pharmacy_ship_rate", "pharmacy_pay_type",
+      "is_translation_allowed",
     ]
 
     const sets: string[] = []

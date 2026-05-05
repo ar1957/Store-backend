@@ -44,9 +44,16 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       [clinic.id]
     )
 
+    // Read brand_color and is_translation_allowed directly from DB to bypass ORM cache
+    const clinicRow = await pg.raw(
+      `SELECT brand_color, is_translation_allowed FROM clinic WHERE id = ? LIMIT 1`,
+      [clinic.id]
+    )
+
     const row = result.rows[0] || {}
-    // brand_color comes from the clinic record itself (already fetched above)
-    row.brand_color = clinic.brand_color || null
+    row.brand_color = clinicRow.rows[0]?.brand_color || clinic.brand_color || null
+    row.is_translation_allowed = clinicRow.rows[0]?.is_translation_allowed === true
+      || clinicRow.rows[0]?.is_translation_allowed === 1
 
     return res.json({ config: row })
   } catch (err: unknown) {
