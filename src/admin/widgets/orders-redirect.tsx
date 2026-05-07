@@ -6,6 +6,7 @@
 import { useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
+import { installAuthMonitor } from "../utils/auth-monitor"
 
 async function resolveMyRole(): Promise<string> {
   try {
@@ -77,6 +78,7 @@ function OrdersRedirectWidget() {
   const navigate = useNavigate()
 
   useEffect(() => {
+    installAuthMonitor()
     resolveMyRole().then(role => {
       applyNavForRole(role)
       // Everyone uses clinic-orders — redirect away from the standard orders page

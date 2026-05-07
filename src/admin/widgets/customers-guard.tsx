@@ -5,6 +5,7 @@
 import { useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import { defineWidgetConfig } from "@medusajs/admin-sdk"
+import { installAuthMonitor } from "../utils/auth-monitor"
 
 async function resolveMyRole(): Promise<string> {
   try {
@@ -31,6 +32,7 @@ function CustomersGuardWidget() {
   const navigate = useNavigate()
 
   useEffect(() => {
+    installAuthMonitor()
     resolveMyRole().then(role => {
       if (role !== "super_admin") {
         // Clinic staff must not see all customers — send them to their clinic orders
