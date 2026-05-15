@@ -25,6 +25,8 @@ interface WorkflowData {
   treatment_dosages: { treatmentId: number; treatmentName: string; dosage: string | null }[]
   pharmacy_queue_id?: string | null
   pharmacy_status?: string | null
+  location_id?: string | null
+  location_name?: string | null
 }
 
 interface Comment {
@@ -598,6 +600,17 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           >
             🔗 View Patient GFE
           </a>
+        </div>
+      )}
+
+      {/* Location info */}
+      {workflow.location_name && (
+        <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 16 }}>📍</span>
+          <div>
+            <div style={{ fontWeight: 600, color: "#0369a1", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>Referral Location</div>
+            <div style={{ color: "#0c4a6e", fontWeight: 500 }}>{workflow.location_name}</div>
+          </div>
         </div>
       )}
 
