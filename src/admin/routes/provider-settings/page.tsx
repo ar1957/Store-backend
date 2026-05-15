@@ -401,13 +401,13 @@ function ClinicDetail({
 }) {
   // MD and Pharmacist go straight to orders tab
   const defaultTab = (role === "medical_director" || role === "pharmacist") ? "orders" : "details"
-  const [activeTab, setActiveTab] = useState<"details" | "api" | "staff" | "mappings" | "orders" | "uiconfig" | "pharmacy" | "promotions" | "payouts">(defaultTab as any)
+  const [activeTab, setActiveTab] = useState<"details" | "api" | "staff" | "mappings" | "orders" | "uiconfig" | "pharmacy" | "promotions" | "payouts" | "locations">(defaultTab as any)
 
   // Tabs visible per role
   const visibleTabs = (() => {
     if (role === "medical_director" || role === "pharmacist") return ["orders"]
-    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions", "payouts"]
-    return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions", "payouts"] // super_admin
+    if (role === "clinic_admin") return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions", "payouts", "locations"]
+    return ["details", "api", "staff", "mappings", "orders", "uiconfig", "pharmacy", "promotions", "payouts", "locations"] // super_admin
   })()
 
   const TAB_LABELS: Record<string, string> = {
@@ -420,6 +420,7 @@ function ClinicDetail({
     pharmacy: "💊 Pharmacy",
     promotions: "🎁 Promotions",
     payouts: "💰 Payouts",
+    locations: "📍 Locations",
   }
 
   // Default filter per role
@@ -481,6 +482,7 @@ function ClinicDetail({
         {activeTab === "pharmacy" && <PharmacyTab clinic={clinic} onUpdated={onUpdated} />}
         {activeTab === "promotions" && <PromotionsTab clinic={clinic} role={role} />}
         {activeTab === "payouts"    && <PayoutsTab    clinic={clinic} />}
+        {activeTab === "locations"  && <LocationsTab  clinic={clinic} />}
       </div>
     </div>
   )
@@ -2998,6 +3000,290 @@ function PromotionsTab({ clinic, role }: { clinic: Clinic; role: string }) {
                 <button onClick={() => setEditingPromo(null)} style={s.btnOutline}>Cancel</button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Locations Tab ──────────────────────────────────────────────────────────
+function LocationsTab({ clinic }: { clinic: Clinic }) {
+  const [locations, setLocations] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [editing, setEditing] = useState(false)
+  const [editData, setEditData] = useState<any[]>([])
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState("")
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/locations`, { credentials: "include" })
+      const data = await res.json()
+      setLocations(data.locations || [])
+    } catch (err: any) {
+      console.error("Load locations error:", err)
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [clinic.id])
+
+  const startEdit = () => {
+    setEditData(locations.map(loc => ({ ...loc })))
+    setEditing(true)
+    setMessage("")
+  }
+
+  const addNew = () => {
+    setEditData([...editData, {
+      id: null,
+      name: "",
+      address: "",
+      city: "",
+      state: "",
+      zip: "",
+      phone: "",
+      is_active: true,
+      display_order: editData.length,
+    }])
+  }
+
+  const updateField = (index: number, field: string, value: any) => {
+    const updated = [...editData]
+    updated[index] = { ...updated[index], [field]: value }
+    setEditData(updated)
+  }
+
+  const removeLocation = (index: number) => {
+    setEditData(editData.filter((_, i) => i !== index))
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setMessage("")
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/locations`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locations: editData }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMessage(data.message || "Save failed")
+        setSaving(false)
+        return
+      }
+      setLocations(data.locations || [])
+      setEditing(false)
+      setMessage("✓ Saved")
+      setTimeout(() => setMessage(""), 3000)
+    } catch (err: any) {
+      setMessage(err.message || "Save failed")
+    }
+    setSaving(false)
+  }
+
+  if (loading) {
+    return <div style={{ color: "#9ca3af", fontSize: 13 }}>Loading locations…</div>
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Clinic Locations</h3>
+          <p style={{ fontSize: 13, color: "#6b7280" }}>
+            Manage locations for patient referral tracking. Patients will select which location referred them during checkout.
+          </p>
+        </div>
+        {!editing && (
+          <button onClick={startEdit} style={s.btnAction}>
+            {locations.length > 0 ? "Edit Locations" : "Add Locations"}
+          </button>
+        )}
+      </div>
+
+      {message && (
+        <div style={{
+          padding: "10px 14px",
+          borderRadius: 8,
+          marginBottom: 16,
+          fontSize: 13,
+          background: message.startsWith("✓") ? "#d1fae5" : "#fee2e2",
+          color: message.startsWith("✓") ? "#065f46" : "#dc2626",
+          border: `1px solid ${message.startsWith("✓") ? "#6ee7b7" : "#fecaca"}`,
+        }}>
+          {message}
+        </div>
+      )}
+
+      {!editing && locations.length === 0 && (
+        <EmptyState icon="📍" message="No locations configured yet" />
+      )}
+
+      {!editing && locations.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {locations.map(loc => (
+            <div key={loc.id} style={{
+              background: "#fff",
+              border: "1px solid #e5e7eb",
+              borderRadius: 8,
+              padding: 16,
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 8 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{loc.name}</div>
+                <span style={{
+                  padding: "2px 8px",
+                  borderRadius: 12,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  background: loc.is_active ? "#d1fae5" : "#f3f4f6",
+                  color: loc.is_active ? "#065f46" : "#6b7280",
+                }}>
+                  {loc.is_active ? "Active" : "Inactive"}
+                </span>
+              </div>
+              {loc.address && (
+                <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 4 }}>
+                  {loc.address}
+                  {loc.city && `, ${loc.city}`}
+                  {loc.state && `, ${loc.state}`}
+                  {loc.zip && ` ${loc.zip}`}
+                </div>
+              )}
+              {loc.phone && (
+                <div style={{ fontSize: 13, color: "#6b7280" }}>📞 {loc.phone}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 16 }}>
+            {editData.map((loc, idx) => (
+              <div key={idx} style={{
+                background: "#fff",
+                border: "1px solid #e5e7eb",
+                borderRadius: 8,
+                padding: 16,
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>Location {idx + 1}</div>
+                  <button
+                    onClick={() => removeLocation(idx)}
+                    style={{
+                      padding: "4px 12px",
+                      fontSize: 12,
+                      border: "1px solid #fecaca",
+                      background: "#fef2f2",
+                      color: "#dc2626",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div>
+                    <label style={s.label}>Location Name *</label>
+                    <input
+                      style={s.input}
+                      value={loc.name}
+                      onChange={e => updateField(idx, "name", e.target.value)}
+                      placeholder="Main Office"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label style={s.label}>Phone</label>
+                    <input
+                      style={s.input}
+                      value={loc.phone}
+                      onChange={e => updateField(idx, "phone", e.target.value)}
+                      placeholder="(555) 123-4567"
+                    />
+                  </div>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <label style={s.label}>Address</label>
+                    <input
+                      style={s.input}
+                      value={loc.address}
+                      onChange={e => updateField(idx, "address", e.target.value)}
+                      placeholder="123 Main St"
+                    />
+                  </div>
+                  <div>
+                    <label style={s.label}>City</label>
+                    <input
+                      style={s.input}
+                      value={loc.city}
+                      onChange={e => updateField(idx, "city", e.target.value)}
+                      placeholder="Los Angeles"
+                    />
+                  </div>
+                  <div>
+                    <label style={s.label}>State</label>
+                    <input
+                      style={s.input}
+                      value={loc.state}
+                      onChange={e => updateField(idx, "state", e.target.value)}
+                      placeholder="CA"
+                      maxLength={2}
+                    />
+                  </div>
+                  <div>
+                    <label style={s.label}>ZIP Code</label>
+                    <input
+                      style={s.input}
+                      value={loc.zip}
+                      onChange={e => updateField(idx, "zip", e.target.value)}
+                      placeholder="90001"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ ...s.label, display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={loc.is_active}
+                        onChange={e => updateField(idx, "is_active", e.target.checked)}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      Active
+                    </label>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+            <button onClick={addNew} style={s.btnOutline}>
+              + Add Another Location
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+            <button
+              onClick={() => { setEditing(false); setMessage("") }}
+              style={s.btnOutline}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              style={s.btnPrimary}
+              disabled={saving || editData.some(l => !l.name.trim())}
+            >
+              {saving ? "Saving…" : "Save All Locations"}
+            </button>
           </div>
         </div>
       )}
