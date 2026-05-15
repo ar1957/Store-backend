@@ -301,6 +301,96 @@ const steps = [
     sql: `ALTER TABLE "order_workflow" ALTER COLUMN "gfe_id" TYPE TEXT USING gfe_id::TEXT`,
   },
   {
+    name: "Migration11 - is_translation_allowed on clinic",
+    sql: `ALTER TABLE "clinic" ADD COLUMN IF NOT EXISTS "is_translation_allowed" BOOLEAN DEFAULT true`,
+  },
+  {
+    name: "Migration12 - vendor payout tables",
+    sql: `
+      CREATE TABLE IF NOT EXISTS vendor_payout_config (
+        id                    TEXT PRIMARY KEY,
+        clinic_id             TEXT NOT NULL UNIQUE,
+        clinic_name           TEXT NOT NULL DEFAULT '',
+        clinic_bank_routing   TEXT,
+        clinic_bank_account   TEXT,
+        clinic_bank_name      TEXT,
+        clinic_account_name   TEXT,
+        pharmacy_name         TEXT NOT NULL DEFAULT '',
+        pharmacy_bank_routing TEXT,
+        pharmacy_bank_account TEXT,
+        pharmacy_bank_name    TEXT,
+        pharmacy_account_name TEXT,
+        notes                 TEXT,
+        created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS product_payout_cost (
+        id            TEXT PRIMARY KEY,
+        clinic_id     TEXT NOT NULL,
+        product_id    TEXT NOT NULL,
+        product_title TEXT NOT NULL DEFAULT '',
+        pharmacy_cost NUMERIC(10,2) NOT NULL DEFAULT 0,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (clinic_id, product_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_product_payout_cost_clinic ON product_payout_cost (clinic_id);
+      CREATE TABLE IF NOT EXISTS vendor_ledger (
+        id          TEXT PRIMARY KEY,
+        clinic_id   TEXT NOT NULL,
+        vendor_type TEXT NOT NULL CHECK (vendor_type IN ('clinic','pharmacy')),
+        order_id    TEXT NOT NULL,
+        order_total NUMERIC(10,2) NOT NULL DEFAULT 0,
+        amount_owed NUMERIC(10,2) NOT NULL DEFAULT 0,
+        currency    TEXT NOT NULL DEFAULT 'usd',
+        status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid')),
+        payout_id   TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_vendor_ledger_clinic_vendor_status ON vendor_ledger (clinic_id, vendor_type, status);
+      CREATE TABLE IF NOT EXISTS vendor_payout (
+        id               TEXT PRIMARY KEY,
+        clinic_id        TEXT NOT NULL,
+        vendor_type      TEXT NOT NULL CHECK (vendor_type IN ('clinic','pharmacy')),
+        total_amount     NUMERIC(10,2) NOT NULL DEFAULT 0,
+        currency         TEXT NOT NULL DEFAULT 'usd',
+        reference_number TEXT,
+        transfer_method  TEXT NOT NULL DEFAULT 'manual',
+        notes            TEXT,
+        status           TEXT NOT NULL DEFAULT 'completed',
+        paid_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        paid_by          TEXT,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_vendor_payout_clinic ON vendor_payout (clinic_id, vendor_type);
+    `,
+  },
+  {
+    name: "Migration13 - clinic_location table + location columns on order_workflow",
+    sql: `
+      CREATE TABLE IF NOT EXISTS clinic_location (
+        id            TEXT PRIMARY KEY,
+        clinic_id     TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        address       TEXT,
+        city          TEXT,
+        state         TEXT,
+        zip           TEXT,
+        phone         TEXT,
+        is_active     BOOLEAN NOT NULL DEFAULT true,
+        display_order INTEGER NOT NULL DEFAULT 0,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_clinic_location_clinic ON clinic_location (clinic_id, is_active);
+      ALTER TABLE order_workflow
+        ADD COLUMN IF NOT EXISTS location_id   TEXT,
+        ADD COLUMN IF NOT EXISTS location_name TEXT;
+      CREATE INDEX IF NOT EXISTS idx_order_workflow_location ON order_workflow (location_id);
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -312,7 +402,10 @@ const steps = [
       ('Migration20240101000007'),
       ('Migration20240101000008'),
       ('Migration20240101000009'),
-      ('Migration20240101000010')
+      ('Migration20240101000010'),
+      ('Migration20240101000011'),
+      ('Migration20240101000012'),
+      ('Migration20240101000013')
       ON CONFLICT DO NOTHING`,
   },
 ]
