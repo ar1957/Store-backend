@@ -10,6 +10,33 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "cartId is required" })
     }
 
+    // For zero-total carts (100% promo), a Stripe payment session may have been
+    // created before the promo was applied. If it's still pending when the workflow
+    // runs, Medusa will try to authorize it — failing for blocked Stripe accounts
+    // and leaving the order as "not_paid". Delete pending sessions first so
+    // completeCartWorkflow treats the order as fully covered and marks it "captured".
+    try {
+      const cartRow = await pg.raw(
+        `SELECT total, payment_collection_id FROM cart WHERE id = ? LIMIT 1`,
+        [cartId]
+      )
+      const row = cartRow.rows[0]
+      if (row?.payment_collection_id && Number(row.total ?? -1) === 0) {
+        const deleted = await pg.raw(
+          `DELETE FROM payment_session
+           WHERE payment_collection_id = ?
+             AND status IN ('pending', 'requires_more')
+           RETURNING id`,
+          [row.payment_collection_id]
+        )
+        if (deleted.rows.length) {
+          console.log(`[complete-cart] Removed ${deleted.rows.length} pending session(s) for zero-total cart ${cartId}`)
+        }
+      }
+    } catch (preErr: any) {
+      console.warn("[complete-cart] Pre-flight session clear failed (non-fatal):", preErr.message)
+    }
+
     const { result } = await completeCartWorkflow(req.scope).run({
       input: { id: cartId },
     })
