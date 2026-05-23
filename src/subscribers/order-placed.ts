@@ -129,10 +129,23 @@ export default async function orderPlacedHandler({
     const birthDay = String(dobDate.getDate()).padStart(2, "0")
 
     // 5. Create patient
-    // Name priority: shipping address > email prefix > fallback
-    const firstName = order.first_name ||
-      (order.email ? order.email.split("@")[0] : "Patient")
-    const lastName = order.last_name || "."
+    // Name priority: shipping address > customer profile > email prefix > fallback
+    let firstName = order.first_name
+    let lastName = order.last_name
+    if (!firstName || !lastName) {
+      const customerResult = await pgConnection.raw(`
+        SELECT first_name, last_name FROM customer
+        WHERE email = ? AND deleted_at IS NULL
+        LIMIT 1
+      `, [order.email])
+      const customerRow = customerResult.rows[0]
+      if (customerRow) {
+        firstName = firstName || customerRow.first_name
+        lastName = lastName || customerRow.last_name
+      }
+    }
+    firstName = firstName || (order.email ? order.email.split("@")[0] : "Patient")
+    lastName = lastName || "."
 
     const patientPayload = {
       firstname: firstName,
