@@ -82,6 +82,8 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [savingComment, setSavingComment] = useState(false)
   const [mdNotes, setMdNotes] = useState("")
   const [tracking, setTracking] = useState({ number: "", carrier: "UPS" })
+  const [pharmacyCostOverride, setPharmacyCostOverride] = useState<string>("")
+  const [defaultPharmacyCost, setDefaultPharmacyCost] = useState<number | null>(null)
   const [processing, setProcessing] = useState(false)
   const [showActions, setShowActions] = useState(false)
   const [submittingPharmacy, setSubmittingPharmacy] = useState(false)
@@ -323,13 +325,30 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           tracking_number: tracking.number,
           carrier: tracking.carrier,
           pharmacist_user_id: currentUser?.id,
+          pharmacy_cost_override: pharmacyCostOverride !== "" ? Number(pharmacyCostOverride) : null,
         }),
       })
       setTracking({ number: "", carrier: "UPS" })
+      setPharmacyCostOverride("")
+      setDefaultPharmacyCost(null)
       setShowActions(false)
       await loadWorkflow(clinicId, order.id)
     } catch {}
     finally { setProcessing(false) }
+  }
+
+  const loadDefaultPharmacyCost = async (cId: string, orderId: string) => {
+    try {
+      const res = await fetch(`/admin/clinics/${cId}/orders/${orderId}/pharmacy-cost`, { credentials: "include" })
+      if (res.ok) {
+        const data = await res.json()
+        setDefaultPharmacyCost(data.pharmacy_cost ?? null)
+        // Pre-fill the override with the default so pharmacist can see and edit it
+        if (data.pharmacy_cost != null) {
+          setPharmacyCostOverride(String(data.pharmacy_cost))
+        }
+      }
+    } catch {}
   }
 
   const submitToPharmacy = async () => {
@@ -525,7 +544,13 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
       {/* Actions */}
       {(canMdReview || canShip) && (
         <div style={{ marginBottom: 16 }}>
-          <button onClick={() => setShowActions(p => !p)} style={ws.btnAction}>
+          <button onClick={() => {
+            const next = !showActions
+            setShowActions(next)
+            if (next && canShip && clinicId) {
+              loadDefaultPharmacyCost(clinicId, order.id)
+            }
+          }} style={ws.btnAction}>
             {showActions ? "Hide Actions" : canMdReview ? "⚕️ MD Review" : "📦 Mark Shipped"}
           </button>
 
@@ -559,6 +584,28 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
                 <div>
                   <label style={ws.label}>Tracking Number</label>
                   <input style={ws.input} value={tracking.number} onChange={e => setTracking(p => ({ ...p, number: e.target.value }))} placeholder="Enter tracking #" />
+                </div>
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <label style={ws.label}>
+                  Pharmacy Cost ($)
+                  {defaultPharmacyCost != null && (
+                    <span style={{ fontWeight: 400, color: "#6b7280", marginLeft: 6 }}>
+                      — default: ${defaultPharmacyCost.toFixed(2)}
+                    </span>
+                  )}
+                </label>
+                <input
+                  style={ws.input}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={pharmacyCostOverride}
+                  onChange={e => setPharmacyCostOverride(e.target.value)}
+                  placeholder={defaultPharmacyCost != null ? `Default: $${defaultPharmacyCost.toFixed(2)}` : "Enter pharmacy cost"}
+                />
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                  Override the default pharmacy cost for this specific order. Leave blank to use the default.
                 </div>
               </div>
               <button onClick={markShipped} disabled={processing || !tracking.number}
