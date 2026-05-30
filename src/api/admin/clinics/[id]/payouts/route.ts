@@ -52,25 +52,25 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
             0
           )                          AS order_total,
           ow.created_at,
-          COALESCE(
-            -- Use per-order override if pharmacist set one at ship time
-            ow.pharmacy_cost_override,
+          COALESCE((
+            -- Use per-item overrides if pharmacist set them at ship time
+            SELECT SUM(oipc.actual_cost * oipc.quantity)
+            FROM order_item_pharmacy_cost oipc
+            WHERE oipc.order_id = o.id
+          ), (
             -- Otherwise calculate from product_payout_cost defaults
-            (
-              SELECT SUM(cost_calc.line_cost)
-              FROM (
-                SELECT DISTINCT ON (oli.id)
-                  ppc.pharmacy_cost * oi.quantity AS line_cost
-                FROM order_item       oi
-                JOIN order_line_item  oli ON oli.id = oi.item_id
-                JOIN product_payout_cost ppc
-                  ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
-                WHERE oi.order_id = o.id
-                ORDER BY oli.id, oi.created_at DESC
-              ) cost_calc
-            ),
-            0
-          )                      AS pharmacy_amount,
+            SELECT SUM(cost_calc.line_cost)
+            FROM (
+              SELECT DISTINCT ON (oli.id)
+                ppc.pharmacy_cost * oi.quantity AS line_cost
+              FROM order_item oi
+              JOIN order_line_item oli ON oli.id = oi.item_id
+              JOIN product_payout_cost ppc
+                ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
+              WHERE oi.order_id = o.id
+              ORDER BY oli.id, oi.created_at DESC
+            ) cost_calc
+          ), 0) AS pharmacy_amount,
           EXISTS(
             SELECT 1 FROM vendor_ledger
             WHERE order_id = ow.order_id AND clinic_id = ?
@@ -187,25 +187,25 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           (os.totals->>'total')::numeric,
           0
         ) AS order_total,
-        COALESCE(
-          -- Use per-order override if pharmacist set one at ship time
-          ow.pharmacy_cost_override,
+        COALESCE((
+          -- Use per-item overrides if pharmacist set them at ship time
+          SELECT SUM(oipc.actual_cost * oipc.quantity)
+          FROM order_item_pharmacy_cost oipc
+          WHERE oipc.order_id = o.id
+        ), (
           -- Otherwise calculate from product_payout_cost defaults
-          (
-            SELECT SUM(cost_calc.line_cost)
-            FROM (
-              SELECT DISTINCT ON (oli.id)
-                ppc.pharmacy_cost * oi.quantity AS line_cost
-              FROM order_item       oi
-              JOIN order_line_item  oli ON oli.id = oi.item_id
-              JOIN product_payout_cost ppc
-                ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
-              WHERE oi.order_id = o.id
-              ORDER BY oli.id, oi.created_at DESC
-            ) cost_calc
-          ),
-          0
-        ) AS pharmacy_amount
+          SELECT SUM(cost_calc.line_cost)
+          FROM (
+            SELECT DISTINCT ON (oli.id)
+              ppc.pharmacy_cost * oi.quantity AS line_cost
+            FROM order_item       oi
+            JOIN order_line_item  oli ON oli.id = oi.item_id
+            JOIN product_payout_cost ppc
+              ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
+            WHERE oi.order_id = o.id
+            ORDER BY oli.id, oi.created_at DESC
+          ) cost_calc
+        ), 0) AS pharmacy_amount
       FROM order_workflow ow
       JOIN "order" o
         ON o.id = ow.order_id
