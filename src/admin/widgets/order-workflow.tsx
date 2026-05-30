@@ -82,8 +82,15 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [savingComment, setSavingComment] = useState(false)
   const [mdNotes, setMdNotes] = useState("")
   const [tracking, setTracking] = useState({ number: "", carrier: "UPS" })
-  const [pharmacyCostOverride, setPharmacyCostOverride] = useState<string>("")
-  const [defaultPharmacyCost, setDefaultPharmacyCost] = useState<number | null>(null)
+  const [pharmacyItems, setPharmacyItems] = useState<Array<{
+    line_item_id: string
+    product_id: string
+    product_title: string
+    quantity: number
+    default_cost: number
+    actual_cost: number
+    is_overridden: boolean
+  }>>([])
   const [processing, setProcessing] = useState(false)
   const [showActions, setShowActions] = useState(false)
   const [submittingPharmacy, setSubmittingPharmacy] = useState(false)
@@ -325,28 +332,33 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           tracking_number: tracking.number,
           carrier: tracking.carrier,
           pharmacist_user_id: currentUser?.id,
-          pharmacy_cost_override: pharmacyCostOverride !== "" ? Number(pharmacyCostOverride) : null,
+          item_costs: pharmacyItems.map(item => ({
+            line_item_id: item.line_item_id,
+            product_id: item.product_id,
+            product_title: item.product_title,
+            quantity: item.quantity,
+            default_cost: item.default_cost,
+            actual_cost: Number(item.actual_cost),
+          })),
         }),
       })
       setTracking({ number: "", carrier: "UPS" })
-      setPharmacyCostOverride("")
-      setDefaultPharmacyCost(null)
+      setPharmacyItems([])
       setShowActions(false)
       await loadWorkflow(clinicId, order.id)
     } catch {}
     finally { setProcessing(false) }
   }
 
-  const loadDefaultPharmacyCost = async (cId: string, orderId: string) => {
+  const loadPharmacyCosts = async (cId: string, orderId: string) => {
     try {
       const res = await fetch(`/admin/clinics/${cId}/orders/${orderId}/pharmacy-cost`, { credentials: "include" })
       if (res.ok) {
         const data = await res.json()
-        setDefaultPharmacyCost(data.pharmacy_cost ?? null)
-        // Pre-fill the override with the default so pharmacist can see and edit it
-        if (data.pharmacy_cost != null) {
-          setPharmacyCostOverride(String(data.pharmacy_cost))
-        }
+        setPharmacyItems((data.items || []).map((item: any) => ({
+          ...item,
+          actual_cost: item.actual_cost,
+        })))
       }
     } catch {}
   }
@@ -548,7 +560,7 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
             const next = !showActions
             setShowActions(next)
             if (next && canShip && clinicId) {
-              loadDefaultPharmacyCost(clinicId, order.id)
+              loadPharmacyCosts(clinicId, order.id)
             }
           }} style={ws.btnAction}>
             {showActions ? "Hide Actions" : canMdReview ? "⚕️ MD Review" : "📦 Mark Shipped"}
@@ -586,28 +598,46 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
                   <input style={ws.input} value={tracking.number} onChange={e => setTracking(p => ({ ...p, number: e.target.value }))} placeholder="Enter tracking #" />
                 </div>
               </div>
-              <div style={{ marginBottom: 10 }}>
-                <label style={ws.label}>
-                  Pharmacy Cost ($)
-                  {defaultPharmacyCost != null && (
-                    <span style={{ fontWeight: 400, color: "#6b7280", marginLeft: 6 }}>
-                      — default: ${defaultPharmacyCost.toFixed(2)}
-                    </span>
-                  )}
-                </label>
-                <input
-                  style={ws.input}
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={pharmacyCostOverride}
-                  onChange={e => setPharmacyCostOverride(e.target.value)}
-                  placeholder={defaultPharmacyCost != null ? `Default: $${defaultPharmacyCost.toFixed(2)}` : "Enter pharmacy cost"}
-                />
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                  Override the default pharmacy cost for this specific order. Leave blank to use the default.
+              {pharmacyItems.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <label style={ws.label}>Pharmacy Cost Per Item</label>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {pharmacyItems.map((item, idx) => (
+                      <div key={item.line_item_id} style={{ background: "#f9fafb", borderRadius: 6, padding: "8px 10px", border: "1px solid #e5e7eb" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                            {item.product_title} × {item.quantity}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#6b7280" }}>
+                            Default: ${item.default_cost.toFixed(2)}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 12, color: "#6b7280" }}>$</span>
+                          <input
+                            style={{ ...ws.input, width: 120 }}
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={item.actual_cost}
+                            onChange={e => {
+                              const updated = [...pharmacyItems]
+                              updated[idx] = { ...updated[idx], actual_cost: Number(e.target.value) }
+                              setPharmacyItems(updated)
+                            }}
+                          />
+                          {item.actual_cost !== item.default_cost && (
+                            <span style={{ fontSize: 11, color: "#d97706", fontWeight: 600 }}>Modified</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", textAlign: "right", paddingTop: 4 }}>
+                      Total: ${pharmacyItems.reduce((s, i) => s + i.actual_cost * i.quantity, 0).toFixed(2)}
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
               <button onClick={markShipped} disabled={processing || !tracking.number}
                 style={{ ...ws.btnPrimary, opacity: !tracking.number ? 0.5 : 1 }}>
                 📦 Confirm Shipment
