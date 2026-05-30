@@ -11,8 +11,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
     const { id } = req.params
-    const from = (req.query?.from as string) || null
-    const to   = (req.query?.to   as string) || null
+    const from          = (req.query?.from   as string) || null
+    const to            = (req.query?.to     as string) || null
+    const historyLimit  = Math.min(Math.max(Number(req.query?.limit  || 20), 1), 100)
+    const historyOffset = Math.max(Number(req.query?.offset || 0), 0)
 
     // Get the clinic's sales_channel_id — this is how we tie orders to a clinic
     const clinicRes = await pg.raw(
@@ -37,7 +39,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       : ""
     const dateParams: string[] = from && to ? [from, to] : from ? [from] : to ? [to] : []
 
-    const [ordersRes, historyRes] = await Promise.all([
+    const [ordersRes, historyRes, historyCountRes] = await Promise.all([
       pg.raw(`
         SELECT
           ow.order_id,
@@ -51,18 +53,24 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
           )                          AS order_total,
           ow.created_at,
           COALESCE((
+            -- Use per-item overrides if pharmacist set them at ship time
+            SELECT SUM(oipc.actual_cost * oipc.quantity)
+            FROM order_item_pharmacy_cost oipc
+            WHERE oipc.order_id = o.id
+          ), (
+            -- Otherwise calculate from product_payout_cost defaults
             SELECT SUM(cost_calc.line_cost)
             FROM (
               SELECT DISTINCT ON (oli.id)
                 ppc.pharmacy_cost * oi.quantity AS line_cost
-              FROM order_item       oi
-              JOIN order_line_item  oli ON oli.id = oi.item_id
+              FROM order_item oi
+              JOIN order_line_item oli ON oli.id = oi.item_id
               JOIN product_payout_cost ppc
                 ON ppc.clinic_id = ? AND ppc.product_id = oli.product_id
               WHERE oi.order_id = o.id
               ORDER BY oli.id, oi.created_at DESC
             ) cost_calc
-          ), 0)                      AS pharmacy_amount,
+          ), 0) AS pharmacy_amount,
           EXISTS(
             SELECT 1 FROM vendor_ledger
             WHERE order_id = ow.order_id AND clinic_id = ?
@@ -86,7 +94,11 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         SELECT * FROM vendor_payout
         WHERE clinic_id = ?
         ORDER BY paid_at DESC
-        LIMIT 100
+        LIMIT ? OFFSET ?
+      `, [id, historyLimit, historyOffset]),
+
+      pg.raw(`
+        SELECT COUNT(*)::int AS total FROM vendor_payout WHERE clinic_id = ?
       `, [id]),
     ])
 
@@ -114,7 +126,11 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     pending.pharmacy.total = Number(pending.pharmacy.total.toFixed(2))
 
-    return res.json({ pending, history: historyRes.rows })
+    return res.json({
+      pending,
+      history:       historyRes.rows,
+      history_count: historyCountRes.rows[0]?.total ?? 0,
+    })
   } catch (err: unknown) {
     console.error("[payouts GET]", err)
     return res.status(500).json({ message: err instanceof Error ? err.message : "Error" })
@@ -172,6 +188,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           0
         ) AS order_total,
         COALESCE((
+          -- Use per-item overrides if pharmacist set them at ship time
+          SELECT SUM(oipc.actual_cost * oipc.quantity)
+          FROM order_item_pharmacy_cost oipc
+          WHERE oipc.order_id = o.id
+        ), (
+          -- Otherwise calculate from product_payout_cost defaults
           SELECT SUM(cost_calc.line_cost)
           FROM (
             SELECT DISTINCT ON (oli.id)

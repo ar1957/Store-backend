@@ -2126,6 +2126,8 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
 }
 
 // ── Payouts Tab ───────────────────────────────────────────────────────────
+const HISTORY_PAGE_SIZE = 20
+
 function PayoutsTab({ clinic }: { clinic: Clinic }) {
   const [config, setConfig] = useState<any | null>(null)
   const [pending, setPending] = useState<Record<string, { total: number; count: number; entries: any[] }>>({
@@ -2133,6 +2135,8 @@ function PayoutsTab({ clinic }: { clinic: Clinic }) {
     pharmacy: { total: 0, count: 0, entries: [] },
   })
   const [history, setHistory] = useState<any[]>([])
+  const [historyCount, setHistoryCount] = useState(0)
+  const [historyPage, setHistoryPage] = useState(0)
   const [loading, setLoading] = useState(true)
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo]   = useState("")
@@ -2160,22 +2164,24 @@ function PayoutsTab({ clinic }: { clinic: Clinic }) {
   const [submittingPayout, setSubmittingPayout] = useState(false)
   const [successMsg, setSuccessMsg] = useState("")
 
-  const load = async (from?: string, to?: string) => {
+  const load = async (from?: string, to?: string, page = 0) => {
     setLoading(true)
     try {
       const params = new URLSearchParams()
       if (from) params.set("from", from)
       if (to)   params.set("to",   to)
-      const qs = params.toString() ? `?${params}` : ""
+      params.set("limit",  String(HISTORY_PAGE_SIZE))
+      params.set("offset", String(page * HISTORY_PAGE_SIZE))
       const [cfgRes, payRes] = await Promise.all([
         fetch(`/admin/clinics/${clinic.id}/payout-config`),
-        fetch(`/admin/clinics/${clinic.id}/payouts${qs}`),
+        fetch(`/admin/clinics/${clinic.id}/payouts?${params}`),
       ])
       const cfgData = await cfgRes.json()
       const payData = await payRes.json()
       setConfig(cfgData.config || null)
       setPending(payData.pending || { clinic: { total: 0, count: 0, entries: [] }, pharmacy: { total: 0, count: 0, entries: [] } })
       setHistory(payData.history || [])
+      setHistoryCount(payData.history_count ?? 0)
     } catch { /* silent */ }
     setLoading(false)
   }
@@ -2200,7 +2206,13 @@ function PayoutsTab({ clinic }: { clinic: Clinic }) {
   }
 
   useEffect(() => { load(); loadProductCosts() }, [clinic.id])
-  useEffect(() => { load(dateFrom || undefined, dateTo || undefined) }, [dateFrom, dateTo])
+  useEffect(() => {
+    setHistoryPage(0)
+    load(dateFrom || undefined, dateTo || undefined, 0)
+  }, [dateFrom, dateTo])
+  useEffect(() => {
+    load(dateFrom || undefined, dateTo || undefined, historyPage)
+  }, [historyPage])
 
   const openConfigEdit = () => {
     setConfigForm({
@@ -2278,7 +2290,8 @@ function PayoutsTab({ clinic }: { clinic: Clinic }) {
       setPayoutRef("")
       setPayoutNotes("")
       setSuccessMsg(`✓ $${data.total_paid?.toFixed(2)} payout recorded for ${payingOut} (${data.entries_paid} orders)`)
-      await load(dateFrom || undefined, dateTo || undefined)
+      setHistoryPage(0)
+      await load(dateFrom || undefined, dateTo || undefined, 0)
     } catch (e: any) { setPayoutError(e.message) }
     setSubmittingPayout(false)
   }
@@ -2449,25 +2462,48 @@ function PayoutsTab({ clinic }: { clinic: Clinic }) {
       {/* Payout History */}
       <div>
         <h3 style={{ fontSize: 14, fontWeight: 600, color: "#111", marginBottom: 12 }}>Payout History</h3>
-        {history.length === 0 ? (
+        {historyCount === 0 ? (
           <div style={{ fontSize: 13, color: "#9ca3af", padding: "16px 0" }}>No payouts recorded yet</div>
         ) : (
-          <table style={{ ...s.table, fontSize: 12 }}>
-            <thead>
-              <tr>{["Date", "Vendor", "Amount", "Reference #", "Notes"].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
-            </thead>
-            <tbody>
-              {history.map((p: any) => (
-                <tr key={p.id}>
-                  <td style={s.td}>{new Date(p.paid_at).toLocaleDateString()}</td>
-                  <td style={s.td}>{VENDOR_LABELS[p.vendor_type] || p.vendor_type}</td>
-                  <td style={{ ...s.td, fontWeight: 600 }}>${Number(p.total_amount).toFixed(2)}</td>
-                  <td style={{ ...s.td, fontFamily: "monospace", fontSize: 11 }}>{p.reference_number || "—"}</td>
-                  <td style={s.td}>{p.notes || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <table style={{ ...s.table, fontSize: 12 }}>
+              <thead>
+                <tr>{["Date", "Vendor", "Amount", "Reference #", "Notes"].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {history.map((p: any) => (
+                  <tr key={p.id}>
+                    <td style={s.td}>{new Date(p.paid_at).toLocaleDateString()}</td>
+                    <td style={s.td}>{VENDOR_LABELS[p.vendor_type] || p.vendor_type}</td>
+                    <td style={{ ...s.td, fontWeight: 600 }}>${Number(p.total_amount).toFixed(2)}</td>
+                    <td style={{ ...s.td, fontFamily: "monospace", fontSize: 11 }}>{p.reference_number || "—"}</td>
+                    <td style={s.td}>{p.notes || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {historyCount > HISTORY_PAGE_SIZE && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
+                <button
+                  onClick={() => setHistoryPage(p => Math.max(0, p - 1))}
+                  disabled={historyPage === 0}
+                  style={{ ...s.btnSecondary, fontSize: 12, padding: "4px 12px", opacity: historyPage === 0 ? 0.4 : 1 }}
+                >
+                  Previous
+                </button>
+                <span style={{ fontSize: 12, color: "#6b7280" }}>
+                  Page {historyPage + 1} of {Math.ceil(historyCount / HISTORY_PAGE_SIZE)} &nbsp;·&nbsp; {historyCount} total
+                </span>
+                <button
+                  onClick={() => setHistoryPage(p => p + 1)}
+                  disabled={(historyPage + 1) * HISTORY_PAGE_SIZE >= historyCount}
+                  style={{ ...s.btnSecondary, fontSize: 12, padding: "4px 12px", opacity: (historyPage + 1) * HISTORY_PAGE_SIZE >= historyCount ? 0.4 : 1 }}
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

@@ -391,6 +391,32 @@ const steps = [
     `,
   },
   {
+    name: "Migration14 - pharmacy_cost_override on order_workflow",
+    sql: `
+      ALTER TABLE order_workflow
+        ADD COLUMN IF NOT EXISTS pharmacy_cost_override NUMERIC(10,2);
+    `,
+  },
+  {
+    name: "Migration15 - order_item_pharmacy_cost table",
+    sql: `
+      CREATE TABLE IF NOT EXISTS order_item_pharmacy_cost (
+        id            TEXT PRIMARY KEY,
+        order_id      TEXT NOT NULL,
+        line_item_id  TEXT NOT NULL,
+        product_id    TEXT NOT NULL,
+        product_title TEXT NOT NULL DEFAULT '',
+        quantity      INTEGER NOT NULL DEFAULT 1,
+        default_cost  NUMERIC(10,2) NOT NULL DEFAULT 0,
+        actual_cost   NUMERIC(10,2) NOT NULL DEFAULT 0,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (order_id, line_item_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_order_item_pharmacy_cost_order ON order_item_pharmacy_cost (order_id);
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -405,7 +431,9 @@ const steps = [
       ('Migration20240101000010'),
       ('Migration20240101000011'),
       ('Migration20240101000012'),
-      ('Migration20240101000013')
+      ('Migration20240101000013'),
+      ('Migration20240101000014'),
+      ('Migration20240101000015')
       ON CONFLICT DO NOTHING`,
   },
 ]

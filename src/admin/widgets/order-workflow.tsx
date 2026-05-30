@@ -82,6 +82,15 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [savingComment, setSavingComment] = useState(false)
   const [mdNotes, setMdNotes] = useState("")
   const [tracking, setTracking] = useState({ number: "", carrier: "UPS" })
+  const [pharmacyItems, setPharmacyItems] = useState<Array<{
+    line_item_id: string
+    product_id: string
+    product_title: string
+    quantity: number
+    default_cost: number
+    actual_cost: number
+    is_overridden: boolean
+  }>>([])
   const [processing, setProcessing] = useState(false)
   const [showActions, setShowActions] = useState(false)
   const [submittingPharmacy, setSubmittingPharmacy] = useState(false)
@@ -323,13 +332,35 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           tracking_number: tracking.number,
           carrier: tracking.carrier,
           pharmacist_user_id: currentUser?.id,
+          item_costs: pharmacyItems.map(item => ({
+            line_item_id: item.line_item_id,
+            product_id: item.product_id,
+            product_title: item.product_title,
+            quantity: item.quantity,
+            default_cost: item.default_cost,
+            actual_cost: Number(item.actual_cost),
+          })),
         }),
       })
       setTracking({ number: "", carrier: "UPS" })
+      setPharmacyItems([])
       setShowActions(false)
       await loadWorkflow(clinicId, order.id)
     } catch {}
     finally { setProcessing(false) }
+  }
+
+  const loadPharmacyCosts = async (cId: string, orderId: string) => {
+    try {
+      const res = await fetch(`/admin/clinics/${cId}/orders/${orderId}/pharmacy-cost`, { credentials: "include" })
+      if (res.ok) {
+        const data = await res.json()
+        setPharmacyItems((data.items || []).map((item: any) => ({
+          ...item,
+          actual_cost: item.actual_cost,
+        })))
+      }
+    } catch {}
   }
 
   const submitToPharmacy = async () => {
@@ -525,7 +556,13 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
       {/* Actions */}
       {(canMdReview || canShip) && (
         <div style={{ marginBottom: 16 }}>
-          <button onClick={() => setShowActions(p => !p)} style={ws.btnAction}>
+          <button onClick={() => {
+            const next = !showActions
+            setShowActions(next)
+            if (next && canShip && clinicId) {
+              loadPharmacyCosts(clinicId, order.id)
+            }
+          }} style={ws.btnAction}>
             {showActions ? "Hide Actions" : canMdReview ? "⚕️ MD Review" : "📦 Mark Shipped"}
           </button>
 
@@ -561,6 +598,46 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
                   <input style={ws.input} value={tracking.number} onChange={e => setTracking(p => ({ ...p, number: e.target.value }))} placeholder="Enter tracking #" />
                 </div>
               </div>
+              {pharmacyItems.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <label style={ws.label}>Pharmacy Cost Per Item</label>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {pharmacyItems.map((item, idx) => (
+                      <div key={item.line_item_id} style={{ background: "#f9fafb", borderRadius: 6, padding: "8px 10px", border: "1px solid #e5e7eb" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                            {item.product_title} × {item.quantity}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#6b7280" }}>
+                            Default: ${item.default_cost.toFixed(2)}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 12, color: "#6b7280" }}>$</span>
+                          <input
+                            style={{ ...ws.input, width: 120 }}
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={item.actual_cost}
+                            onChange={e => {
+                              const updated = [...pharmacyItems]
+                              updated[idx] = { ...updated[idx], actual_cost: Number(e.target.value) }
+                              setPharmacyItems(updated)
+                            }}
+                          />
+                          {item.actual_cost !== item.default_cost && (
+                            <span style={{ fontSize: 11, color: "#d97706", fontWeight: 600 }}>Modified</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", textAlign: "right", paddingTop: 4 }}>
+                      Total: ${pharmacyItems.reduce((s, i) => s + i.actual_cost * i.quantity, 0).toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+              )}
               <button onClick={markShipped} disabled={processing || !tracking.number}
                 style={{ ...ws.btnPrimary, opacity: !tracking.number ? 0.5 : 1 }}>
                 📦 Confirm Shipment

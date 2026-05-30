@@ -10,7 +10,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
     const { id: clinicId, orderId } = req.params
-    const { tracking_number, carrier, pharmacist_user_id } = req.body as any
+    const { tracking_number, carrier, pharmacist_user_id, item_costs } = req.body as any
+    // item_costs: Array<{ line_item_id: string, product_id: string, product_title: string, quantity: number, actual_cost: number, default_cost: number }>
 
     if (!tracking_number) {
       return res.status(400).json({ message: "Tracking number is required" })
@@ -36,6 +37,30 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
        WHERE id = ?`,
       [tracking_number, carrier || "UPS", pharmacist_user_id || null, wf.rows[0].id]
     )
+
+    // Save per-item pharmacy cost overrides
+    if (Array.isArray(item_costs) && item_costs.length > 0) {
+      for (const item of item_costs) {
+        const itemCostId = `oipc_${orderId.slice(-8)}_${item.line_item_id.slice(-8)}`
+        await pg.raw(`
+          INSERT INTO order_item_pharmacy_cost
+            (id, order_id, line_item_id, product_id, product_title, quantity, default_cost, actual_cost, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          ON CONFLICT (order_id, line_item_id) DO UPDATE SET
+            actual_cost = EXCLUDED.actual_cost,
+            updated_at = NOW()
+        `, [
+          itemCostId,
+          orderId,
+          item.line_item_id,
+          item.product_id,
+          item.product_title || "",
+          item.quantity || 1,
+          item.default_cost || 0,
+          item.actual_cost,
+        ])
+      }
+    }
 
     // ── Send shipped email to patient ────────────────────────────────────
     try {
