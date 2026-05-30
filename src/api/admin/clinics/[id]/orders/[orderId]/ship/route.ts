@@ -10,7 +10,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
     const { id: clinicId, orderId } = req.params
-    const { tracking_number, carrier, pharmacist_user_id } = req.body as any
+    const { tracking_number, carrier, pharmacist_user_id, pharmacy_cost_override } = req.body as any
 
     if (!tracking_number) {
       return res.status(400).json({ message: "Tracking number is required" })
@@ -25,16 +25,22 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(404).json({ message: "Order workflow not found" })
     }
 
+    // pharmacy_cost_override: if provided and valid, store it; otherwise leave null (use default)
+    const costOverride = (pharmacy_cost_override !== undefined && pharmacy_cost_override !== null && !isNaN(Number(pharmacy_cost_override)))
+      ? Number(pharmacy_cost_override)
+      : null
+
     await pg.raw(
       `UPDATE order_workflow 
        SET status = 'shipped', 
            tracking_number = ?, 
            carrier = ?,
            pharmacist_user_id = ?,
+           pharmacy_cost_override = ?,
            shipped_at = NOW(),
            updated_at = NOW()
        WHERE id = ?`,
-      [tracking_number, carrier || "UPS", pharmacist_user_id || null, wf.rows[0].id]
+      [tracking_number, carrier || "UPS", pharmacist_user_id || null, costOverride, wf.rows[0].id]
     )
 
     // ── Send shipped email to patient ────────────────────────────────────
