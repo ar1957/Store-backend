@@ -52,6 +52,10 @@ interface Clinic {
   paypal_client_id: string
   paypal_client_secret: string
   paypal_mode: string
+  authorizenet_api_login_id: string
+  authorizenet_transaction_key: string
+  authorizenet_public_client_key: string
+  authorizenet_mode: string
 }
 
 interface Staff { id: string; email: string; full_name: string; role: string }
@@ -732,6 +736,10 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
         paypal_client_id: (form as any).paypal_client_id,
         paypal_client_secret: (form as any).paypal_client_secret,
         paypal_mode: (form as any).paypal_mode,
+        authorizenet_api_login_id: (form as any).authorizenet_api_login_id,
+        authorizenet_transaction_key: (form as any).authorizenet_transaction_key,
+        authorizenet_public_client_key: (form as any).authorizenet_public_client_key,
+        authorizenet_mode: (form as any).authorizenet_mode,
       }
       const res = await fetch(`/admin/clinics/${clinic.id}`, {
         method: "POST", credentials: "include",
@@ -830,6 +838,7 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
             <option value="stripe">Stripe only</option>
             <option value="paypal">PayPal only</option>
             <option value="both">Both (Stripe + PayPal)</option>
+            <option value="authorizenet">Authorize.net</option>
           </select>
           <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>
             Controls which payment options are shown to patients at checkout
@@ -861,6 +870,39 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
                 placeholder="EXxx... (from PayPal Developer Dashboard)" />
               <button onClick={() => setShowSecret(p => !p)} style={s.showBtn}>{showSecret ? "Hide" : "Show"}</button>
             </div>
+          </Field>
+        </div>
+      </div>
+
+      {/* ── Authorize.net Credentials ── */}
+      <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 20, marginTop: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 14 }}>🔐 Authorize.net Credentials</div>
+        <div style={s.grid2}>
+          <Field label="Mode">
+            <select style={s.input} value={(form as any).authorizenet_mode || "sandbox"}
+              onChange={e => setForm(p => ({ ...p, authorizenet_mode: e.target.value } as any))}>
+              <option value="sandbox">Sandbox (Test)</option>
+              <option value="production">Production (Live)</option>
+            </select>
+          </Field>
+          <Field label="API Login ID">
+            <input style={s.input} value={(form as any).authorizenet_api_login_id || ""}
+              onChange={e => setForm(p => ({ ...p, authorizenet_api_login_id: e.target.value } as any))}
+              placeholder="From Account → Security Settings → API Credentials & Keys" />
+          </Field>
+          <Field label="Transaction Key">
+            <div style={{ position: "relative" }}>
+              <input style={{ ...s.input, paddingRight: 52 }} type={showSecret ? "text" : "password"}
+                value={(form as any).authorizenet_transaction_key || ""}
+                onChange={e => setForm(p => ({ ...p, authorizenet_transaction_key: e.target.value } as any))}
+                placeholder="From Account → Security Settings → API Credentials & Keys" />
+              <button onClick={() => setShowSecret(p => !p)} style={s.showBtn}>{showSecret ? "Hide" : "Show"}</button>
+            </div>
+          </Field>
+          <Field label="Public Client Key">
+            <input style={s.input} value={(form as any).authorizenet_public_client_key || ""}
+              onChange={e => setForm(p => ({ ...p, authorizenet_public_client_key: e.target.value } as any))}
+              placeholder="From Account → Security Settings → Manage Public Client Key" />
           </Field>
         </div>
       </div>
