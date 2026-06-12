@@ -50,6 +50,12 @@ const Clinic = model.define("clinic", {
   from_name: model.text().nullable(),
   reply_to: model.text().nullable(),
 
+  // Authorize.net
+  authorizenet_api_login_id: model.text().nullable(),
+  authorizenet_transaction_key: model.text().nullable(),
+  authorizenet_public_client_key: model.text().nullable(),
+  authorizenet_mode: model.text().default("sandbox"),
+
   // Pharmacy integration
   pharmacy_type: model.text().nullable(),           // e.g. "digitalrx", "custom"
   pharmacy_api_url: model.text().nullable(),
