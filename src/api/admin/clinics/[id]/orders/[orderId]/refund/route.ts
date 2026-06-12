@@ -21,12 +21,14 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "Refund reason is required" })
     }
 
-    // ── 1. Get the captured payment + its Stripe PaymentIntent ID ─────────
+    // ── 1. Get the captured payment + session provider ────────────────────
     const paymentResult = await pg.raw(
-      `SELECT p.id AS payment_id, p.amount, p.raw_amount, p.currency_code, p.captured_at, p.data
+      `SELECT p.id AS payment_id, p.amount, p.raw_amount, p.currency_code, p.captured_at, p.data,
+              ps.provider_id
        FROM order_payment_collection opc
        JOIN payment_collection pc ON pc.id = opc.payment_collection_id
        JOIN payment p ON p.payment_collection_id = pc.id
+       LEFT JOIN payment_session ps ON ps.id = p.payment_session_id
        WHERE opc.order_id = ?
          AND opc.deleted_at IS NULL
          AND pc.deleted_at IS NULL
@@ -43,38 +45,199 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     const payment = paymentResult.rows[0]
 
-    // ── 2. Get clinic's Stripe secret key ────────────────────────────────
-    const clinicResult = await pg.raw(
-      `SELECT stripe_secret_key FROM clinic WHERE id = ? LIMIT 1`,
-      [clinicId]
-    )
-    if (!clinicResult.rows[0]?.stripe_secret_key) {
-      return res.status(400).json({ message: "Stripe not configured for this clinic" })
-    }
-    const stripeKey = clinicResult.rows[0].stripe_secret_key
-
-    // ── 3. Extract PaymentIntent ID from payment.data ─────────────────────
-    // payment.data stores { id: "pi_xxx", status: "succeeded", ... }
-    let paymentIntentId: string | null = null
+    // ── 2. Parse payment data to determine gateway ───────────────────────
+    let paymentData: any = {}
     try {
-      const data = typeof payment.data === "string" ? JSON.parse(payment.data) : payment.data
-      paymentIntentId = data?.id || null
+      paymentData = typeof payment.data === "string" ? JSON.parse(payment.data) : (payment.data || {})
     } catch {}
 
-    if (!paymentIntentId || !paymentIntentId.startsWith("pi_")) {
-      return res.status(400).json({
-        message: `Cannot refund — no Stripe PaymentIntent ID found in payment record. Payment data: ${JSON.stringify(payment.data)}`
-      })
-    }
+    const transactionId: string = paymentData?.id || ""
+    const isPaypal = payment.provider_id?.startsWith("pp_paypal") || paymentData?.provider === "paypal"
+    const isAuthorizenet = !isPaypal && (paymentData?.provider === "authorizenet" || (!!transactionId && !transactionId.startsWith("pi_")))
 
-    // ── 4. Call Stripe to issue the actual refund ─────────────────────────
-    const stripe = new Stripe(stripeKey, { apiVersion: "2024-06-20" as any })
-    const stripeRefund = await stripe.refunds.create({
-      payment_intent: paymentIntentId,
-      reason: "requested_by_customer",
-      metadata: { order_id: orderId, clinic_id: clinicId, internal_reason: reason.trim() },
-    })
-    console.log(`[Refund] Stripe refund created: ${stripeRefund.id} status: ${stripeRefund.status}`)
+    // ── 3. Get clinic credentials ────────────────────────────────────────
+    const clinicResult = await pg.raw(
+      `SELECT stripe_secret_key,
+              authorizenet_api_login_id, authorizenet_transaction_key, authorizenet_mode,
+              paypal_client_id, paypal_client_secret, paypal_mode
+       FROM clinic WHERE id = ? LIMIT 1`,
+      [clinicId]
+    )
+    const clinic = clinicResult.rows[0]
+
+    let gatewayRefundId: string
+    let gatewayLabel: string
+
+    if (isPaypal) {
+      // ── 4a. PayPal refund ───────────────────────────────────────────────
+      if (!clinic?.paypal_client_id || !clinic?.paypal_client_secret) {
+        return res.status(400).json({ message: "PayPal not configured for this clinic" })
+      }
+
+      const isLive = clinic.paypal_mode === "live"
+      const paypalBase = isLive ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com"
+
+      // Get access token
+      const tokenRes = await fetch(`${paypalBase}/v1/oauth2/token`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Authorization": `Basic ${Buffer.from(`${clinic.paypal_client_id}:${clinic.paypal_client_secret}`).toString("base64")}`,
+        },
+        body: "grant_type=client_credentials",
+      })
+      const tokenData = await tokenRes.json() as any
+      if (!tokenData.access_token) {
+        return res.status(500).json({ message: "Failed to authenticate with PayPal" })
+      }
+      const accessToken = tokenData.access_token
+
+      // Find the capture ID — PayPal stores it in purchase_units[0].payments.captures[0].id
+      // or directly as the top-level id depending on plugin version
+      let captureId: string | null = null
+      try {
+        captureId =
+          paymentData?.purchase_units?.[0]?.payments?.captures?.[0]?.id ||
+          paymentData?.captureId ||
+          paymentData?.capture_id ||
+          null
+
+        // If not in local data, fetch the PayPal order to get the capture ID
+        if (!captureId && transactionId) {
+          const orderRes = await fetch(`${paypalBase}/v2/checkout/orders/${transactionId}`, {
+            headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+          })
+          const orderData = await orderRes.json() as any
+          captureId = orderData?.purchase_units?.[0]?.payments?.captures?.[0]?.id || null
+        }
+      } catch {}
+
+      if (!captureId) {
+        return res.status(400).json({ message: "Cannot refund — PayPal capture ID not found. The order may not have been captured yet." })
+      }
+
+      const refundRes = await fetch(`${paypalBase}/v2/payments/captures/${captureId}/refund`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          note_to_payer: reason.trim().slice(0, 255),
+        }),
+      })
+      const refundData = await refundRes.json() as any
+
+      if (!refundRes.ok || (refundData.status !== "COMPLETED" && refundData.status !== "PENDING")) {
+        const errMsg = refundData?.message || refundData?.details?.[0]?.description || "PayPal refund failed"
+        console.error("[Refund] PayPal refund error:", JSON.stringify(refundData))
+        return res.status(400).json({ message: errMsg })
+      }
+
+      gatewayRefundId = refundData.id
+      gatewayLabel = `PayPal: ${refundData.id}`
+      console.log(`[Refund] PayPal refund successful: ${refundData.id} status: ${refundData.status}`)
+
+    } else if (isAuthorizenet) {
+      // ── 4a. Authorize.net refund ────────────────────────────────────────
+      if (!clinic?.authorizenet_api_login_id || !clinic?.authorizenet_transaction_key) {
+        return res.status(400).json({ message: "Authorize.net not configured for this clinic" })
+      }
+      if (!transactionId) {
+        return res.status(400).json({ message: "Cannot refund — no Authorize.net transaction ID found in payment record" })
+      }
+
+      const isSandbox = clinic.authorizenet_mode !== "production"
+      const apiUrl = isSandbox
+        ? "https://apitest.authorize.net/xml/v1/request.api"
+        : "https://api.authorize.net/xml/v1/request.api"
+
+      const amountDollars = (payment.amount / 100).toFixed(2)
+      const last4 = paymentData?.last4 || "0000"
+
+      // Try void first (works if transaction not yet settled), then refund
+      const voidPayload = {
+        createTransactionRequest: {
+          merchantAuthentication: {
+            name: clinic.authorizenet_api_login_id,
+            transactionKey: clinic.authorizenet_transaction_key,
+          },
+          transactionRequest: {
+            transactionType: "voidTransaction",
+            refTransId: transactionId,
+          },
+        },
+      }
+
+      const voidRes = await fetch(apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(voidPayload),
+      })
+      const voidData = await voidRes.json() as any
+      const voidOk = voidData?.messages?.resultCode === "Ok" && voidData?.transactionResponse?.responseCode === "1"
+
+      if (voidOk) {
+        gatewayRefundId = voidData.transactionResponse.transId || transactionId
+        gatewayLabel = `Authorize.net void: ${gatewayRefundId}`
+        console.log(`[Refund] Authorize.net void successful: ${gatewayRefundId}`)
+      } else {
+        // Transaction already settled — issue a credit (refund)
+        const refundPayload = {
+          createTransactionRequest: {
+            merchantAuthentication: {
+              name: clinic.authorizenet_api_login_id,
+              transactionKey: clinic.authorizenet_transaction_key,
+            },
+            transactionRequest: {
+              transactionType: "refundTransaction",
+              amount: amountDollars,
+              payment: { creditCard: { cardNumber: last4, expirationDate: "XXXX" } },
+              refTransId: transactionId,
+            },
+          },
+        }
+
+        const refundRes = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(refundPayload),
+        })
+        const refundData = await refundRes.json() as any
+
+        if (refundData?.messages?.resultCode !== "Ok" || refundData?.transactionResponse?.responseCode !== "1") {
+          const errMsg = refundData?.transactionResponse?.errors?.[0]?.errorText
+            || refundData?.messages?.message?.[0]?.text
+            || "Authorize.net refund failed"
+          console.error("[Refund] Authorize.net refund error:", JSON.stringify(refundData))
+          return res.status(400).json({ message: errMsg })
+        }
+
+        gatewayRefundId = refundData.transactionResponse.transId || transactionId
+        gatewayLabel = `Authorize.net refund: ${gatewayRefundId}`
+        console.log(`[Refund] Authorize.net refund successful: ${gatewayRefundId}`)
+      }
+    } else {
+      // ── 4b. Stripe refund ───────────────────────────────────────────────
+      if (!clinic?.stripe_secret_key) {
+        return res.status(400).json({ message: "Stripe not configured for this clinic" })
+      }
+      if (!transactionId || !transactionId.startsWith("pi_")) {
+        return res.status(400).json({
+          message: `Cannot refund — no PaymentIntent ID found in payment record. Payment data: ${JSON.stringify(payment.data)}`
+        })
+      }
+
+      const stripe = new Stripe(clinic.stripe_secret_key, { apiVersion: "2024-06-20" as any })
+      const stripeRefund = await stripe.refunds.create({
+        payment_intent: transactionId,
+        reason: "requested_by_customer",
+        metadata: { order_id: orderId, clinic_id: clinicId, internal_reason: reason.trim() },
+      })
+      gatewayRefundId = stripeRefund.id
+      gatewayLabel = `Stripe: ${stripeRefund.id}`
+      console.log(`[Refund] Stripe refund created: ${stripeRefund.id} status: ${stripeRefund.status}`)
+    }
 
     // ── 5. Create refund record in Medusa DB ──────────────────────────────
     const amount = payment.amount
@@ -146,7 +309,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             userEmail,
             userName,
             "refund",
-            `💸 Refund issued (Stripe: ${stripeRefund.id}) — ${reason.trim()}`,
+            `💸 Refund issued (${gatewayLabel}) — ${reason.trim()}`,
           ]
         )
       }
@@ -208,7 +371,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return res.json({
       success: true,
       message: "Refund issued successfully",
-      stripe_refund_id: stripeRefund.id,
+      refund_id: gatewayRefundId,
     })
   } catch (err: any) {
     console.error("[Refund] Error:", err.message)

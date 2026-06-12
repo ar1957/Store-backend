@@ -50,6 +50,7 @@ const buildConfig = async () => {
                 bucket: process.env.S3_BUCKET,
                 prefix: process.env.S3_PREFIX || "medusa",
                 cache_control: "public, max-age=31536000",
+                acl: null,
               },
             } : {
               resolve: "@medusajs/file-local",

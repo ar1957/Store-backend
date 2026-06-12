@@ -12,6 +12,7 @@
  *   node scripts/manual-migrate.js
  */
 
+require("dotenv").config({ path: require("path").join(__dirname, "../.env") })
 const { Pool } = require("pg")
 
 const pool = new Pool({
@@ -417,6 +418,16 @@ const steps = [
     `,
   },
   {
+    name: "Migration16 - Authorize.net fields on clinic",
+    sql: `
+      ALTER TABLE "clinic"
+        ADD COLUMN IF NOT EXISTS "authorizenet_api_login_id"      TEXT,
+        ADD COLUMN IF NOT EXISTS "authorizenet_transaction_key"   TEXT,
+        ADD COLUMN IF NOT EXISTS "authorizenet_public_client_key" TEXT,
+        ADD COLUMN IF NOT EXISTS "authorizenet_mode"              VARCHAR(20) DEFAULT 'sandbox';
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -433,7 +444,8 @@ const steps = [
       ('Migration20240101000012'),
       ('Migration20240101000013'),
       ('Migration20240101000014'),
-      ('Migration20240101000015')
+      ('Migration20240101000015'),
+      ('Migration20240101000016')
       ON CONFLICT DO NOTHING`,
   },
 ]
