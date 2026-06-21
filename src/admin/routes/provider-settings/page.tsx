@@ -1296,6 +1296,8 @@ function OrdersTab({
   const [commentOrder, setCommentOrder] = useState<Order | null>(null)
   const [reminderSending, setReminderSending] = useState<string | null>(null)
   const [reminderMsg, setReminderMsg] = useState<{ orderId: string; ok: boolean; text: string } | null>(null)
+  const [updateTrackingOrder, setUpdateTrackingOrder] = useState<Order | null>(null)
+  const [updateTracking, setUpdateTracking] = useState({ number: "", carrier: "UPS" })
 
   useEffect(() => { loadOrders() }, [clinic.id, filterStatus])
 
@@ -1348,6 +1350,23 @@ function OrdersTab({
     finally { setProcessing(false) }
   }
 
+  const updateTrackingNumber = async () => {
+    if (!updateTrackingOrder || !updateTracking.number.trim()) return
+    setProcessing(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/orders/${updateTrackingOrder.order_id}/update-tracking`, {
+        method: "POST", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ tracking_number: updateTracking.number.trim(), carrier: updateTracking.carrier }),
+      })
+      if (res.ok) {
+        setUpdateTrackingOrder(null)
+        loadOrders()
+      }
+    } catch {}
+    finally { setProcessing(false) }
+  }
+
   const canDelete = role === "super_admin" || role === "clinic_admin"
   const canMdReview = role === "super_admin" || role === "medical_director"
   const canShip = role === "super_admin" || role === "pharmacist"
@@ -1395,7 +1414,16 @@ function OrdersTab({
                       <button onClick={() => { setSelectedOrder(o); setTracking({ number: "", carrier: "UPS" }) }} style={s.btnAction}>Ship</button>
                     )}
                     {o.status === "shipped" && o.tracking_number && (
-                      <span style={{ fontSize: 11, color: "#6b7280" }}>{o.carrier}: {o.tracking_number}</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ fontSize: 11, color: "#6b7280" }}>{o.carrier}: {o.tracking_number}</span>
+                        {canShip && (
+                          <button
+                            onClick={() => { setUpdateTrackingOrder(o); setUpdateTracking({ number: o.tracking_number, carrier: o.carrier || "UPS" }) }}
+                            style={{ ...s.btnOutline, fontSize: 11, padding: "2px 6px" }}
+                            title="Update tracking number"
+                          >✏️</button>
+                        )}
+                      </span>
                     )}
                     {/* Comment button — all roles */}
                     <button onClick={() => setCommentOrder(o)} style={{ ...s.btnAction, color: "#6b7280" }} title="Add comment">💬</button>
@@ -1502,6 +1530,40 @@ function OrdersTab({
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <button onClick={markShipped} disabled={processing || !tracking.number} style={{ ...s.btnPrimary, opacity: !tracking.number ? 0.5 : 1 }}>Confirm Shipment</button>
             <button onClick={() => setSelectedOrder(null)} style={s.btnOutline}>Cancel</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Update Tracking Modal */}
+      {updateTrackingOrder && (
+        <Modal onClose={() => setUpdateTrackingOrder(null)}>
+          <h3 style={s.modalTitle}>Update Tracking Number</h3>
+          <p style={s.modalSubtitle}>Order #{updateTrackingOrder.display_id} — a correction email will be sent to the patient.</p>
+          <div style={s.grid2}>
+            <Field label="Carrier">
+              <select style={s.input} value={updateTracking.carrier} onChange={e => setUpdateTracking(p => ({ ...p, carrier: e.target.value }))}>
+                {["UPS", "FedEx", "USPS", "DHL"].map(c => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Tracking Number">
+              <input
+                style={s.input}
+                value={updateTracking.number}
+                onChange={e => setUpdateTracking(p => ({ ...p, number: e.target.value }))}
+                placeholder="Updated tracking number"
+                autoFocus
+              />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button
+              onClick={updateTrackingNumber}
+              disabled={processing || !updateTracking.number.trim()}
+              style={{ ...s.btnPrimary, opacity: !updateTracking.number.trim() ? 0.5 : 1 }}
+            >
+              {processing ? "Saving…" : "Save & Resend Email"}
+            </button>
+            <button onClick={() => setUpdateTrackingOrder(null)} style={s.btnOutline}>Cancel</button>
           </div>
         </Modal>
       )}
