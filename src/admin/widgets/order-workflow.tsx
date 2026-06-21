@@ -99,6 +99,9 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [gfePortalUrl, setGfePortalUrl] = useState<string | null>(null)
   const [sendingReminder, setSendingReminder] = useState(false)
   const [reminderResult, setReminderResult] = useState<string | null>(null)
+  const [editingTracking, setEditingTracking] = useState(false)
+  const [updateTracking, setUpdateTracking] = useState({ number: "", carrier: "UPS" })
+  const [updatingTracking, setUpdatingTracking] = useState(false)
   const [pharmacyPayout, setPharmacyPayout] = useState<{
     status: string; amount: number | null; reference: string | null; paid_at: string | null; notes: string | null
   } | null>(null)
@@ -650,7 +653,67 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
       {/* Tracking info if shipped */}
       {workflow.status === "shipped" && workflow.tracking_number && (
         <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: 10, marginBottom: 16, fontSize: 13 }}>
-          📦 Shipped via <strong>{workflow.carrier}</strong> — {workflow.tracking_number}
+          {!editingTracking ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span>📦 Shipped via <strong>{workflow.carrier}</strong> — {workflow.tracking_number}</span>
+              {(role === "super_admin" || role === "pharmacist") && (
+                <button
+                  onClick={() => { setUpdateTracking({ number: workflow.tracking_number, carrier: workflow.carrier || "UPS" }); setEditingTracking(true) }}
+                  style={{ fontSize: 12, padding: "2px 8px", border: "1px solid #bbf7d0", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#166534", marginLeft: 10 }}
+                >
+                  ✏️ Edit
+                </button>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontWeight: 600, fontSize: 12, color: "#166534", marginBottom: 2 }}>Update Tracking — correction email will be sent to patient</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <select
+                  value={updateTracking.carrier}
+                  onChange={e => setUpdateTracking(p => ({ ...p, carrier: e.target.value }))}
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #bbf7d0", fontSize: 13, background: "#fff" }}
+                >
+                  {["UPS", "FedEx", "USPS", "DHL"].map(c => <option key={c}>{c}</option>)}
+                </select>
+                <input
+                  value={updateTracking.number}
+                  onChange={e => setUpdateTracking(p => ({ ...p, number: e.target.value }))}
+                  placeholder="Tracking number"
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #bbf7d0", fontSize: 13, flex: 1, minWidth: 160 }}
+                  autoFocus
+                />
+                <button
+                  disabled={updatingTracking || !updateTracking.number.trim()}
+                  onClick={async () => {
+                    if (!clinicId || !updateTracking.number.trim()) return
+                    setUpdatingTracking(true)
+                    try {
+                      const res = await fetch(`/admin/clinics/${clinicId}/orders/${order.id}/update-tracking`, {
+                        method: "POST", credentials: "include",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tracking_number: updateTracking.number.trim(), carrier: updateTracking.carrier }),
+                      })
+                      if (res.ok) {
+                        setEditingTracking(false)
+                        loadWorkflow(clinicId, order.id)
+                      }
+                    } catch {}
+                    finally { setUpdatingTracking(false) }
+                  }}
+                  style={{ padding: "6px 12px", borderRadius: 6, background: "#166534", color: "#fff", border: "none", fontSize: 13, cursor: updatingTracking ? "default" : "pointer", opacity: !updateTracking.number.trim() ? 0.5 : 1 }}
+                >
+                  {updatingTracking ? "Saving…" : "Save & Resend"}
+                </button>
+                <button
+                  onClick={() => setEditingTracking(false)}
+                  style={{ padding: "6px 10px", borderRadius: 6, background: "#fff", border: "1px solid #d1d5db", fontSize: 13, cursor: "pointer", color: "#374151" }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
