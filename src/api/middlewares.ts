@@ -237,6 +237,62 @@ async function clinicProductFilter(
   }
 }
 
+// ── Middleware 5: Validate promo codes are scoped to the cart's clinic ────────
+// Prevents one clinic's customers from redeeming another clinic's promotions.
+
+async function validateClinicPromos(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  next: MedusaNextFunction
+) {
+  try {
+    const promo_codes = (req.body as any)?.promo_codes
+    if (!Array.isArray(promo_codes) || promo_codes.length === 0) return next()
+
+    const cartId = (req.params as any)?.id
+    if (!cartId) return next()
+
+    const pg = req.scope.resolve("__pg_connection__") as any
+
+    // Find the clinic that owns this cart (via sales channel)
+    const clinicResult = await pg.raw(
+      `SELECT cl.id AS clinic_id
+       FROM cart c
+       JOIN clinic cl ON cl.sales_channel_id = c.sales_channel_id AND cl.deleted_at IS NULL
+       WHERE c.id = ?
+       LIMIT 1`,
+      [cartId]
+    )
+
+    // No clinic mapping — allow (e.g. admin/test carts with no sales channel)
+    if (!clinicResult.rows.length) return next()
+
+    const clinicId = clinicResult.rows[0].clinic_id
+
+    const allowedResult = await pg.raw(
+      `SELECT p.code
+       FROM clinic_promotion cp
+       JOIN promotion p ON p.id = cp.promotion_id AND p.deleted_at IS NULL
+       WHERE cp.clinic_id = ?`,
+      [clinicId]
+    )
+
+    const allowedCodes = new Set<string>(
+      allowedResult.rows.map((r: any) => String(r.code).toUpperCase())
+    )
+
+    for (const code of promo_codes) {
+      if (!allowedCodes.has(String(code).toUpperCase())) {
+        return res.status(400).json({ message: `Promotion code "${code}" is not valid for this clinic.` })
+      }
+    }
+
+    return next()
+  } catch {
+    return next()
+  }
+}
+
 export default defineMiddlewares({
   routes: [
     // ── DYNAMIC CORS — runs on all store routes ──────────────────────
@@ -288,6 +344,13 @@ export default defineMiddlewares({
       matcher: "/admin/customers*",
       method: ["GET"],
       middlewares: [clinicCustomerFilter],
+    },
+
+    // ── CLINIC-SCOPED PROMO VALIDATION ──────────────────────────────
+    {
+      matcher: "/store/carts/:id",
+      method: ["POST"],
+      middlewares: [validateClinicPromos],
     },
 
     // ── OTHER STORE BYPASSES ────────────────────────────────────────
