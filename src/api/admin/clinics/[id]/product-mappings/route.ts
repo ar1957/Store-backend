@@ -15,7 +15,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const result = await pgConnection.raw(`
       SELECT id, tenant_domain, product_id, product_title, variant_id,
-             treatment_id, treatment_name, requires_eligibility, created_at
+             treatment_id, treatment_name, requires_eligibility,
+             rxvortex_preset_catalog_id, created_at
       FROM product_treatment_map
       WHERE tenant_domain = ?
       ORDER BY created_at DESC
@@ -43,8 +44,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     await pgConnection.raw(`
       INSERT INTO product_treatment_map
-        (id, tenant_domain, product_id, product_title, treatment_id, treatment_name, requires_eligibility, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (id, tenant_domain, product_id, product_title, treatment_id, treatment_name, requires_eligibility, rxvortex_preset_catalog_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
     `, [
       id,
       tenantDomain,
@@ -53,6 +54,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       body.treatment_id,
       body.treatment_name || "",
       body.requires_eligibility ?? true,
+      body.rxvortex_preset_catalog_id || null,
     ])
 
     return res.json({ mapping: { id, tenant_domain: tenantDomain, ...body } })
