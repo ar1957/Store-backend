@@ -11,6 +11,51 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "cartId is required" })
     }
 
+    // Phone-required check for RxVortex (Strive) pharmacies.
+    // RxVortex rejects submissions with a blank patient phone, so we gate here
+    // before the order is created rather than failing silently after placement.
+    try {
+      const rxCheck = await pg.raw(`
+        SELECT
+          cl.pharmacy_enabled,
+          cl.pharmacy_type,
+          COALESCE(sa.phone, ba.phone) AS address_phone,
+          ct.customer_id
+        FROM cart ct
+        LEFT JOIN cart_address sa ON sa.id = ct.shipping_address_id
+        LEFT JOIN cart_address ba ON ba.id = ct.billing_address_id
+        JOIN clinic cl ON cl.sales_channel_id = ct.sales_channel_id
+          AND cl.deleted_at IS NULL
+        WHERE ct.id = ?
+        LIMIT 1
+      `, [cartId])
+
+      const row = rxCheck.rows[0]
+      if (row?.pharmacy_enabled && row?.pharmacy_type === "rxvortex") {
+        let phone: string = row.address_phone || ""
+
+        // Fall back to customer profile phone
+        if (!phone && row.customer_id) {
+          const custRes = await pg.raw(
+            `SELECT phone FROM customer WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+            [row.customer_id]
+          )
+          phone = custRes.rows[0]?.phone || ""
+        }
+
+        if (!phone) {
+          return res.status(400).json({
+            message: "A phone number is required to complete your order. Please add a phone number to your shipping address.",
+            code: "phone_required",
+          })
+        }
+      }
+    } catch (phoneCheckErr: any) {
+      // Non-fatal: if the check itself fails (e.g. schema mismatch), let checkout proceed.
+      // The pharmacy submission will surface the error if the phone is truly missing.
+      console.warn("[complete-cart] Phone-required check failed (non-fatal):", phoneCheckErr.message)
+    }
+
     // For zero-total carts (100% promo applied before checkout loaded), the
     // storefront skips initiatePaymentSession so no session exists. Without a
     // session, completeCartWorkflow has nothing to authorize and the order lands

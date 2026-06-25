@@ -570,6 +570,7 @@ export default function ClinicOrdersPage() {
 
       const res = await fetch(`/admin/order-workflow?${params}`, {
         credentials: "include",
+        cache: "no-store",
         headers: { "Content-Type": "application/json" },
       })
       if (!res.ok) throw new Error(`Failed to fetch orders (${res.status})`)

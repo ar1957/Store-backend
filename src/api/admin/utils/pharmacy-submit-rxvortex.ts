@@ -90,12 +90,11 @@ export async function submitToRxVortex(
     SELECT
       oli.id        AS line_item_id,
       oli.title     AS item_title,
-      oli.quantity,
+      oi.quantity,
       oi.item_id,
-      pv.product_id
+      oli.product_id
     FROM order_item oi
     JOIN order_line_item oli ON oli.id = oi.item_id
-    LEFT JOIN product_variant pv ON pv.id = oli.variant_id
     WHERE oi.order_id = ?
     ORDER BY oi.created_at
   `, [order.id])
@@ -110,22 +109,35 @@ export async function submitToRxVortex(
   )
   const tenantDomain = tenantResult.rows[0]?.tenant_domain || ""
 
-  // Build map: product_id → { preset_catalog_id, treatment_id }
+  // Build map: product_id → { preset_catalog_id, treatment_id, instructions }
   const productCatalogMap: Record<string, string> = {}
-  const productTreatmentMap: Record<string, number> = {}  // product_id → treatment_id
+  const productTreatmentMap: Record<string, number> = {}
+  const productInstructionMap: Record<string, string> = {}
   if (lineItems.length > 0 && tenantDomain) {
     const productIds = lineItems.map((li: any) => li.product_id).filter(Boolean)
     if (productIds.length > 0) {
+      // Look up by any domain belonging to the same clinic, not just the order's
+      // tenant_domain — mappings are stored under clinic.domains[0] which may differ
+      // from the order's tenant_domain (e.g. spaderx.com vs spaderx.local).
       const mappingResult = await pg.raw(`
-        SELECT product_id, treatment_id, rxvortex_preset_catalog_id
+        SELECT product_id, treatment_id, rxvortex_preset_catalog_id, rxvortex_instructions
         FROM product_treatment_map
-        WHERE tenant_domain = ?
-          AND product_id = ANY(?)
-      `, [tenantDomain, productIds])
+        WHERE product_id = ANY(?)
+          AND tenant_domain IN (
+            SELECT unnest(cl.domains)
+            FROM clinic cl
+            WHERE ? = ANY(cl.domains)
+              AND cl.deleted_at IS NULL
+            LIMIT 1
+          )
+      `, [productIds, tenantDomain])
       for (const row of mappingResult.rows) {
         productTreatmentMap[row.product_id] = Number(row.treatment_id)
         if (row.rxvortex_preset_catalog_id) {
           productCatalogMap[row.product_id] = row.rxvortex_preset_catalog_id
+        }
+        if (row.rxvortex_instructions) {
+          productInstructionMap[row.product_id] = row.rxvortex_instructions
         }
       }
     }
@@ -149,10 +161,13 @@ export async function submitToRxVortex(
       ? (dosageByTreatmentId[treatmentId] || "")
       : (dosages[idx]?.dosage || dosages[0]?.dosage || "")
 
-    // instructions = "Take as directed — <dosage>" mirrors what DigitalRX/RMM do
+    // Use product-specific instructions from mapping, fall back to generic text.
+    // Dosage from MHC is appended after a dash so the pharmacist sees both.
+    const baseInstruction = (li.product_id && productInstructionMap[li.product_id])
+      || "Take as directed"
     const instructions = matchedDosage
-      ? `Take as directed — ${matchedDosage}`
-      : "Take as directed"
+      ? `${baseInstruction} — ${matchedDosage}`
+      : baseInstruction
 
     // note field carries dosage explicitly for pharmacist clarity
     const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
@@ -178,14 +193,26 @@ export async function submitToRxVortex(
     if (presetCatalogId) {
       request.preset_catalog_id = presetCatalogId
     } else {
-      // No catalog ID — send medication_name as minimal fallback
-      // Strive may reject this; admin should set rxvortex_preset_catalog_id in product mappings
-      request.medication_name = (li.item_title || drugName).replace(/[\n\t"\\]/g, "").trim()
-      console.warn(`[PharmacySubmit-RxVortex] No preset_catalog_id for product ${li.product_id} (${li.item_title}). Set rxvortex_preset_catalog_id in product mappings.`)
+      // Mark as missing — we'll abort the whole submission below rather than
+      // sending a request RxVortex will always reject with "can't be blank".
+      request._missing_catalog_id = true
+      request._product_title = li.item_title || li.product_id || "unknown"
     }
 
     return request
   })
+
+  // Abort if any item has no catalog ID — RxVortex requires preset_catalog_id
+  // and will reject the whole order. Admin must set rxvortex_preset_catalog_id
+  // in the product mapping tab before this order can be submitted.
+  const missing = medicationRequests.filter((r: any) => r._missing_catalog_id)
+  if (missing.length > 0) {
+    const names = missing.map((r: any) => r._product_title).join(", ")
+    throw new Error(
+      `RxVortex submission blocked — preset_catalog_id not set for: ${names}. ` +
+      `Set it in the product mapping tab for this clinic.`
+    )
+  }
 
   // If no line items were found, fall back to a single request using drug name
   if (medicationRequests.length === 0) {
@@ -209,13 +236,26 @@ export async function submitToRxVortex(
     medicationRequests.push(fallback)
   }
 
+  // Phone: shipping address → billing address (already COALESCE'd in the caller query) →
+  // customer record. RxVortex requires a non-blank phone.
+  let patientPhone = normalizePhone(order.phone) || ""
+  if (!patientPhone && order.email) {
+    const custResult = await pg.raw(
+      `SELECT phone FROM customer WHERE email = ? AND deleted_at IS NULL LIMIT 1`,
+      [order.email]
+    )
+    patientPhone = normalizePhone(custResult.rows[0]?.phone) || ""
+  }
+
+  const shipTo = clinic.pharmacy_ship_type === "ship_to_clinic" ? "clinic" : "patient"
+
   const payload: Record<string, any> = {
     patient: {
       first_name: (order.first_name || "Patient").trim(),
       last_name: (order.last_name || ".").trim(),
       dob,
       gender,
-      phone: normalizePhone(order.phone) || "",
+      phone: patientPhone,
       email: order.email || "",
       address: {
         line1: order.address_1 || "",
@@ -238,9 +278,19 @@ export async function submitToRxVortex(
       },
     },
     order: {
-      bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "clinic" : "patient",
-      ship_to: clinic.pharmacy_ship_type === "ship_to_clinic" ? "clinic" : "patient",
+      bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "practice" : "patient",
+      ship_to: shipTo,
       sender_order_id: rxNumber,
+    },
+    // RxVortex requires shipment object — use patient address when shipping to patient
+    shipment: {
+      recipient_type: shipTo,
+      address: {
+        line1: order.address_1 || "",
+        city: order.city || "",
+        state: (order.province || "").toUpperCase(),
+        postal_code: (order.postal_code || "").replace(/[^\d-]/g, ""),
+      },
     },
     medication_requests: medicationRequests,
   }
@@ -264,14 +314,18 @@ export async function submitToRxVortex(
     throw new Error(data.errors ? `${errMsg} — ${JSON.stringify(data.errors)}` : errMsg)
   }
 
-  // RxVortex returns { order_tracking_id: "uuid" }
-  const trackingId = data.order_tracking_id || rxNumber
+  // Store rxNumber as pharmacy_queue_id — this is what RxVortex sends back as
+  // sender_order_id in webhooks, so the webhook handler can look up the order.
+  // Log RxVortex's own order_tracking_id (UUID) for support reference only.
+  if (data.order_tracking_id) {
+    console.log(`[PharmacySubmit-RxVortex] RxVortex order_tracking_id (internal ref): ${data.order_tracking_id}`)
+  }
 
   await pg.raw(
     `UPDATE order_workflow
      SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', updated_at = NOW()
      WHERE id = ?`,
-    [String(trackingId), workflowId]
+    [rxNumber, workflowId]
   )
-  console.log(`[PharmacySubmit-RxVortex] Order submitted. order_tracking_id: ${trackingId}`)
+  console.log(`[PharmacySubmit-RxVortex] Order submitted. Stored as pharmacy_queue_id: ${rxNumber}`)
 }

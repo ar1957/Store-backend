@@ -22,15 +22,17 @@ export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
     const pgConnection = req.scope.resolve("__pg_connection__") as any
     const body = req.body as any
 
-    await pgConnection.raw(`
-      UPDATE product_treatment_map
-      SET rxvortex_preset_catalog_id = ?,
-          updated_at = NOW()
-      WHERE id = ?
-    `, [
-      body.rxvortex_preset_catalog_id || null,
-      req.params.mappingId,
-    ])
+    const fields: Record<string, any> = { updated_at: new Date() }
+    if ("rxvortex_preset_catalog_id" in body) fields.rxvortex_preset_catalog_id = body.rxvortex_preset_catalog_id || null
+    if ("rxvortex_instructions" in body) fields.rxvortex_instructions = body.rxvortex_instructions || null
+
+    const setClauses = Object.keys(fields).filter(k => k !== "updated_at").map(k => `${k} = ?`).join(", ")
+    const values = [...Object.keys(fields).filter(k => k !== "updated_at").map(k => fields[k]), req.params.mappingId]
+
+    await pgConnection.raw(
+      `UPDATE product_treatment_map SET ${setClauses}, updated_at = NOW() WHERE id = ?`,
+      values
+    )
 
     return res.json({ success: true })
   } catch (err: unknown) {

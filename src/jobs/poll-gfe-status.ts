@@ -58,7 +58,7 @@ export default async function pollGfeStatus(container: MedusaContainer) {
       FROM order_workflow
       WHERE status = 'pending_provider'
         AND gfe_id IS NOT NULL
-      ORDER BY created_at ASC
+      ORDER BY created_at DESC
       LIMIT 100
     `)
 
@@ -68,12 +68,36 @@ export default async function pollGfeStatus(container: MedusaContainer) {
     for (const row of pending) {
       try {
         const clinic = await clinicSvc.getClinicByDomain(row.tenant_domain)
-        if (!clinic) continue
+        if (!clinic) {
+          logger.warn(`[GFE Poll] No clinic found for domain: ${row.tenant_domain}`)
+          continue
+        }
 
-        const token = await clinicSvc.getToken(clinic.id)
+        // Authenticate directly using clinic table credentials
+        // (provider_settings table is legacy — credentials now live in clinic table)
+        if (!clinic.api_client_id || !clinic.api_client_secret) {
+          logger.warn(`[GFE Poll] No API credentials for clinic ${clinic.id} (domain: ${row.tenant_domain})`)
+          continue
+        }
+
         const baseUrl = clinic.api_env === "prod"
           ? clinic.api_base_url_prod
           : clinic.api_base_url_test
+
+        // Skip clinics whose API URL is a local/dev address — they will never
+        // succeed in production and just spam the logs with 400s every cycle.
+        if (!baseUrl || /localhost|\.local(:\d+)?$/.test(baseUrl)) {
+          logger.warn(`[GFE Poll] Skipping ${row.tenant_domain} — API URL is a local/dev address: ${baseUrl}`)
+          continue
+        }
+
+        let token: string
+        try {
+          token = await clinicSvc.getToken(clinic.id)
+        } catch (authErr: any) {
+          logger.warn(`[GFE Poll] Auth failed for ${row.tenant_domain}: ${authErr.message}`)
+          continue
+        }
 
         const gfeRes = await fetch(`${baseUrl}/gfe/status/${row.gfe_id}`, {
           headers: { "Authorization": `Bearer ${token}` },

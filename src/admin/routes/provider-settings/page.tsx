@@ -65,7 +65,7 @@ interface Clinic {
 
 interface Staff { id: string; email: string; full_name: string; role: string }
 interface Treatment { id: number; name: string }
-interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string }
 interface Product { id: string; title: string }
 interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
 interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
@@ -1126,38 +1126,21 @@ interface RxVortexCatalogItem {
   instruction: string
 }
 
-function MappingRow({ mapping, clinicId, showRxVortex, onDelete }: {
+function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, onDelete }: {
   mapping: Mapping
   clinicId: string
   showRxVortex: boolean
+  catalog: RxVortexCatalogItem[]
+  catalogLoading: boolean
+  catalogError: string
   onDelete: () => void
 }) {
   const [catalogId, setCatalogId] = useState(mapping.rxvortex_preset_catalog_id || "")
+  const [instructions, setInstructions] = useState(mapping.rxvortex_instructions || "")
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [catalog, setCatalog] = useState<RxVortexCatalogItem[]>([])
-  const [loadingCatalog, setLoadingCatalog] = useState(false)
-  const [catalogError, setCatalogError] = useState("")
-  const [catalogLoaded, setCatalogLoaded] = useState(false)
-
-  // Load catalog when RxVortex column becomes visible
-  useEffect(() => {
-    if (!showRxVortex || catalogLoaded) return
-    setLoadingCatalog(true)
-    setCatalogError("")
-    fetch(`/admin/clinics/${clinicId}/rxvortex-catalog`, { credentials: "include" })
-      .then(r => r.json())
-      .then(data => {
-        if (data.catalog) {
-          setCatalog(data.catalog)
-          setCatalogLoaded(true)
-        } else {
-          setCatalogError(data.message || "Failed to load catalog")
-        }
-      })
-      .catch(() => setCatalogError("Network error loading catalog"))
-      .finally(() => setLoadingCatalog(false))
-  }, [showRxVortex])
+  const [instrSaving, setInstrSaving] = useState(false)
+  const [instrSaved, setInstrSaved] = useState(false)
 
   const saveCatalogId = async (newId: string) => {
     setSaving(true)
@@ -1173,6 +1156,22 @@ function MappingRow({ mapping, clinicId, showRxVortex, onDelete }: {
       setTimeout(() => setSaved(false), 2000)
     } catch {}
     finally { setSaving(false) }
+  }
+
+  const saveInstructions = async (value: string) => {
+    setInstrSaving(true)
+    setInstrSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ rxvortex_instructions: value.trim() || null }),
+      })
+      setInstrSaved(true)
+      setTimeout(() => setInstrSaved(false), 2000)
+    } catch {}
+    finally { setInstrSaving(false) }
   }
 
   // Combobox state
@@ -1216,7 +1215,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, onDelete }: {
       </td>
       {showRxVortex && (
         <td style={{ ...s.td, position: "relative" }}>
-          {loadingCatalog ? (
+          {catalogLoading ? (
             <span style={{ fontSize: 12, color: "#9ca3af" }}>Loading catalog…</span>
           ) : catalogError ? (
             <span style={{ fontSize: 12, color: "#dc2626" }}>{catalogError}</span>
@@ -1302,6 +1301,24 @@ function MappingRow({ mapping, clinicId, showRxVortex, onDelete }: {
               )}
             </div>
           )}
+          {/* Instructions field — shown whenever RxVortex column is visible */}
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>
+              Instructions <span style={{ color: "#9ca3af" }}>(dosage appended automatically)</span>
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                style={{ ...s.input, fontSize: 12, padding: "4px 8px", flex: 1 }}
+                value={instructions}
+                placeholder="e.g. Inject subcutaneously once weekly"
+                onChange={e => { setInstructions(e.target.value); setInstrSaved(false) }}
+                onBlur={() => saveInstructions(instructions)}
+                onKeyDown={e => { if (e.key === "Enter") { e.currentTarget.blur() } }}
+              />
+              {instrSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+              {instrSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+            </div>
+          </div>
         </td>
       )}
       <td style={s.td}>
@@ -1320,6 +1337,25 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
   const [loadingTreatments, setLoadingTreatments] = useState(false)
 
   const isRxVortex = clinic.pharmacy_type === "rxvortex"
+
+  // Fetch RxVortex catalog once at the tab level, shared across all rows
+  const [rxCatalog, setRxCatalog] = useState<RxVortexCatalogItem[]>([])
+  const [rxCatalogLoading, setRxCatalogLoading] = useState(false)
+  const [rxCatalogError, setRxCatalogError] = useState("")
+
+  useEffect(() => {
+    if (!isRxVortex) return
+    setRxCatalogLoading(true)
+    setRxCatalogError("")
+    fetch(`/admin/clinics/${clinic.id}/rxvortex-catalog`, { credentials: "include" })
+      .then(r => r.json())
+      .then(data => {
+        if (data.catalog) setRxCatalog(data.catalog)
+        else setRxCatalogError(data.message || "Failed to load catalog")
+      })
+      .catch(() => setRxCatalogError("Network error loading catalog"))
+      .finally(() => setRxCatalogLoading(false))
+  }, [clinic.id, isRxVortex])
 
   useEffect(() => { loadMappings(); loadProducts() }, [clinic.id])
 
@@ -1433,6 +1469,9 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
                 mapping={m}
                 clinicId={clinic.id}
                 showRxVortex={isRxVortex}
+                catalog={rxCatalog}
+                catalogLoading={rxCatalogLoading}
+                catalogError={rxCatalogError}
                 onDelete={() => { fetch(`/admin/clinics/${clinic.id}/product-mappings/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() }); loadMappings() }}
               />
             ))}
@@ -2115,14 +2154,24 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
           if (!raw) return null
           const srcMatch = raw.match(/src=["']([^"']+)["']/i)
           const resolved = srcMatch ? srcMatch[1] : raw.trim()
+          const isHttp = resolved.startsWith("http://")
           const isScript = resolved.toLowerCase().endsWith(".js")
-          if (isScript) return (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 6, padding: "6px 10px" }}>
-              ✓ Badge script — <code style={{ fontSize: 11 }}>{resolved}</code> — will be loaded in the footer automatically.
-            </div>
-          )
           return (
-            <img src={resolved} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
+            <>
+              {isHttp && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#b45309", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 6, padding: "6px 10px" }}>
+                  ⚠️ URL uses <code>http://</code> — on a live HTTPS site this will be blocked by the browser. Change it to <code>https://</code>.
+                </div>
+              )}
+              {isScript && !isHttp && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 6, padding: "6px 10px" }}>
+                  ✓ Badge script — <code style={{ fontSize: 11 }}>{resolved}</code> — will be loaded in the footer automatically.
+                </div>
+              )}
+              {!isScript && !isHttp && (
+                <img src={resolved} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
+              )}
+            </>
           )
         })()}
       </div>

@@ -48,9 +48,11 @@ export async function submitToPharmacyIfEnabled(
     // Get order + patient details
     const orderResult = await pg.raw(
       `SELECT o.id, o.display_id, o.email, o.metadata,
-              oa.first_name, oa.last_name, oa.address_1, oa.city, oa.province, oa.postal_code, oa.phone
+              oa.first_name, oa.last_name, oa.address_1, oa.city, oa.province, oa.postal_code,
+              COALESCE(oa.phone, ba.phone) AS phone
        FROM "order" o
        LEFT JOIN order_address oa ON oa.id = o.shipping_address_id
+       LEFT JOIN order_address ba ON ba.id = o.billing_address_id
        WHERE o.id = ? LIMIT 1`,
       [orderId]
     )
@@ -150,5 +152,6 @@ export async function submitToPharmacyIfEnabled(
     }
   } catch (err: any) {
     console.error(`[PharmacySubmit] Error for order ${orderId}:`, err.message)
+    throw err
   }
 }
