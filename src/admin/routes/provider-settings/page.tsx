@@ -56,11 +56,16 @@ interface Clinic {
   authorizenet_transaction_key: string
   authorizenet_public_client_key: string
   authorizenet_mode: string
+  // RxVortex (Strive) pharmacy fields
+  pharmacy_client_id: string
+  pharmacy_client_secret: string
+  pharmacy_subdomain: string
+  pharmacy_preset_catalog_id: string
 }
 
 interface Staff { id: string; email: string; full_name: string; role: string }
 interface Treatment { id: number; name: string }
-interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string }
 interface Product { id: string; title: string }
 interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
 interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
@@ -1109,6 +1114,220 @@ function StaffTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () =
   )
 }
 
+// ── MappingRow — inline editable row for product-treatment mapping ─────────
+interface RxVortexCatalogItem {
+  catalog_id: string
+  medication_name: string
+  medication_strength: string
+  medication_form: string
+  days_supply: number
+  quantity: string | number
+  quantity_units: string
+  instruction: string
+}
+
+function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, onDelete }: {
+  mapping: Mapping
+  clinicId: string
+  showRxVortex: boolean
+  catalog: RxVortexCatalogItem[]
+  catalogLoading: boolean
+  catalogError: string
+  onDelete: () => void
+}) {
+  const [catalogId, setCatalogId] = useState(mapping.rxvortex_preset_catalog_id || "")
+  const [instructions, setInstructions] = useState(mapping.rxvortex_instructions || "")
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [instrSaving, setInstrSaving] = useState(false)
+  const [instrSaved, setInstrSaved] = useState(false)
+
+  const saveCatalogId = async (newId: string) => {
+    setSaving(true)
+    setSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ rxvortex_preset_catalog_id: newId.trim() || null }),
+      })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch {}
+    finally { setSaving(false) }
+  }
+
+  const saveInstructions = async (value: string) => {
+    setInstrSaving(true)
+    setInstrSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ rxvortex_instructions: value.trim() || null }),
+      })
+      setInstrSaved(true)
+      setTimeout(() => setInstrSaved(false), 2000)
+    } catch {}
+    finally { setInstrSaving(false) }
+  }
+
+  // Combobox state
+  const [query, setQuery] = useState(() => {
+    const found = catalog.find(c => c.catalog_id === catalogId)
+    return found ? `${found.medication_name} ${found.medication_strength} (${found.medication_form})` : ""
+  })
+  const [open, setOpen] = useState(false)
+
+  // Keep query display text in sync when catalog loads after initial render
+  useEffect(() => {
+    if (catalogId && catalog.length > 0 && !query) {
+      const found = catalog.find(c => c.catalog_id === catalogId)
+      if (found) setQuery(`${found.medication_name} ${found.medication_strength} (${found.medication_form})`)
+    }
+  }, [catalog, catalogId])
+
+  const filtered = query.trim()
+    ? catalog.filter(item => {
+        const label = `${item.medication_name} ${item.medication_strength} ${item.medication_form}`.toLowerCase()
+        return query.toLowerCase().split(" ").every(word => label.includes(word))
+      })
+    : catalog
+
+  const selectItem = (item: RxVortexCatalogItem) => {
+    const label = `${item.medication_name} ${item.medication_strength} (${item.medication_form})`
+    setQuery(label)
+    setCatalogId(item.catalog_id)
+    setOpen(false)
+    saveCatalogId(item.catalog_id)
+  }
+
+  return (
+    <tr>
+      <td style={s.td}>{mapping.product_title || mapping.product_id}</td>
+      <td style={s.td}>{mapping.treatment_name || mapping.treatment_id}</td>
+      <td style={s.td}>
+        <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: mapping.requires_eligibility ? "#dbeafe" : "#f3f4f6", color: mapping.requires_eligibility ? "#1e40af" : "#6b7280" }}>
+          {mapping.requires_eligibility ? "Yes" : "No"}
+        </span>
+      </td>
+      {showRxVortex && (
+        <td style={{ ...s.td, position: "relative" }}>
+          {catalogLoading ? (
+            <span style={{ fontSize: 12, color: "#9ca3af" }}>Loading catalog…</span>
+          ) : catalogError ? (
+            <span style={{ fontSize: 12, color: "#dc2626" }}>{catalogError}</span>
+          ) : (
+            <div style={{ position: "relative", minWidth: 300 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  style={{ ...s.input, fontSize: 12, padding: "4px 8px", flex: 1 }}
+                  value={query}
+                  placeholder={catalog.length > 0 ? "Type to search medications…" : "Enter catalog ID"}
+                  onChange={e => {
+                    setQuery(e.target.value)
+                    setCatalogId("")
+                    setOpen(true)
+                    setSaved(false)
+                  }}
+                  onFocus={() => setOpen(true)}
+                  onBlur={() => {
+                    // Delay so click on dropdown item registers first
+                    setTimeout(() => setOpen(false), 180)
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === "Escape") { setOpen(false) }
+                    if (e.key === "Enter" && filtered.length === 1) selectItem(filtered[0])
+                  }}
+                />
+                {query && (
+                  <button
+                    onClick={() => { setQuery(""); setCatalogId(""); setSaved(false); saveCatalogId("") }}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 16, padding: "0 2px", lineHeight: 1 }}
+                    title="Clear"
+                  >×</button>
+                )}
+                {saving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+                {saved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+              </div>
+
+              {/* Dropdown list */}
+              {open && filtered.length > 0 && (
+                <div style={{
+                  position: "absolute", top: "100%", left: 0, right: 0, zIndex: 999,
+                  background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8,
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.12)", maxHeight: 240, overflowY: "auto",
+                  marginTop: 2,
+                }}>
+                  {filtered.slice(0, 50).map(item => {
+                    const label = `${item.medication_name} ${item.medication_strength}`
+                    const sub = `${item.medication_form} · ${item.quantity} ${item.quantity_units} · ${item.days_supply}d`
+                    const isSelected = item.catalog_id === catalogId
+                    return (
+                      <div
+                        key={item.catalog_id}
+                        onMouseDown={() => selectItem(item)}
+                        style={{
+                          padding: "8px 12px", cursor: "pointer", fontSize: 12,
+                          background: isSelected ? "#eff6ff" : "transparent",
+                          borderBottom: "1px solid #f3f4f6",
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "#f9fafb")}
+                        onMouseLeave={e => (e.currentTarget.style.background = isSelected ? "#eff6ff" : "transparent")}
+                      >
+                        <div style={{ fontWeight: 600, color: "#111" }}>{label}</div>
+                        <div style={{ color: "#6b7280", fontSize: 11, marginTop: 1 }}>{sub}</div>
+                      </div>
+                    )
+                  })}
+                  {filtered.length > 50 && (
+                    <div style={{ padding: "6px 12px", fontSize: 11, color: "#9ca3af", textAlign: "center" }}>
+                      {filtered.length - 50} more — keep typing to narrow
+                    </div>
+                  )}
+                </div>
+              )}
+              {open && query.trim() && filtered.length === 0 && (
+                <div style={{
+                  position: "absolute", top: "100%", left: 0, right: 0, zIndex: 999,
+                  background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8,
+                  padding: "10px 12px", fontSize: 12, color: "#9ca3af", marginTop: 2,
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.12)",
+                }}>
+                  No medications found
+                </div>
+              )}
+            </div>
+          )}
+          {/* Instructions field — shown whenever RxVortex column is visible */}
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>
+              Instructions <span style={{ color: "#9ca3af" }}>(dosage appended automatically)</span>
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                style={{ ...s.input, fontSize: 12, padding: "4px 8px", flex: 1 }}
+                value={instructions}
+                placeholder="e.g. Inject subcutaneously once weekly"
+                onChange={e => { setInstructions(e.target.value); setInstrSaved(false) }}
+                onBlur={() => saveInstructions(instructions)}
+                onKeyDown={e => { if (e.key === "Enter") { e.currentTarget.blur() } }}
+              />
+              {instrSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+              {instrSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+            </div>
+          </div>
+        </td>
+      )}
+      <td style={s.td}>
+        <button onClick={onDelete} style={s.btnDanger}>Remove</button>
+      </td>
+    </tr>
+  )
+}
+
 // ── Mappings Tab ───────────────────────────────────────────────────────────
 function MappingsTab({ clinic }: { clinic: Clinic }) {
   const [mappings, setMappings] = useState<Mapping[]>([])
@@ -1116,6 +1335,27 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
   const [products, setProducts] = useState<Product[]>([])
   const [form, setForm] = useState({ product_id: "", treatment_id: 0 })
   const [loadingTreatments, setLoadingTreatments] = useState(false)
+
+  const isRxVortex = clinic.pharmacy_type === "rxvortex"
+
+  // Fetch RxVortex catalog once at the tab level, shared across all rows
+  const [rxCatalog, setRxCatalog] = useState<RxVortexCatalogItem[]>([])
+  const [rxCatalogLoading, setRxCatalogLoading] = useState(false)
+  const [rxCatalogError, setRxCatalogError] = useState("")
+
+  useEffect(() => {
+    if (!isRxVortex) return
+    setRxCatalogLoading(true)
+    setRxCatalogError("")
+    fetch(`/admin/clinics/${clinic.id}/rxvortex-catalog`, { credentials: "include" })
+      .then(r => r.json())
+      .then(data => {
+        if (data.catalog) setRxCatalog(data.catalog)
+        else setRxCatalogError(data.message || "Failed to load catalog")
+      })
+      .catch(() => setRxCatalogError("Network error loading catalog"))
+      .finally(() => setRxCatalogLoading(false))
+  }, [clinic.id, isRxVortex])
 
   useEffect(() => { loadMappings(); loadProducts() }, [clinic.id])
 
@@ -1218,25 +1458,22 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       {mappings.length > 0 && (
         <table style={{ ...s.table, marginBottom: 24 }}>
           <thead>
-            <tr>{["Product", "Treatment", "Eligibility Required", ""].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+            <tr>
+              {["Product", "Treatment", "Eligibility Required", ...(isRxVortex ? ["RxVortex Catalog ID"] : []), ""].map(h => <th key={h} style={s.th}>{h}</th>)}
+            </tr>
           </thead>
           <tbody>
             {mappings.map(m => (
-              <tr key={m.id}>
-                <td style={s.td}>{m.product_title || m.product_id}</td>
-                <td style={s.td}>{m.treatment_name || m.treatment_id}</td>
-                <td style={s.td}>
-                  <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: m.requires_eligibility ? "#dbeafe" : "#f3f4f6", color: m.requires_eligibility ? "#1e40af" : "#6b7280" }}>
-                    {m.requires_eligibility ? "Yes" : "No"}
-                  </span>
-                </td>
-                <td style={s.td}>
-                  <button onClick={async () => {
-                    await fetch(`/admin/clinics/${clinic.id}/product-mappings/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
-                    loadMappings()
-                  }} style={s.btnDanger}>Remove</button>
-                </td>
-              </tr>
+              <MappingRow
+                key={m.id}
+                mapping={m}
+                clinicId={clinic.id}
+                showRxVortex={isRxVortex}
+                catalog={rxCatalog}
+                catalogLoading={rxCatalogLoading}
+                catalogError={rxCatalogError}
+                onDelete={() => { fetch(`/admin/clinics/${clinic.id}/product-mappings/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() }); loadMappings() }}
+              />
             ))}
           </tbody>
         </table>
@@ -1901,16 +2138,42 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
         )}
       </div>
 
-      {/* Certification Image */}
+      {/* Certification Image / Badge Script */}
       <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 12 }}>🏅 Certification / Badge Image</div>
-        <Field label="Image URL (shown below contact info in footer)">
-          <input style={s.input} value={config.certification_image_url} placeholder="https://... (e.g. compounded-in-usa badge)"
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 4 }}>🏅 Certification / Badge</div>
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
+          Enter an image URL (e.g. <code>.png</code>) or a badge script URL ending in <code>.js</code> (e.g. LegitScript seal). The footer will display an image or load the script automatically based on the URL.
+        </div>
+        <Field label="Image URL or badge script URL">
+          <input style={s.input} value={config.certification_image_url}
+            placeholder="https://... (.png image or .js seal script)"
             onChange={e => setConfig(p => ({ ...p, certification_image_url: e.target.value }))} />
         </Field>
-        {config.certification_image_url && (
-          <img src={config.certification_image_url} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
-        )}
+        {(() => {
+          const raw = config.certification_image_url || ""
+          if (!raw) return null
+          const srcMatch = raw.match(/src=["']([^"']+)["']/i)
+          const resolved = srcMatch ? srcMatch[1] : raw.trim()
+          const isHttp = resolved.startsWith("http://")
+          const isScript = resolved.toLowerCase().endsWith(".js")
+          return (
+            <>
+              {isHttp && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#b45309", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 6, padding: "6px 10px" }}>
+                  ⚠️ URL uses <code>http://</code> — on a live HTTPS site this will be blocked by the browser. Change it to <code>https://</code>.
+                </div>
+              )}
+              {isScript && !isHttp && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 6, padding: "6px 10px" }}>
+                  ✓ Badge script — <code style={{ fontSize: 11 }}>{resolved}</code> — will be loaded in the footer automatically.
+                </div>
+              )}
+              {!isScript && !isHttp && (
+                <img src={resolved} alt="Certification badge preview" style={{ marginTop: 8, maxHeight: 80, maxWidth: 160, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 6, padding: 4 }} />
+              )}
+            </>
+          )
+        })()}
       </div>
 
       {renderLinkSection("nav_links", "🔗 Navigation Links")}
@@ -1978,6 +2241,11 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
     pharmacy_ship_type: ca.pharmacy_ship_type || "ship_to_patient",
     pharmacy_ship_rate: ca.pharmacy_ship_rate || "2_day",
     pharmacy_pay_type: ca.pharmacy_pay_type || "patient_pay",
+    // RxVortex (Strive) fields
+    pharmacy_client_id: ca.pharmacy_client_id || "",
+    pharmacy_client_secret: ca.pharmacy_client_secret || "",
+    pharmacy_subdomain: ca.pharmacy_subdomain || "",
+    pharmacy_preset_catalog_id: ca.pharmacy_preset_catalog_id || "",
   })
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState("")
@@ -2009,12 +2277,19 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
       pharmacy_ship_type: c.pharmacy_ship_type || "ship_to_patient",
       pharmacy_ship_rate: c.pharmacy_ship_rate || "2_day",
       pharmacy_pay_type: c.pharmacy_pay_type || "patient_pay",
+      // RxVortex (Strive) fields
+      pharmacy_client_id: c.pharmacy_client_id || "",
+      pharmacy_client_secret: c.pharmacy_client_secret || "",
+      pharmacy_subdomain: c.pharmacy_subdomain || "",
+      pharmacy_preset_catalog_id: c.pharmacy_preset_catalog_id || "",
     })
   }, [clinic.id])
 
   const isRmm = form.pharmacy_type === "rmm"
   const isDigitalRx = form.pharmacy_type === "digitalrx" || form.pharmacy_type === "custom"
+  const isRxVortex = form.pharmacy_type === "rxvortex"
 
+  const RXVORTEX_SANDBOX_URL = "https://sandbox.rxvortex.net"
   const RMM_URLS = {
     sandbox: "https://requestmymeds.net/api/v2/sandbox",
     production: "https://requestmymeds.net/api/v2",
@@ -2026,7 +2301,10 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
       ...p,
       pharmacy_type: newType,
       // Auto-set URL when switching types
-      pharmacy_api_url: newType === "rmm" ? RMM_URLS.sandbox : newType === "digitalrx" ? DIGITALRX_URL : p.pharmacy_api_url,
+      pharmacy_api_url: newType === "rmm" ? RMM_URLS.sandbox
+        : newType === "digitalrx" ? DIGITALRX_URL
+        : newType === "rxvortex" ? RXVORTEX_SANDBOX_URL
+        : p.pharmacy_api_url,
     }))
   }
 
@@ -2059,6 +2337,9 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
           pharmacy_store_id: form.pharmacy_store_id,
           pharmacy_username: form.pharmacy_username,
           pharmacy_password: form.pharmacy_password,
+          pharmacy_client_id: form.pharmacy_client_id,
+          pharmacy_client_secret: form.pharmacy_client_secret,
+          pharmacy_subdomain: form.pharmacy_subdomain,
         }),
       })
       const data = await res.json()
@@ -2103,6 +2384,7 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
         <select style={s.input} value={form.pharmacy_type} onChange={e => handleTypeChange(e.target.value)}>
           <option value="digitalrx">DigitalRX (SmartConnect)</option>
           <option value="rmm">Partell Pharmacy (RequestMyMeds)</option>
+          <option value="rxvortex">Strive Pharmacy (RxVortex)</option>
           <option value="custom">Custom</option>
         </select>
       </Field>
@@ -2113,6 +2395,28 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
           <select style={s.input} value={rmmEnv} onChange={e => setForm(p => ({ ...p, pharmacy_api_url: RMM_URLS[e.target.value as "sandbox" | "production"] }))}>
             <option value="sandbox">Sandbox (Testing)</option>
             <option value="production">Production</option>
+          </select>
+        </Field>
+      )}
+
+      {/* RxVortex environment selector */}
+      {isRxVortex && (
+        <Field label="Environment">
+          <select style={s.input}
+            value={form.pharmacy_api_url?.includes("sandbox") || !form.pharmacy_subdomain ? "sandbox" : "production"}
+            onChange={e => {
+              if (e.target.value === "sandbox") {
+                setForm(p => ({ ...p, pharmacy_api_url: RXVORTEX_SANDBOX_URL }))
+              } else {
+                // Production: use subdomain-based URL
+                const url = form.pharmacy_subdomain
+                  ? `https://${form.pharmacy_subdomain.trim()}.rxvortex.net`
+                  : ""
+                setForm(p => ({ ...p, pharmacy_api_url: url }))
+              }
+            }}>
+            <option value="sandbox">Sandbox (Testing)</option>
+            <option value="production">Production (uses your subdomain)</option>
           </select>
         </Field>
       )}
@@ -2135,6 +2439,52 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
         <Field label="Vendor Name">
           <input style={s.input} value={form.pharmacy_vendor_name} onChange={e => setForm(p => ({ ...p, pharmacy_vendor_name: e.target.value }))} placeholder="Your company name" />
         </Field>
+      </>)}
+
+      {/* RxVortex (Strive) fields */}
+      {isRxVortex && (<>
+        <div style={{ padding: "10px 14px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, fontSize: 12, color: "#1e40af", marginBottom: 4 }}>
+          ℹ️ Credentials are provided by Strive / RxVortex support. Contact <strong>support@rxvortex.net</strong> to obtain your <code>client_id</code> and <code>client_secret</code>.
+        </div>
+        <div style={s.grid2}>
+          <Field label="Client ID">
+            <input style={s.input} value={form.pharmacy_client_id} onChange={e => setForm(p => ({ ...p, pharmacy_client_id: e.target.value }))} placeholder="Your RxVortex client_id" />
+          </Field>
+          <Field label="Client Secret">
+            <input style={s.input} type="password" value={form.pharmacy_client_secret} onChange={e => setForm(p => ({ ...p, pharmacy_client_secret: e.target.value }))} placeholder="Your RxVortex client_secret" />
+          </Field>
+        </div>
+        <Field label="Organization Subdomain (production only)">
+          <input style={s.input} value={form.pharmacy_subdomain} onChange={e => setForm(p => ({ ...p, pharmacy_subdomain: e.target.value }))} placeholder="e.g. myclinic  →  myclinic.rxvortex.net" />
+          <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>Leave blank when using Sandbox. Provided by Strive.</div>
+        </Field>
+        <Field label="Preset Catalog ID (Medication)">
+          <input style={s.input} value={form.pharmacy_preset_catalog_id} onChange={e => setForm(p => ({ ...p, pharmacy_preset_catalog_id: e.target.value }))} placeholder="e.g. CAT-001" />
+          <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 3 }}>
+            Provided by Strive for your specific compound. See{" "}
+            <a href="https://docs.rxvortex.net/guides/preset-catalog/" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>Preset Catalog docs</a>.
+          </div>
+        </Field>
+        <div style={s.grid2}>
+          <Field label="Pay Type">
+            <select style={s.input} value={form.pharmacy_pay_type} onChange={e => setForm(p => ({ ...p, pharmacy_pay_type: e.target.value }))}>
+              <option value="patient_pay">Patient Pay</option>
+              <option value="clinic_pay">Clinic Pay</option>
+            </select>
+          </Field>
+          <Field label="Ship To">
+            <select style={s.input} value={form.pharmacy_ship_type} onChange={e => setForm(p => ({ ...p, pharmacy_ship_type: e.target.value }))}>
+              <option value="ship_to_patient">Ship to Patient</option>
+              <option value="ship_to_clinic">Ship to Clinic</option>
+            </select>
+          </Field>
+        </div>
+        <div style={{ padding: "10px 14px", background: "#fefce8", border: "1px solid #fde047", borderRadius: 8, fontSize: 12, color: "#713f12" }}>
+          ⚡ RxVortex uses <strong>webhooks</strong> for real-time status updates (no polling). Configure your webhook URL in the RxVortex/Strive portal as:<br />
+          <code style={{ fontFamily: "monospace", fontSize: 11, background: "#fef9c3", padding: "2px 6px", borderRadius: 4 }}>
+            https://yourdomain.com/store/webhooks/rxvortex
+          </code>
+        </div>
       </>)}
 
       {/* RMM fields */}
@@ -2187,10 +2537,12 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
           <Field label="NPI (10 digits)">
             <input style={s.input} value={form.pharmacy_doctor_npi} onChange={e => setForm(p => ({ ...p, pharmacy_doctor_npi: e.target.value }))} placeholder="1234567890" />
           </Field>
-          {isRmm && (<>
-            <Field label="Prescriber ID (max 10 chars)">
-              <input style={s.input} value={form.pharmacy_prescriber_id} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_id: e.target.value.slice(0, 10) }))} placeholder="e.g. DOC001" />
-            </Field>
+          {(isRmm || isRxVortex) && (<>
+            {isRmm && (
+              <Field label="Prescriber ID (max 10 chars)">
+                <input style={s.input} value={form.pharmacy_prescriber_id} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_id: e.target.value.slice(0, 10) }))} placeholder="e.g. DOC001" />
+              </Field>
+            )}
             <Field label="DEA Number">
               <input style={s.input} value={form.pharmacy_prescriber_dea} onChange={e => setForm(p => ({ ...p, pharmacy_prescriber_dea: e.target.value }))} placeholder="AB1234567" />
             </Field>
@@ -2220,7 +2572,7 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
       )}
 
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <button onClick={testConnection} disabled={testing || (!form.pharmacy_api_key && !form.pharmacy_username)} style={{ ...s.btnOutline, opacity: ((!form.pharmacy_api_key && !form.pharmacy_username) || testing) ? 0.5 : 1 }}>
+        <button onClick={testConnection} disabled={testing || (!form.pharmacy_api_key && !form.pharmacy_username && !form.pharmacy_client_id)} style={{ ...s.btnOutline, opacity: ((!form.pharmacy_api_key && !form.pharmacy_username && !form.pharmacy_client_id) || testing) ? 0.5 : 1 }}>
           {testing ? "Testing..." : "Test Connection"}
         </button>
         <SaveBar saving={saving} status={status} onSave={save} inline />

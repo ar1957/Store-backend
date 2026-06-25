@@ -12,7 +12,17 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     // Use raw SQL to get ALL columns including pharmacy fields not in the ORM model
     const clinicResult = await pg.raw(`SELECT * FROM clinic WHERE id = ? LIMIT 1`, [req.params.id])
     if (!clinicResult.rows.length) return res.status(404).json({ message: "Clinic not found" })
-    const clinic = clinicResult.rows[0]
+    const raw = clinicResult.rows[0]
+    // Mask sensitive secrets so they don't leak in plaintext to the browser
+    const clinic = {
+      ...raw,
+      api_client_secret: raw.api_client_secret
+        ? "••••••••" + raw.api_client_secret.slice(-4)
+        : null,
+      pharmacy_client_secret: raw.pharmacy_client_secret
+        ? "••••••••" + raw.pharmacy_client_secret.slice(-4)
+        : null,
+    }
 
     const tenantDomain = clinic.domains?.[0] || clinic.slug
     const uiResult = await pg.raw(
@@ -39,6 +49,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     if (body.api_client_secret?.startsWith("••••")) {
       delete body.api_client_secret
     }
+    if (body.pharmacy_client_secret?.startsWith("••••")) {
+      delete body.pharmacy_client_secret
+    }
 
     // 1. Handle Clinic Core Table Update
     const ALLOWED = [
@@ -59,6 +72,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       "pharmacy_prescriber_address", "pharmacy_prescriber_city", "pharmacy_prescriber_state",
       "pharmacy_prescriber_zip", "pharmacy_prescriber_phone", "pharmacy_prescriber_dea",
       "pharmacy_ship_type", "pharmacy_ship_rate", "pharmacy_pay_type",
+      "pharmacy_client_id", "pharmacy_client_secret", "pharmacy_subdomain", "pharmacy_preset_catalog_id",
       "is_translation_allowed",
     ]
 

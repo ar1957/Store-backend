@@ -13,6 +13,9 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       api_client_secret: c.api_client_secret
         ? "••••••••" + c.api_client_secret.slice(-4)
         : null,
+      pharmacy_client_secret: c.pharmacy_client_secret
+        ? "••••••••" + c.pharmacy_client_secret.slice(-4)
+        : null,
     }))
     return res.json({ clinics: masked })
   } catch (err: unknown) {

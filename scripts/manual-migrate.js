@@ -428,6 +428,30 @@ const steps = [
     `,
   },
   {
+    name: "Migration17 - RxVortex (Strive) pharmacy fields on clinic",
+    sql: `
+      ALTER TABLE "clinic"
+        ADD COLUMN IF NOT EXISTS "pharmacy_client_id"         VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "pharmacy_client_secret"     VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS "pharmacy_subdomain"         VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS "pharmacy_preset_catalog_id" VARCHAR(255);
+    `,
+  },
+  {
+    name: "Migration18 - rxvortex_preset_catalog_id on product_treatment_map",
+    sql: `
+      ALTER TABLE "product_treatment_map"
+        ADD COLUMN IF NOT EXISTS "rxvortex_preset_catalog_id" VARCHAR(255);
+    `,
+  },
+  {
+    name: "Migration19 - rxvortex_instructions on product_treatment_map",
+    sql: `
+      ALTER TABLE "product_treatment_map"
+        ADD COLUMN IF NOT EXISTS "rxvortex_instructions" TEXT;
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -445,7 +469,10 @@ const steps = [
       ('Migration20240101000013'),
       ('Migration20240101000014'),
       ('Migration20240101000015'),
-      ('Migration20240101000016')
+      ('Migration20240101000016'),
+      ('Migration20240101000017'),
+      ('Migration20240101000018'),
+      ('Migration20240101000019')
       ON CONFLICT DO NOTHING`,
   },
 ]
