@@ -1,6 +1,7 @@
 /**
  * POST /admin/clinics/:id/test-pharmacy
  * Tests the pharmacy API connection from the backend (avoids CORS).
+ * Supports DigitalRX, RMM, and RxVortex (Strive) pharmacy types.
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 
