@@ -80,6 +80,10 @@ export default async function pharmacyPollJob(container: MedusaContainer) {
       try {
         if (order.pharmacy_type === "rmm") {
           await pollRmm(pg, logger, order)
+        } else if (order.pharmacy_type === "rxvortex") {
+          // RxVortex is webhook-driven — Strive pushes status updates to our webhook endpoint.
+          // We skip active polling here; the webhook handler updates order_workflow directly.
+          logger.info(`[PharmacyPoll][RxVortex] Order ${order.order_id} — status managed via webhook, skipping poll.`)
         } else {
           await pollDigitalRx(pg, logger, order)
         }

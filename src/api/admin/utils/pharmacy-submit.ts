@@ -1,5 +1,6 @@
 import { normalizePhone } from "./normalize-phone"
 import { submitToRmm } from "./pharmacy-submit-rmm"
+import { submitToRxVortex } from "./pharmacy-submit-rxvortex"
 
 /**
  * Shared pharmacy submission helper.
@@ -22,7 +23,8 @@ export async function submitToPharmacyIfEnabled(
               pharmacy_username, pharmacy_password,
               pharmacy_prescriber_id, pharmacy_prescriber_address, pharmacy_prescriber_city,
               pharmacy_prescriber_state, pharmacy_prescriber_zip, pharmacy_prescriber_phone,
-              pharmacy_prescriber_dea, pharmacy_ship_type, pharmacy_ship_rate, pharmacy_pay_type
+              pharmacy_prescriber_dea, pharmacy_ship_type, pharmacy_ship_rate, pharmacy_pay_type,
+              pharmacy_client_id, pharmacy_client_secret, pharmacy_subdomain, pharmacy_preset_catalog_id
        FROM clinic WHERE id = ? LIMIT 1`,
       [clinicId]
     )
@@ -32,10 +34,12 @@ export async function submitToPharmacyIfEnabled(
     if (!clinic?.pharmacy_enabled) return
 
     const isRmm = clinic.pharmacy_type === "rmm"
+    const isRxVortex = clinic.pharmacy_type === "rxvortex"
 
     // Gate: must have credentials for the configured type
     if (isRmm && (!clinic.pharmacy_username || !clinic.pharmacy_password)) return
-    if (!isRmm && (!clinic.pharmacy_api_key || !clinic.pharmacy_store_id)) return
+    if (isRxVortex && (!clinic.pharmacy_client_id || !clinic.pharmacy_client_secret)) return
+    if (!isRmm && !isRxVortex && (!clinic.pharmacy_api_key || !clinic.pharmacy_store_id)) return
 
     // Check not already submitted
     const wfCheck = await pg.raw(`SELECT pharmacy_queue_id FROM order_workflow WHERE id = ? LIMIT 1`, [workflowId])
@@ -81,6 +85,12 @@ export async function submitToPharmacyIfEnabled(
     // ── RMM path ──────────────────────────────────────────────────────────────
     if (isRmm) {
       await submitToRmm(pg, clinic, order, workflowId, drugName, rxNumber, treatmentDosages)
+      return
+    }
+
+    // ── RxVortex (Strive) path ────────────────────────────────────────────────
+    if (isRxVortex) {
+      await submitToRxVortex(pg, clinic, order, workflowId, drugName, rxNumber, treatmentDosages)
       return
     }
 

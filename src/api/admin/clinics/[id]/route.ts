@@ -39,6 +39,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     if (body.api_client_secret?.startsWith("••••")) {
       delete body.api_client_secret
     }
+    if (body.pharmacy_client_secret?.startsWith("••••")) {
+      delete body.pharmacy_client_secret
+    }
 
     // 1. Handle Clinic Core Table Update
     const ALLOWED = [
@@ -59,6 +62,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       "pharmacy_prescriber_address", "pharmacy_prescriber_city", "pharmacy_prescriber_state",
       "pharmacy_prescriber_zip", "pharmacy_prescriber_phone", "pharmacy_prescriber_dea",
       "pharmacy_ship_type", "pharmacy_ship_rate", "pharmacy_pay_type",
+      "pharmacy_client_id", "pharmacy_client_secret", "pharmacy_subdomain", "pharmacy_preset_catalog_id",
       "is_translation_allowed",
     ]
 
