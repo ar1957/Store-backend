@@ -29,7 +29,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     // Resolve base URL (same logic as submission handler)
     let baseUrl = (clinic.pharmacy_api_url || "").trim().replace(/\/$/, "")
     if (!baseUrl && clinic.pharmacy_subdomain?.trim()) {
-      baseUrl = `https://${clinic.pharmacy_subdomain.trim()}.rxvortex.net`
+      const sub = clinic.pharmacy_subdomain.trim()
+      baseUrl = sub.includes(".")
+        ? `https://${sub}`
+        : `https://${sub}.rxvortex.net`
     }
     if (!baseUrl) baseUrl = "https://sandbox.rxvortex.net"
 
