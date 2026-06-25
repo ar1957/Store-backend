@@ -45,7 +45,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
               publishable_api_key, stripe_publishable_key,
               payment_provider, paypal_client_id, paypal_mode,
               authorizenet_api_login_id, authorizenet_public_client_key, authorizenet_mode,
-              is_translation_allowed
+              is_translation_allowed,
+              pharmacy_enabled, pharmacy_type
        FROM clinic
        WHERE ($1 = ANY(domains) OR $2 = ANY(domains))
          AND deleted_at IS NULL
@@ -97,6 +98,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         authorizenet_public_client_key: clinic.authorizenet_public_client_key || "",
         authorizenet_mode: clinic.authorizenet_mode || "sandbox",
         is_translation_allowed: clinic.is_translation_allowed === true || clinic.is_translation_allowed === 1,
+        pharmacy_requires_phone: !!(clinic.pharmacy_enabled && clinic.pharmacy_type === "rxvortex"),
       }
     }
 

@@ -40,8 +40,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       FROM order_workflow
       WHERE status = 'pending_provider'
         AND gfe_id IS NOT NULL
-      ORDER BY created_at ASC
-      LIMIT 100
+      ORDER BY created_at DESC
     `)
 
     const pending = result.rows
@@ -55,19 +54,35 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         const clinic = await clinicSvc.getClinicByDomain(row.tenant_domain)
         if (!clinic) continue
 
-        const token = await clinicSvc.getToken(clinic.id)
+        if (!clinic.api_client_id || !clinic.api_client_secret) continue
+
         const baseUrl = clinic.api_env === "prod"
           ? clinic.api_base_url_prod
           : clinic.api_base_url_test
+
+        if (!baseUrl || /localhost|\.local(:\d+)?$/.test(baseUrl)) continue
+
+        let token: string
+        try {
+          token = await clinicSvc.getToken(clinic.id)
+        } catch (authErr: any) {
+          errors.push(`gfe_id=${row.gfe_id}: auth failed — ${authErr.message}`)
+          continue
+        }
 
         const gfeRes = await fetch(`${baseUrl}/gfe/status/${row.gfe_id}`, {
           headers: { "Authorization": `Bearer ${token}` },
         })
 
-        if (!gfeRes.ok) continue
+        if (!gfeRes.ok) {
+          errors.push(`gfe_id=${row.gfe_id}: GFE fetch failed — HTTP ${gfeRes.status}`)
+          continue
+        }
 
         const gfeData = await gfeRes.json()
         const payload = gfeData?.payload
+
+        console.log(`[gfe-poll] gfe_id=${row.gfe_id} raw response:`, JSON.stringify(gfeData))
 
         // Array = still pending
         if (Array.isArray(payload)) continue
@@ -77,6 +92,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         const providerName = payload?.providerName || null
         const outcome = determineTreatmentOutcome(treatments)
         const dosages = extractDosages(treatments)
+
+        console.log(`[gfe-poll] gfe_id=${row.gfe_id} providerStatus="${providerStatus}" outcome="${outcome}" treatments=${treatments.length}`)
 
         if (providerStatus === "completed") {
           if (outcome === "approved") {

@@ -227,7 +227,7 @@ export default async function orderPlacedHandler({
           (id, order_id, tenant_domain, gfe_id, patient_id, room_no,
            virtual_room_url, status, location_id, location_name, created_at, updated_at)
         VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'pending_pharmacy', ?, ?, NOW(), NOW())
-        ON CONFLICT (gfe_id) DO NOTHING
+        ON CONFLICT (order_id) DO NOTHING
       `, [workflowId, orderId, domain, locationIdNoTreatment, locationNameNoTreatment])
 
       const updatedMetadata = {

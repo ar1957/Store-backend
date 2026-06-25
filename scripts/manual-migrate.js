@@ -445,6 +445,13 @@ const steps = [
     `,
   },
   {
+    name: "Migration19 - rxvortex_instructions on product_treatment_map",
+    sql: `
+      ALTER TABLE "product_treatment_map"
+        ADD COLUMN IF NOT EXISTS "rxvortex_instructions" TEXT;
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -464,7 +471,8 @@ const steps = [
       ('Migration20240101000015'),
       ('Migration20240101000016'),
       ('Migration20240101000017'),
-      ('Migration20240101000018')
+      ('Migration20240101000018'),
+      ('Migration20240101000019')
       ON CONFLICT DO NOTHING`,
   },
 ]
