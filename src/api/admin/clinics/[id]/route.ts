@@ -12,7 +12,17 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     // Use raw SQL to get ALL columns including pharmacy fields not in the ORM model
     const clinicResult = await pg.raw(`SELECT * FROM clinic WHERE id = ? LIMIT 1`, [req.params.id])
     if (!clinicResult.rows.length) return res.status(404).json({ message: "Clinic not found" })
-    const clinic = clinicResult.rows[0]
+    const raw = clinicResult.rows[0]
+    // Mask sensitive secrets so they don't leak in plaintext to the browser
+    const clinic = {
+      ...raw,
+      api_client_secret: raw.api_client_secret
+        ? "••••••••" + raw.api_client_secret.slice(-4)
+        : null,
+      pharmacy_client_secret: raw.pharmacy_client_secret
+        ? "••••••••" + raw.pharmacy_client_secret.slice(-4)
+        : null,
+    }
 
     const tenantDomain = clinic.domains?.[0] || clinic.slug
     const uiResult = await pg.raw(
