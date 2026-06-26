@@ -1,6 +1,7 @@
 /**
  * POST /admin/clinics/:id/test-pharmacy
  * Tests the pharmacy API connection from the backend (avoids CORS).
+ * Supports DigitalRX, RMM, and RxVortex (Strive) pharmacy types.
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 
@@ -45,12 +46,19 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       const resolvedClientId = dbClinic?.pharmacy_client_id || pharmacy_client_id
       const resolvedSecret   = dbClinic?.pharmacy_client_secret || pharmacy_client_secret
 
-      // Resolve URL: DB value → form value → subdomain → sandbox default
+      // Resolve URL: form value → DB value → subdomain → sandbox default.
+      // Form value (baseUrl) is preferred so that a newly-entered production URL
+      // is tested immediately without needing a save first.  The secret still
+      // comes from the DB to avoid the masked-value problem.
       const dbUrl = (dbClinic?.pharmacy_api_url || "").trim().replace(/\/$/, "")
-      const resolvedUrl = dbUrl
-        || baseUrl
-        || (dbClinic?.pharmacy_subdomain?.trim() ? `https://${dbClinic.pharmacy_subdomain.trim()}.rxvortex.net` : "")
-        || (pharmacy_subdomain?.trim() ? `https://${pharmacy_subdomain.trim()}.rxvortex.net` : "")
+      const subdomainUrl = (pharmacy_subdomain?.trim() && !pharmacy_subdomain.includes("."))
+        ? `https://${pharmacy_subdomain.trim()}.rxvortex.net`
+        : (dbClinic?.pharmacy_subdomain?.trim() && !dbClinic.pharmacy_subdomain.includes("."))
+          ? `https://${dbClinic.pharmacy_subdomain.trim()}.rxvortex.net`
+          : ""
+      const resolvedUrl = baseUrl
+        || dbUrl
+        || subdomainUrl
         || "https://sandbox.rxvortex.net"
 
       if (!resolvedClientId || !resolvedSecret) {

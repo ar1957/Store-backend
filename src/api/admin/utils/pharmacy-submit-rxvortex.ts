@@ -41,7 +41,10 @@ function resolveBaseUrl(clinic: RxVortexClinic): string {
     return clinic.pharmacy_api_url.trim().replace(/\/$/, "")
   }
   if (clinic.pharmacy_subdomain?.trim()) {
-    return `https://${clinic.pharmacy_subdomain.trim()}.rxvortex.net`
+    const sub = clinic.pharmacy_subdomain.trim()
+    // If the stored value is already a full domain (contains a dot), use it directly
+    if (sub.includes(".")) return `https://${sub}`.replace(/\/$/, "")
+    return `https://${sub}.rxvortex.net`
   }
   return "https://sandbox.rxvortex.net"
 }

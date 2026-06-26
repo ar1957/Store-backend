@@ -2325,6 +2325,7 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
 
   const testConnection = async () => {
     setTesting(true); setTestResult(null)
+    await save()  // persist current form values so DB secret matches what we're testing
     try {
       const res = await fetch(`/admin/clinics/${clinic.id}/test-pharmacy`, {
         method: "POST",
