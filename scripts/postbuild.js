@@ -137,11 +137,53 @@ async function safeJson(res) {
 }
 async function POST(req, res) {
   try {
-    const { pharmacy_type, pharmacy_api_url, pharmacy_api_key,
-            pharmacy_store_id, pharmacy_username, pharmacy_password } = req.body || {};
+    const {
+      pharmacy_type, pharmacy_api_url, pharmacy_api_key,
+      pharmacy_store_id, pharmacy_username, pharmacy_password,
+      pharmacy_client_id, pharmacy_client_secret, pharmacy_subdomain,
+    } = req.body || {};
     const baseUrl = (pharmacy_api_url || "").replace(/\\/$/, "");
-    if (!baseUrl) return res.status(400).json({ success: false, message: "No pharmacy API URL configured" });
+    if (pharmacy_type === "rxvortex") {
+      const pg = req.scope.resolve("__pg_connection__");
+      const clinicResult = await pg.raw(
+        "SELECT pharmacy_client_id, pharmacy_client_secret, pharmacy_api_url, pharmacy_subdomain FROM clinic WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+        [req.params.id]
+      );
+      const dbClinic = clinicResult.rows[0];
+      const resolvedClientId = (dbClinic && dbClinic.pharmacy_client_id) || pharmacy_client_id;
+      const resolvedSecret = (dbClinic && dbClinic.pharmacy_client_secret) || pharmacy_client_secret;
+      const dbUrl = ((dbClinic && dbClinic.pharmacy_api_url) || "").trim().replace(/\\/$/, "");
+      const formSub = (pharmacy_subdomain || "").trim();
+      const dbSub = ((dbClinic && dbClinic.pharmacy_subdomain) || "").trim();
+      const subdomainUrl = (formSub && !formSub.includes("."))
+        ? "https://" + formSub + ".rxvortex.net"
+        : (dbSub && !dbSub.includes("."))
+          ? "https://" + dbSub + ".rxvortex.net"
+          : "";
+      const resolvedUrl = baseUrl || dbUrl || subdomainUrl || "https://sandbox.rxvortex.net";
+      if (!resolvedClientId || !resolvedSecret) {
+        return res.status(400).json({ success: false, message: "client_id and client_secret are required for RxVortex" });
+      }
+      const authUrl = resolvedUrl + "/api/v1/generate-access-token";
+      console.log("[TestPharmacy] RxVortex auth URL: " + authUrl);
+      const authRes = await fetch(authUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: resolvedClientId, client_secret: resolvedSecret }),
+      });
+      const { ok: isJson, data, raw } = await safeJson(authRes);
+      console.log("[TestPharmacy] RxVortex response status=" + authRes.status + " isJson=" + isJson + " body=" + raw);
+      if (!isJson) {
+        return res.status(400).json({ success: false, message: "RxVortex API returned non-JSON (HTTP " + authRes.status + "). Response: " + raw });
+      }
+      if (authRes.ok && data && data.access_token && !data.error) {
+        return res.json({ success: true, message: "Authentication successful \\u2014 " + (data.msg || "access token obtained") });
+      }
+      const errMsg = (data && data.msg) || (data && data.message) || (data && data.error === true ? "Invalid credentials" : "Auth failed (HTTP " + authRes.status + ")");
+      return res.status(400).json({ success: false, message: errMsg });
+    }
     if (pharmacy_type === "rmm") {
+      if (!baseUrl) return res.status(400).json({ success: false, message: "No pharmacy API URL configured" });
       const authUrl = baseUrl + "/getJWTkey";
       console.log("[TestPharmacy] RMM auth URL: " + authUrl);
       const authRes = await fetch(authUrl, {
@@ -150,18 +192,24 @@ async function POST(req, res) {
         body: JSON.stringify({ username: pharmacy_username, password: pharmacy_password }),
       });
       const { ok: isJson, data, raw } = await safeJson(authRes);
-      console.log("[TestPharmacy] status=" + authRes.status + " isJson=" + isJson + " body=" + raw);
-      if (!isJson) return res.status(400).json({ success: false, message: "RMM API returned non-JSON (HTTP " + authRes.status + "). Response: " + raw });
+      console.log("[TestPharmacy] RMM response status=" + authRes.status + " isJson=" + isJson + " body=" + raw);
+      if (!isJson) return res.status(400).json({ success: false, message: "RMM API returned non-JSON (HTTP " + authRes.status + "). Check the API URL. Response: " + raw });
       if (authRes.ok && data && data.token) return res.json({ success: true, message: "Authentication successful" });
       return res.status(400).json({ success: false, message: (data && (data.error || data.message)) || ("Auth failed (HTTP " + authRes.status + ")") });
-    } else {
-      const testRes = await fetch(baseUrl + "/RxRequestStatus", {
-        method: "POST",
-        headers: { "Authorization": pharmacy_api_key, "Content-Type": "application/json" },
-        body: JSON.stringify({ StoreID: pharmacy_store_id, QueueID: "test" }),
-      });
-      return res.json({ success: testRes.status < 500, message: "Connection status: " + testRes.status });
     }
+    if (!baseUrl) return res.status(400).json({ success: false, message: "No pharmacy API URL configured" });
+    const testRes = await fetch(baseUrl + "/RxRequestStatus", {
+      method: "POST",
+      headers: { "Authorization": pharmacy_api_key, "Content-Type": "application/json" },
+      body: JSON.stringify({ StoreID: pharmacy_store_id, QueueID: "test" }),
+    });
+    const success = testRes.status < 400;
+    return res.json({
+      success,
+      message: success
+        ? "Connection successful (HTTP " + testRes.status + ")"
+        : "Connection failed (HTTP " + testRes.status + ") \\u2014 check your API URL and credentials",
+    });
   } catch (err) {
     console.error("[TestPharmacy] Error:", err.message);
     return res.status(500).json({ success: false, message: err.message });
