@@ -55,6 +55,35 @@ export default async function orderPlacedHandler({
     }
 
     const order = orderResult.rows[0]
+
+    // Guard: only proceed if the order has a real captured payment or is genuinely zero-total.
+    // pp_system_default auto-authorizes without charging, so an uncaptured non-zero payment
+    // means the customer bypassed the payment step entirely.
+    const paymentCheck = await pgConnection.raw(`
+      SELECT
+        COALESCE(pc.amount, 0) AS collection_amount,
+        COALESCE((
+          SELECT SUM(ca.amount)
+          FROM payment p
+          JOIN capture ca ON ca.payment_id = p.id
+          WHERE p.payment_collection_id = pc.id
+        ), 0) AS total_captured
+      FROM order_payment_collection opc
+      JOIN payment_collection pc ON pc.id = opc.payment_collection_id
+      WHERE opc.order_id = ?
+      LIMIT 1
+    `, [orderId])
+
+    const pcRow = paymentCheck.rows[0]
+    const collectionAmount = Number(pcRow?.collection_amount ?? 1)
+    const totalCaptured = Number(pcRow?.total_captured ?? 0)
+    const isPaid = totalCaptured > 0 || collectionAmount === 0
+
+    if (!isPaid) {
+      logger.warn(`[OrderPlaced] Order ${orderId} skipped — no captured payment (captured: ${totalCaptured}, collection total: ${collectionAmount}). Order was likely created without completing payment.`)
+      return
+    }
+
     const metadata = order.metadata || {}
     const eligibility = metadata.eligibility
 
