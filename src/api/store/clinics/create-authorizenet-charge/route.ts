@@ -144,10 +144,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     }
 
     const session = sessionResult.rows[0]
-    // Use the actual charged amount (from request, = cart.total post-discount), NOT the stale
-    // session.amount which was captured before any promo code was applied.
-    const rawAmount = JSON.stringify({ value: String(amount), precision: 20 })
-    const intentData = { id: transactionId, status: "approved", amount, currency, provider: "authorizenet", last4, accountType }
+    // `amount` from the frontend is in cents (cart.total * 100).
+    // Medusa stores payment amounts in dollars (same unit the admin displays directly).
+    // Divide by 100 here so the admin shows the correct dollar figure.
+    const amountDollars = amount / 100
+    const rawAmount = JSON.stringify({ value: String(amountDollars), precision: 20 })
+    const intentData = { id: transactionId, status: "approved", amount: amountDollars, currency, provider: "authorizenet", last4, accountType }
 
     const existingPayment = await pg.raw(
       `SELECT id FROM payment WHERE payment_session_id = ? LIMIT 1`,
@@ -163,28 +165,28 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     // session may have been created before a promo code was applied, leaving a stale amount.
     await pg.raw(
       `UPDATE payment_session SET amount = ?, raw_amount = ?::jsonb, status = 'authorized', authorized_at = NOW(), updated_at = NOW() WHERE id = ?`,
-      [amount, rawAmount, session.id]
+      [amountDollars, rawAmount, session.id]
     )
 
     const paymentId = generateEntityId("", "pay")
     await pg.raw(`
       INSERT INTO payment (id, amount, raw_amount, currency_code, provider_id, payment_collection_id, payment_session_id, data, captured_at, created_at, updated_at)
       VALUES (?, ?, ?::jsonb, ?, ?, ?, ?, ?::jsonb, NOW(), NOW(), NOW())
-    `, [paymentId, amount, rawAmount, session.currency_code, session.provider_id,
+    `, [paymentId, amountDollars, rawAmount, session.currency_code, session.provider_id,
         session.payment_collection_id, session.id, JSON.stringify(intentData)])
 
     const captureId = generateEntityId("", "capt")
     await pg.raw(`
       INSERT INTO capture (id, amount, raw_amount, payment_id, created_at, updated_at)
       VALUES (?, ?, ?::jsonb, ?, NOW(), NOW())
-    `, [captureId, amount, rawAmount, paymentId])
+    `, [captureId, amountDollars, rawAmount, paymentId])
 
     await pg.raw(`
       UPDATE payment_collection
       SET status = 'completed', authorized_amount = ?, raw_authorized_amount = ?::jsonb,
           captured_amount = ?, raw_captured_amount = ?::jsonb, updated_at = NOW()
       WHERE id = ?
-    `, [amount, rawAmount, amount, rawAmount, session.payment_collection_id])
+    `, [amountDollars, rawAmount, amountDollars, rawAmount, session.payment_collection_id])
 
     console.log(`[create-authorizenet-charge] Payment recorded: ${paymentId}`)
 
