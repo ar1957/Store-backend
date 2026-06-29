@@ -54,6 +54,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const transactionId: string = paymentData?.id || ""
     const isPaypal = payment.provider_id?.startsWith("pp_paypal") || paymentData?.provider === "paypal"
     const isAuthorizenet = !isPaypal && (paymentData?.provider === "authorizenet" || (!!transactionId && !transactionId.startsWith("pi_")))
+    // pp_system_default bypasses all gateways — no real charge exists to refund
+    const isNoGateway = !isPaypal && !isAuthorizenet && (
+      payment.provider_id === "pp_system_default" || (!transactionId && !paymentData?.provider)
+    )
 
     // ── 3. Get clinic credentials ────────────────────────────────────────
     const clinicResult = await pg.raw(
@@ -152,7 +156,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         ? "https://apitest.authorize.net/xml/v1/request.api"
         : "https://api.authorize.net/xml/v1/request.api"
 
-      const amountDollars = (payment.amount / 100).toFixed(2)
+      // amountUnit:"dollars" is stamped on payments created after the dollars-storage fix.
+      // Older payments stored amount in cents, so divide by 100.
+      const amountDollars = paymentData?.amountUnit === "dollars"
+        ? payment.amount.toFixed(2)
+        : (payment.amount / 100).toFixed(2)
       const last4 = paymentData?.last4 || "0000"
 
       // Try void first (works if transaction not yet settled), then refund
@@ -217,8 +225,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         gatewayLabel = `Authorize.net refund: ${gatewayRefundId}`
         console.log(`[Refund] Authorize.net refund successful: ${gatewayRefundId}`)
       }
+    } else if (isNoGateway) {
+      // ── 4c. No gateway charge (pp_system_default) ────────────────────────
+      // Payment was auto-authorized without going through a real gateway — nothing to refund externally.
+      gatewayRefundId = `internal_${Date.now()}`
+      gatewayLabel = "Internal (no gateway charge)"
+      console.log(`[Refund] Order ${orderId} — no gateway charge on file, recording internal refund only`)
+
     } else {
-      // ── 4b. Stripe refund ───────────────────────────────────────────────
+      // ── 4d. Stripe refund ───────────────────────────────────────────────
       if (!clinic?.stripe_secret_key) {
         return res.status(400).json({ message: "Stripe not configured for this clinic" })
       }
