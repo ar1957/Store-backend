@@ -149,7 +149,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     // Divide by 100 here so the admin shows the correct dollar figure.
     const amountDollars = amount / 100
     const rawAmount = JSON.stringify({ value: String(amountDollars), precision: 20 })
-    const intentData = { id: transactionId, status: "approved", amount: amountDollars, currency, provider: "authorizenet", last4, accountType }
+    const intentData = { id: transactionId, status: "approved", amount: amountDollars, amountUnit: "dollars", currency, provider: "authorizenet", last4, accountType }
 
     const existingPayment = await pg.raw(
       `SELECT id FROM payment WHERE payment_session_id = ? LIMIT 1`,
