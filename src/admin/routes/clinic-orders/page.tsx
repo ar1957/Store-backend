@@ -35,6 +35,7 @@ interface OrderWorkflow {
   shipped_at: string | null
   tracking_number: string | null
   carrier: string | null
+  location_name: string | null
 }
 
 interface PayoutInfo {
@@ -864,7 +865,7 @@ export default function ClinicOrdersPage() {
                     "Order", "Date", "Patient", "Clinic", "State",
                     "Medication & Dosage", "GFE Status", "Workflow Status",
                     "Ship Date", "Tracking #", "Amount",
-                    "Pharmacy Payout",
+                    "Pharmacy Payout", "Referred By",
                   ].map((h) => (
                     <th key={h} style={{
                       padding: "10px 16px",
@@ -996,6 +997,11 @@ export default function ClinicOrdersPage() {
                       {/* Pharmacy Payout */}
                       <td style={{ padding: "14px 16px", whiteSpace: "nowrap" }}>
                         <PayoutCell info={order.payout?.pharmacy ?? null} />
+                      </td>
+
+                      {/* Referred By */}
+                      <td style={{ padding: "14px 16px", whiteSpace: "nowrap", color: "#6B7280" }}>
+                        {order.workflow?.location_name ?? "—"}
                       </td>
                     </tr>
                   )
