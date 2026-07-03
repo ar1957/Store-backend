@@ -165,6 +165,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
         wf.shipped_at,
         wf.tracking_number,
         wf.carrier,
+        wf.location_name,
         vl_agg.clinic_payout_status,
         vl_agg.clinic_payout_amount,
         vp_c.reference_number AS clinic_payout_ref,
@@ -256,6 +257,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
           shipped_at: row.shipped_at,
           tracking_number: row.tracking_number,
           carrier: row.carrier,
+          location_name: row.location_name ?? null,
         } : null,
         payout: {
           clinic: row.clinic_payout_status ? {
