@@ -38,6 +38,18 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "locations array is required" })
     }
 
+    // Delete locations that were removed — anything with an existing ID not in the submitted list
+    const submittedIds = locations.filter(loc => loc.id).map(loc => loc.id)
+    if (submittedIds.length > 0) {
+      await pg.raw(
+        `DELETE FROM clinic_location WHERE clinic_id = ? AND id NOT IN (${submittedIds.map(() => "?").join(", ")})`,
+        [id, ...submittedIds]
+      )
+    } else {
+      // No existing IDs submitted — wipe all and start fresh
+      await pg.raw(`DELETE FROM clinic_location WHERE clinic_id = ?`, [id])
+    }
+
     for (const loc of locations) {
       if (!loc.name?.trim()) {
         return res.status(400).json({ message: "Location name is required" })
