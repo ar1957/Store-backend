@@ -57,30 +57,34 @@ export default async function orderPlacedHandler({
     const order = orderResult.rows[0]
 
     // Guard: only proceed if the order has a real captured payment or is genuinely zero-total.
-    // pp_system_default auto-authorizes without charging, so an uncaptured non-zero payment
-    // means the customer bypassed the payment step entirely.
+    // Guard: skip orders that have a non-zero payment collection but no real payment activity.
+    // We check payment_session.status rather than capture records because some legitimate
+    // providers (pp_system_default used by clinics that bill outside the platform,
+    // and Authorize.net which inserts its own capture records) never produce Medusa captures.
+    // A session in "authorized" or "captured" state means checkout completed normally.
+    // A session still in "pending" means the customer abandoned checkout before paying.
     const paymentCheck = await pgConnection.raw(`
       SELECT
-        COALESCE(pc.amount, 0) AS collection_amount,
-        COALESCE((
-          SELECT SUM(ca.amount)
-          FROM payment p
-          JOIN capture ca ON ca.payment_id = p.id
-          WHERE p.payment_collection_id = pc.id
-        ), 0) AS total_captured
+        COALESCE(pc.amount, 0)  AS collection_amount,
+        pc.status               AS collection_status,
+        ps.status               AS session_status,
+        ps.provider_id          AS session_provider
       FROM order_payment_collection opc
-      JOIN payment_collection pc ON pc.id = opc.payment_collection_id
+      JOIN payment_collection pc  ON pc.id = opc.payment_collection_id
+      LEFT JOIN payment_session ps ON ps.payment_collection_id = pc.id
       WHERE opc.order_id = ?
+      ORDER BY ps.created_at DESC
       LIMIT 1
     `, [orderId])
 
     const pcRow = paymentCheck.rows[0]
     const collectionAmount = Number(pcRow?.collection_amount ?? 1)
-    const totalCaptured = Number(pcRow?.total_captured ?? 0)
-    const isPaid = totalCaptured > 0 || collectionAmount === 0
+    const sessionStatus = pcRow?.session_status ?? ""
+    const sessionCompleted = sessionStatus === "authorized" || sessionStatus === "captured"
+    const isPaid = collectionAmount === 0 || sessionCompleted
 
     if (!isPaid) {
-      logger.warn(`[OrderPlaced] Order ${orderId} skipped — no captured payment (captured: ${totalCaptured}, collection total: ${collectionAmount}). Order was likely created without completing payment.`)
+      logger.warn(`[OrderPlaced] Order ${orderId} skipped — payment session not completed (session_status: ${sessionStatus}, collection_amount: ${collectionAmount}). Customer likely abandoned checkout.`)
       return
     }
 
