@@ -40,7 +40,7 @@ const buildConfig = async () => {
         options: {
           providers: [
             process.env.S3_BUCKET ? {
-              resolve: "@medusajs/file-s3",
+              resolve: resolveModule('s3-no-acl'),
               id: "s3",
               options: {
                 file_url: `https://${process.env.S3_BUCKET}.s3.${process.env.S3_REGION}.amazonaws.com`,
@@ -50,7 +50,6 @@ const buildConfig = async () => {
                 bucket: process.env.S3_BUCKET,
                 prefix: process.env.S3_PREFIX || "medusa",
                 cache_control: "public, max-age=31536000",
-                acl: null,
               },
             } : {
               resolve: "@medusajs/file-local",
