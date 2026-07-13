@@ -36,6 +36,7 @@ interface OrderWorkflow {
   tracking_number: string | null
   carrier: string | null
   location_name: string | null
+  archived_at: string | null
 }
 
 interface PayoutInfo {
@@ -541,6 +542,7 @@ export default function ClinicOrdersPage() {
   const [availableClinics, setAvailableClinics] = useState<{ id: string; name: string }[]>([])
   const [payoutFilter, setPayoutFilter] = useState<string>("all")
   const [referenceFilter, setReferenceFilter] = useState<string>("")
+  const [showArchived, setShowArchived] = useState(false)
 
   // Sync status filter when URL changes (e.g. drill-down from dashboard)
   useEffect(() => {
@@ -568,6 +570,7 @@ export default function ClinicOrdersPage() {
       if (statusFilter && statusFilter !== "all") params.set("status", statusFilter)
       if (clinicFilter) params.set("clinicId", clinicFilter)
       if (referenceFilter) params.set("reference", referenceFilter)
+      if (showArchived) params.set("includeArchived", "true")
 
       const res = await fetch(`/admin/order-workflow?${params}`, {
         credentials: "include",
@@ -585,7 +588,7 @@ export default function ClinicOrdersPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, search, statusFilter, clinicFilter, referenceFilter])
+  }, [page, search, statusFilter, clinicFilter, referenceFilter, showArchived])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -753,6 +756,23 @@ export default function ClinicOrdersPage() {
         />
 
         <button
+          onClick={() => { setShowArchived(v => !v); setPage(1) }}
+          style={{
+            padding: "8px 14px",
+            borderRadius: "8px",
+            border: `1px solid ${showArchived ? "#A78BFA" : "#E5E7EB"}`,
+            background: showArchived ? "#EDE9FE" : "#fff",
+            fontSize: "13px",
+            cursor: "pointer",
+            color: showArchived ? "#5B21B6" : "#6B7280",
+            fontWeight: showArchived ? 600 : 400,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {showArchived ? "📦 Hide Archived" : "📦 Show Archived"}
+        </button>
+
+        <button
           onClick={handleRefresh}
           disabled={refreshing}
           style={{
@@ -891,6 +911,7 @@ export default function ClinicOrdersPage() {
 
                   const medDosage = parseMedDosage(order.workflow?.treatment_dosages ?? null)
 
+                  const isArchived = !!order.workflow?.archived_at
                   return (
                     <tr
                       key={order.id}
@@ -913,6 +934,11 @@ export default function ClinicOrdersPage() {
                           <span style={{ fontWeight: 600, color: "#111827" }}>
                             #{order.display_id}
                           </span>
+                          {isArchived && (
+                            <span style={{ fontSize: 10, fontWeight: 600, background: "#E5E7EB", color: "#6B7280", borderRadius: 4, padding: "1px 5px", border: "1px solid #D1D5DB" }}>
+                              ARCHIVED
+                            </span>
+                          )}
                           {order.payout?.pharmacy?.status === "paid" && (
                             <span
                               title={`Pharmacy paid${order.payout.pharmacy.reference ? ` · Ref: ${order.payout.pharmacy.reference}` : ""}${order.payout.pharmacy.paid_at ? ` · ${new Date(order.payout.pharmacy.paid_at).toLocaleDateString()}` : ""}`}
