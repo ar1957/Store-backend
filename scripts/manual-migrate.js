@@ -452,6 +452,15 @@ const steps = [
     `,
   },
   {
+    name: "Migration20 - archived_at on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "archived_at" TIMESTAMPTZ DEFAULT NULL;
+      CREATE INDEX IF NOT EXISTS idx_order_workflow_archived ON order_workflow (archived_at)
+        WHERE archived_at IS NOT NULL;
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -472,7 +481,8 @@ const steps = [
       ('Migration20240101000016'),
       ('Migration20240101000017'),
       ('Migration20240101000018'),
-      ('Migration20240101000019')
+      ('Migration20240101000019'),
+      ('Migration20240101000020')
       ON CONFLICT DO NOTHING`,
   },
 ]

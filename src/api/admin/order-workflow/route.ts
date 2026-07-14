@@ -124,6 +124,9 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
       : ""
     const referenceParams = referenceParam ? [referenceParam] : []
 
+    const includeArchived = (req.query?.includeArchived as string) === "true"
+    const archivedFilter = includeArchived ? "" : "AND wf.archived_at IS NULL"
+
     // ── 5. Count ──────────────────────────────────────────────────────────
     const countSql = `SELECT COUNT(DISTINCT o.id) AS total
        FROM "order" o
@@ -137,7 +140,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          ${searchFilter}
          ${statusFilter2}
          ${clinicIdFilter}
-         ${referenceFilter}`
+         ${referenceFilter}
+         ${archivedFilter}`
     const countBindings = [...clinicParams, ...searchParams, ...statusParams, ...clinicIdParams, ...referenceParams]
 
     const countResult = await pg.raw(countSql, countBindings)
@@ -166,6 +170,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
         wf.tracking_number,
         wf.carrier,
         wf.location_name,
+        wf.archived_at,
         vl_agg.clinic_payout_status,
         vl_agg.clinic_payout_amount,
         vp_c.reference_number AS clinic_payout_ref,
@@ -204,6 +209,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
          ${statusFilter2}
          ${clinicIdFilter}
          ${referenceFilter}
+         ${archivedFilter}
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
       [...clinicParams, ...searchParams, ...statusParams, ...clinicIdParams, ...referenceParams, limit, offset]
@@ -258,6 +264,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
           tracking_number: row.tracking_number,
           carrier: row.carrier,
           location_name: row.location_name ?? null,
+          archived_at: row.archived_at ?? null,
         } : null,
         payout: {
           clinic: row.clinic_payout_status ? {
