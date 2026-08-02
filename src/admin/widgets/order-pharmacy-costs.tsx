@@ -55,7 +55,11 @@ function OrderPharmacyCostsWidget({ data: order }: DetailWidgetProps<HttpTypes.A
         {items.map((item: any) => (
           <div key={item.line_item_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f3f4f6" }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 500, color: "#111" }}>{item.product_title}</div>
+              {typeof item.product_title === "string" && item.product_title.includes("<") ? (
+                <div style={{ fontSize: 13, fontWeight: 500, color: "#111" }} dangerouslySetInnerHTML={{ __html: item.product_title }} />
+              ) : (
+                <div style={{ fontSize: 13, fontWeight: 500, color: "#111" }}>{item.product_title}</div>
+              )}
               <div style={{ fontSize: 11, color: "#6b7280" }}>Qty: {item.quantity} × ${item.actual_cost.toFixed(2)}</div>
             </div>
             <div style={{ textAlign: "right" }}>
