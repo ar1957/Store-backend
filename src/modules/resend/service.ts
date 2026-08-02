@@ -67,7 +67,9 @@ function OrderConfirmationEmail({ data }: { data: any }) {
           ...items.map((item: any, i: number) =>
             e("tr", { key: i, style: { borderBottom: "1px solid #f3f4f6" } },
               e("td", { style: { padding: "10px 12px", color: "#374151", verticalAlign: "top" } },
-                e("div", null, item.title),
+                typeof item.title === "string" && item.title.includes("<")
+                  ? e("div", { dangerouslySetInnerHTML: { __html: item.title } })
+                  : e("div", null, item.title),
                 ...(item.notes || []).map((n: string, j: number) =>
                   e("div", { key: j, style: { fontSize: 12, color: "#6b7280", marginTop: 4 } },
                     e("strong", null, n.split(":")[0] + ":"),
