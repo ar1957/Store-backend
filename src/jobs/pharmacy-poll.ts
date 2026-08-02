@@ -8,6 +8,12 @@
 import { MedusaContainer } from "@medusajs/framework"
 import { submitToPharmacyIfEnabled } from "../api/admin/utils/pharmacy-submit"
 
+// After this many failed auto-submit attempts, stop retrying and flag the
+// order for manual review — a submission that fails repeatedly (missing
+// catalog mapping, missing patient phone, etc.) will never succeed on its
+// own, and retrying every 5 minutes just spams the pharmacy API and logs.
+const MAX_PHARMACY_SUBMIT_ATTEMPTS = 5
+
 export default async function pharmacyPollJob(container: MedusaContainer) {
   const logger = container.resolve("logger") as any
   const pg = container.resolve("__pg_connection__") as any
@@ -21,6 +27,7 @@ export default async function pharmacyPollJob(container: MedusaContainer) {
         ow.id AS workflow_id,
         ow.order_id,
         ow.treatment_dosages,
+        ow.pharmacy_submit_attempts,
         c.id AS clinic_id
       FROM order_workflow ow
       JOIN clinic c ON (
@@ -29,6 +36,7 @@ export default async function pharmacyPollJob(container: MedusaContainer) {
       )
       WHERE ow.status = 'processing_pharmacy'
         AND ow.pharmacy_queue_id IS NULL
+        AND ow.pharmacy_blocked_at IS NULL
         AND ow.deleted_at IS NULL
         AND c.pharmacy_enabled = true
       LIMIT 50
@@ -44,7 +52,25 @@ export default async function pharmacyPollJob(container: MedusaContainer) {
         await submitToPharmacyIfEnabled(pg, row.clinic_id, row.order_id, row.workflow_id, dosages)
         logger.info(`[PharmacyPoll] Auto-submitted order ${row.order_id}`)
       } catch (err: any) {
-        logger.error(`[PharmacyPoll] Auto-submit error for order ${row.order_id}: ${err.message}`)
+        const attempts = (row.pharmacy_submit_attempts || 0) + 1
+        logger.error(`[PharmacyPoll] Auto-submit error for order ${row.order_id} (attempt ${attempts}/${MAX_PHARMACY_SUBMIT_ATTEMPTS}): ${err.message}`)
+
+        if (attempts >= MAX_PHARMACY_SUBMIT_ATTEMPTS) {
+          await pg.raw(
+            `UPDATE order_workflow
+             SET pharmacy_submit_attempts = ?, pharmacy_last_error = ?, pharmacy_blocked_at = NOW(), updated_at = NOW()
+             WHERE id = ?`,
+            [attempts, err.message, row.workflow_id]
+          )
+          logger.error(`[PharmacyPoll] Order ${row.order_id} blocked after ${attempts} failed auto-submit attempts — needs manual review.`)
+        } else {
+          await pg.raw(
+            `UPDATE order_workflow
+             SET pharmacy_submit_attempts = ?, pharmacy_last_error = ?, updated_at = NOW()
+             WHERE id = ?`,
+            [attempts, err.message, row.workflow_id]
+          )
+        }
       }
     }
 
