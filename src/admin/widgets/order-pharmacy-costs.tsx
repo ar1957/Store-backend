@@ -7,6 +7,7 @@ import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import { useState, useEffect } from "react"
 import { DetailWidgetProps } from "@medusajs/framework/types"
 import { HttpTypes } from "@medusajs/types"
+import { getRichTitleHtmlProps, getRichTitleChildren } from "../utils/rich-title"
 
 function OrderPharmacyCostsWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminOrder>) {
   const [items, setItems] = useState<any[]>([])
@@ -55,11 +56,14 @@ function OrderPharmacyCostsWidget({ data: order }: DetailWidgetProps<HttpTypes.A
         {items.map((item: any) => (
           <div key={item.line_item_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f3f4f6" }}>
             <div>
-              {typeof item.product_title === "string" && item.product_title.includes("<") ? (
-                <div style={{ fontSize: 13, fontWeight: 500, color: "#111" }} dangerouslySetInnerHTML={{ __html: item.product_title }} />
-              ) : (
-                <div style={{ fontSize: 13, fontWeight: 500, color: "#111" }}>{item.product_title}</div>
-              )}
+              {(() => {
+                const htmlProps = getRichTitleHtmlProps(item.product_title)
+                return htmlProps ? (
+                  <div style={{ fontSize: 13, fontWeight: 500, color: "#111" }} {...htmlProps} />
+                ) : (
+                  <div style={{ fontSize: 13, fontWeight: 500, color: "#111" }}>{getRichTitleChildren(item.product_title)}</div>
+                )
+              })()}
               <div style={{ fontSize: 11, color: "#6b7280" }}>Qty: {item.quantity} × ${item.actual_cost.toFixed(2)}</div>
             </div>
             <div style={{ textAlign: "right" }}>

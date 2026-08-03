@@ -10,6 +10,7 @@ import { defineWidgetConfig } from "@medusajs/admin-sdk"
 import { useState, useEffect } from "react"
 import { DetailWidgetProps } from "@medusajs/framework/types"
 import { HttpTypes } from "@medusajs/types"
+import { getRichTitleHtmlProps, getRichTitleChildren } from "../utils/rich-title"
 
 interface WorkflowData {
   id: string
@@ -609,11 +610,10 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
                       <div key={item.line_item_id} style={{ background: "#f9fafb", borderRadius: 6, padding: "8px 10px", border: "1px solid #e5e7eb" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                           <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
-                            {typeof item.product_title === "string" && item.product_title.includes("<") ? (
-                              <span dangerouslySetInnerHTML={{ __html: item.product_title }} />
-                            ) : (
-                              item.product_title
-                            )} × {item.quantity}
+                            {(() => {
+                              const htmlProps = getRichTitleHtmlProps(item.product_title)
+                              return htmlProps ? <span {...htmlProps} /> : getRichTitleChildren(item.product_title)
+                            })()} × {item.quantity}
                           </div>
                           <div style={{ fontSize: 11, color: "#6b7280" }}>
                             Default: ${item.default_cost.toFixed(2)}

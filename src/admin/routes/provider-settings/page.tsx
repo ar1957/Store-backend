@@ -7,6 +7,7 @@ import { useState, useEffect } from "react"
 import { defineRouteConfig } from "@medusajs/admin-sdk"
 import { BuildingStorefront } from "@medusajs/icons"
 import { resolveMyRole } from "../../utils/resolve-role"
+import { getRichTitleHtmlProps, getRichTitleChildren } from "../../utils/rich-title"
 
 export const config = defineRouteConfig({
   label: "Clinic Operations",
@@ -1207,11 +1208,10 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   return (
     <tr>
       <td style={s.td}>
-        {typeof mapping.product_title === "string" && mapping.product_title.includes("<") ? (
-          <span dangerouslySetInnerHTML={{ __html: mapping.product_title }} />
-        ) : (
-          mapping.product_title || mapping.product_id
-        )}
+        {mapping.product_title ? (() => {
+          const htmlProps = getRichTitleHtmlProps(mapping.product_title)
+          return htmlProps ? <span {...htmlProps} /> : getRichTitleChildren(mapping.product_title)
+        })() : mapping.product_id}
       </td>
       <td style={s.td}>{mapping.treatment_name || mapping.treatment_id}</td>
       <td style={s.td}>
@@ -1439,11 +1439,10 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
                   color: "#92400e", border: "1px solid #fcd34d",
                   borderRadius: 6, padding: "2px 8px",
                 }}>
-                  {p.title?.includes("<") ? (
-                    <span dangerouslySetInnerHTML={{ __html: p.title }} />
-                  ) : (
-                    p.title
-                  )}
+                  {(() => {
+                    const htmlProps = getRichTitleHtmlProps(p.title)
+                    return htmlProps ? <span {...htmlProps} /> : getRichTitleChildren(p.title)
+                  })()}
                 </span>
               ))}
             </div>
@@ -2841,11 +2840,10 @@ function PayoutsTab({ clinic }: { clinic: Clinic }) {
                 {products.map((prod, i) => (
                   <tr key={prod.id} style={{ borderTop: i > 0 ? "1px solid #f3f4f6" : undefined }}>
                     <td style={{ padding: "8px 12px", color: "#374151" }}>
-                      {prod.title?.includes("<") ? (
-                        <span dangerouslySetInnerHTML={{ __html: prod.title }} />
-                      ) : (
-                        prod.title
-                      )}
+                      {(() => {
+                        const htmlProps = getRichTitleHtmlProps(prod.title)
+                        return htmlProps ? <span {...htmlProps} /> : getRichTitleChildren(prod.title)
+                      })()}
                     </td>
                     <td style={{ padding: "8px 12px", textAlign: "right" }}>
                       <input
