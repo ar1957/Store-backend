@@ -14,6 +14,21 @@ import { submitToPharmacyIfEnabled } from "../api/admin/utils/pharmacy-submit"
 // own, and retrying every 5 minutes just spams the pharmacy API and logs.
 const MAX_PHARMACY_SUBMIT_ATTEMPTS = 5
 
+async function saveStatusCheckLog(pg: any, workflowId: string, response: any) {
+  try {
+    await pg.raw(
+      `UPDATE order_workflow
+       SET pharmacy_status_check_response = ?::jsonb,
+           pharmacy_status_check_source = 'api_poll',
+           pharmacy_status_checked_at = NOW()
+       WHERE id = ?`,
+      [JSON.stringify(response ?? null), workflowId]
+    )
+  } catch (err: any) {
+    console.error(`[PharmacyPoll] Failed to persist status-check log for workflow ${workflowId}:`, err.message)
+  }
+}
+
 export default async function pharmacyPollJob(container: MedusaContainer) {
   const logger = container.resolve("logger") as any
   const pg = container.resolve("__pg_connection__") as any
@@ -162,6 +177,8 @@ async function pollDigitalRx(pg: any, logger: any, order: any) {
     return
   }
 
+  await saveStatusCheckLog(pg, order.workflow_id, data)
+
   // Status endpoint returns an array of prescription records
   const records = Array.isArray(data) ? data : [data]
   const record = records[0] || {}
@@ -219,6 +236,8 @@ async function pollRmm(pg: any, logger: any, order: any) {
   const data = await res.json()
   const rmmStatus: string = data.status || ""
   const trackingNumber: string | null = data.tracking_number || null
+
+  await saveStatusCheckLog(pg, order.workflow_id, data)
 
   logger.info(`[PharmacyPoll][RMM] rx_unique_id=${order.pharmacy_queue_id} status=${rmmStatus} tracking=${trackingNumber || "none"}`)
 

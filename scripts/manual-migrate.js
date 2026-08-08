@@ -483,6 +483,23 @@ const steps = [
     `,
   },
   {
+    name: "Migration22 - pharmacy_submission_payload/response on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "pharmacy_submission_payload"  JSONB,
+        ADD COLUMN IF NOT EXISTS "pharmacy_submission_response" JSONB;
+    `,
+  },
+  {
+    name: "Migration23 - pharmacy_status_check_response on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "pharmacy_status_check_response" JSONB,
+        ADD COLUMN IF NOT EXISTS "pharmacy_status_check_source"   VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS "pharmacy_status_checked_at"     TIMESTAMPTZ;
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -505,7 +522,9 @@ const steps = [
       ('Migration20240101000018'),
       ('Migration20240101000019'),
       ('Migration20240101000020'),
-      ('Migration20240101000021')
+      ('Migration20240101000021'),
+      ('Migration20240101000022'),
+      ('Migration20240101000023')
       ON CONFLICT DO NOTHING`,
   },
 ]

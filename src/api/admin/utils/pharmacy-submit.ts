@@ -1,6 +1,7 @@
 import { normalizePhone } from "./normalize-phone"
 import { submitToRmm } from "./pharmacy-submit-rmm"
 import { submitToRxVortex } from "./pharmacy-submit-rxvortex"
+import { savePharmacySubmissionLog } from "./pharmacy-submission-log"
 
 /**
  * Shared pharmacy submission helper.
@@ -137,6 +138,7 @@ export async function submitToPharmacyIfEnabled(
 
     const pharmData = await pharmRes.json()
     console.log(`[PharmacySubmit] Response for order ${orderId}:`, JSON.stringify(pharmData))
+    await savePharmacySubmissionLog(pg, workflowId, payload, pharmData)
 
     // API returns { "ID": "12345" } — field is "ID" not "QueueID"
     const queueId = pharmData.ID || pharmData.QueueID || pharmData.id
