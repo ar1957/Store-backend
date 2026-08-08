@@ -66,7 +66,7 @@ interface Clinic {
 
 interface Staff { id: string; email: string; full_name: string; role: string }
 interface Treatment { id: number; name: string }
-interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number }
 interface Product { id: string; title: string }
 interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
 interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
@@ -1157,6 +1157,25 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   const [saved, setSaved] = useState(false)
   const [instrSaving, setInstrSaving] = useState(false)
   const [instrSaved, setInstrSaved] = useState(false)
+  const [splitCount, setSplitCount] = useState(mapping.order_split_count ?? 0)
+  const [splitSaving, setSplitSaving] = useState(false)
+  const [splitSaved, setSplitSaved] = useState(false)
+
+  const saveSplitCount = async (value: number) => {
+    setSplitSaving(true)
+    setSplitSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ order_split_count: value }),
+      })
+      setSplitSaved(true)
+      setTimeout(() => setSplitSaved(false), 2000)
+    } catch {}
+    finally { setSplitSaving(false) }
+  }
 
   const saveCatalogId = async (newId: string) => {
     setSaving(true)
@@ -1232,6 +1251,23 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
         <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: mapping.requires_eligibility ? "#dbeafe" : "#f3f4f6", color: mapping.requires_eligibility ? "#1e40af" : "#6b7280" }}>
           {mapping.requires_eligibility ? "Yes" : "No"}
         </span>
+      </td>
+      <td style={s.td}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <input
+            type="number"
+            min="0"
+            max="24"
+            style={{ ...s.input, width: 56, fontSize: 12, padding: "4px 6px" }}
+            value={splitCount}
+            onChange={e => setSplitCount(Math.max(0, Number(e.target.value) || 0))}
+            onBlur={() => saveSplitCount(splitCount)}
+            onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur() }}
+            title="0 = process as one order (default). N = submit as N separate monthly pharmacy orders, starting at the provider's approved dosage and stepping up the mapped dosage tiers below."
+          />
+          {splitSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+          {splitSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+        </div>
       </td>
       {showRxVortex && (
         <td style={{ ...s.td, position: "relative" }}>
@@ -1530,7 +1566,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
         <table style={{ ...s.table, marginBottom: 24 }}>
           <thead>
             <tr>
-              {["Product", "Treatment", "Eligibility Required", ...(isRxVortex ? ["RxVortex Catalog ID"] : []), ""].map(h => <th key={h} style={s.th}>{h}</th>)}
+              {["Product", "Treatment", "Eligibility Required", "Order Split", ...(isRxVortex ? ["RxVortex Catalog ID"] : []), ""].map(h => <th key={h} style={s.th}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
