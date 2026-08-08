@@ -461,6 +461,28 @@ const steps = [
     `,
   },
   {
+    name: "Migration21 - treatment_dosage_catalog_map table",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "treatment_dosage_catalog_map" (
+        "id"                         VARCHAR(255) NOT NULL,
+        "tenant_domain"              VARCHAR(255) NOT NULL,
+        "treatment_id"               INTEGER      NOT NULL,
+        "treatment_name"             VARCHAR(255),
+        "dosage"                     VARCHAR(255) NOT NULL,
+        "dosage_key"                 VARCHAR(100),
+        "rxvortex_preset_catalog_id" VARCHAR(255) NOT NULL,
+        "rxvortex_instructions"      TEXT,
+        "created_at"                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        "updated_at"                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        "deleted_at"                 TIMESTAMPTZ,
+        PRIMARY KEY ("id"),
+        UNIQUE ("tenant_domain", "treatment_id", "dosage")
+      );
+      CREATE INDEX IF NOT EXISTS "idx_treatment_dosage_catalog_tenant" ON "treatment_dosage_catalog_map" ("tenant_domain");
+      CREATE INDEX IF NOT EXISTS "idx_treatment_dosage_catalog_treatment" ON "treatment_dosage_catalog_map" ("tenant_domain", "treatment_id");
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -482,7 +504,8 @@ const steps = [
       ('Migration20240101000017'),
       ('Migration20240101000018'),
       ('Migration20240101000019'),
-      ('Migration20240101000020')
+      ('Migration20240101000020'),
+      ('Migration20240101000021')
       ON CONFLICT DO NOTHING`,
   },
 ]

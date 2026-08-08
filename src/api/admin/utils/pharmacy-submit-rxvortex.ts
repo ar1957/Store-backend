@@ -49,6 +49,13 @@ function resolveBaseUrl(clinic: RxVortexClinic): string {
   return "https://sandbox.rxvortex.net"
 }
 
+// Normalizes a dosage string for matching against treatment_dosage_catalog_map
+// so minor formatting drift (extra spaces, casing) between the GFE-synced
+// dosage and the admin-entered mapping doesn't cause a spurious fallback.
+function normalizeDosage(dosage: string): string {
+  return (dosage || "").toLowerCase().replace(/\s+/g, " ").trim()
+}
+
 export async function getRxVortexToken(baseUrl: string, clientId: string, clientSecret: string): Promise<string> {
   const res = await fetch(`${baseUrl}/api/v1/generate-access-token`, {
     method: "POST",
@@ -154,6 +161,40 @@ export async function submitToRxVortex(
     }
   }
 
+  // ── Look up dosage-specific catalog IDs from treatment_dosage_catalog_map ──
+  // A product's catalog ID can vary by prescribed dosage (e.g. Strive has a
+  // different catalog item per strength/month), so this takes priority over
+  // the single per-product catalog ID above when a match exists.
+  const dosageCatalogMap: Record<string, string> = {}
+  const dosageInstructionMap: Record<string, string> = {}
+  // Treatments that have ANY row in treatment_dosage_catalog_map are treated
+  // as dosage-driven — a single "default" catalog ID can't be clinically
+  // correct for a drug that's titrated, so these must resolve strictly via
+  // the dosage table with no silent fallback to the general/clinic ID.
+  const treatmentsWithDosageMapping = new Set<number>()
+  const treatmentIds = [...new Set(Object.keys(dosageByTreatmentId).map(Number))]
+  if (treatmentIds.length > 0 && tenantDomain) {
+    const dosageMappingResult = await pg.raw(`
+      SELECT treatment_id, dosage, rxvortex_preset_catalog_id, rxvortex_instructions
+      FROM treatment_dosage_catalog_map
+      WHERE treatment_id = ANY(?)
+        AND deleted_at IS NULL
+        AND tenant_domain IN (
+          SELECT unnest(cl.domains)
+          FROM clinic cl
+          WHERE ? = ANY(cl.domains)
+            AND cl.deleted_at IS NULL
+          LIMIT 1
+        )
+    `, [treatmentIds, tenantDomain])
+    for (const row of dosageMappingResult.rows) {
+      const key = `${row.treatment_id}::${normalizeDosage(row.dosage)}`
+      dosageCatalogMap[key] = row.rxvortex_preset_catalog_id
+      if (row.rxvortex_instructions) dosageInstructionMap[key] = row.rxvortex_instructions
+      treatmentsWithDosageMapping.add(Number(row.treatment_id))
+    }
+  }
+
   const clinicFallbackCatalogId = (clinic.pharmacy_preset_catalog_id || "").trim()
 
   // ── Build medication_requests — one per line item ─────────────────────────
@@ -164,9 +205,12 @@ export async function submitToRxVortex(
       ? (dosageByTreatmentId[treatmentId] || "")
       : (dosages[idx]?.dosage || dosages[0]?.dosage || "")
 
-    // Use product-specific instructions from mapping, fall back to generic text.
+    const dosageKey = treatmentId ? `${treatmentId}::${normalizeDosage(matchedDosage)}` : ""
+
+    // Use dosage-specific instructions if mapped, else product-specific, else generic.
     // Dosage from MHC is appended after a dash so the pharmacist sees both.
-    const baseInstruction = (li.product_id && productInstructionMap[li.product_id])
+    const baseInstruction = (dosageKey && dosageInstructionMap[dosageKey])
+      || (li.product_id && productInstructionMap[li.product_id])
       || "Take as directed"
     const instructions = matchedDosage
       ? `${baseInstruction} — ${matchedDosage}`
@@ -175,10 +219,16 @@ export async function submitToRxVortex(
     // note field carries dosage explicitly for pharmacist clarity
     const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
 
-    // Resolve preset_catalog_id: per-product → clinic fallback
-    const presetCatalogId = (li.product_id && productCatalogMap[li.product_id])
-      || clinicFallbackCatalogId
-      || null
+    // Resolve preset_catalog_id. Treatments with dosage-mapping rows are
+    // dosage-driven: resolve strictly via the dosage table, with NO fallback
+    // to the general product ID or clinic-wide ID — a titrated drug has no
+    // single "default" catalog item that's safe to guess, so a missing
+    // dosage match falls through to the abort-and-block check below instead.
+    // Treatments with no dosage mapping at all keep the old behavior.
+    const isDosageDriven = treatmentId ? treatmentsWithDosageMapping.has(treatmentId) : false
+    const presetCatalogId = isDosageDriven
+      ? ((dosageKey && dosageCatalogMap[dosageKey]) || null)
+      : ((li.product_id && productCatalogMap[li.product_id]) || clinicFallbackCatalogId || null)
 
     const request: Record<string, any> = {
       type: "new",
