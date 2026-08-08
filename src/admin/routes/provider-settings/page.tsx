@@ -1127,6 +1127,19 @@ interface RxVortexCatalogItem {
   instruction: string
 }
 
+// Some catalog entries share identical name/strength/form and are only
+// distinguished by their dosing instructions (e.g. same 3ML VIAL used at
+// different injected volumes) — instruction must always be shown, not just
+// name+strength, or staff can't tell entries apart in the picker.
+function catalogItemLabel(item: RxVortexCatalogItem): string {
+  const base = `${item.medication_name} ${item.medication_strength} (${item.medication_form})`
+  return item.instruction ? `${base} — ${item.instruction}` : base
+}
+
+function catalogItemSearchHaystack(item: RxVortexCatalogItem): string {
+  return `${item.medication_name} ${item.medication_strength} ${item.medication_form} ${item.instruction} ${item.quantity} ${item.quantity_units} ${item.days_supply}`.toLowerCase()
+}
+
 function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, onDelete }: {
   mapping: Mapping
   clinicId: string
@@ -1178,7 +1191,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   // Combobox state
   const [query, setQuery] = useState(() => {
     const found = catalog.find(c => c.catalog_id === catalogId)
-    return found ? `${found.medication_name} ${found.medication_strength} (${found.medication_form})` : ""
+    return found ? catalogItemLabel(found) : ""
   })
   const [open, setOpen] = useState(false)
 
@@ -1186,20 +1199,19 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   useEffect(() => {
     if (catalogId && catalog.length > 0 && !query) {
       const found = catalog.find(c => c.catalog_id === catalogId)
-      if (found) setQuery(`${found.medication_name} ${found.medication_strength} (${found.medication_form})`)
+      if (found) setQuery(catalogItemLabel(found))
     }
   }, [catalog, catalogId])
 
   const filtered = query.trim()
     ? catalog.filter(item => {
-        const label = `${item.medication_name} ${item.medication_strength} ${item.medication_form}`.toLowerCase()
-        return query.toLowerCase().split(" ").every(word => label.includes(word))
+        const haystack = catalogItemSearchHaystack(item)
+        return query.toLowerCase().split(" ").every(word => haystack.includes(word))
       })
     : catalog
 
   const selectItem = (item: RxVortexCatalogItem) => {
-    const label = `${item.medication_name} ${item.medication_strength} (${item.medication_form})`
-    setQuery(label)
+    setQuery(catalogItemLabel(item))
     setCatalogId(item.catalog_id)
     setOpen(false)
     saveCatalogId(item.catalog_id)
@@ -1285,6 +1297,9 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
                       >
                         <div style={{ fontWeight: 600, color: "#111" }}>{label}</div>
                         <div style={{ color: "#6b7280", fontSize: 11, marginTop: 1 }}>{sub}</div>
+                        {item.instruction && (
+                          <div style={{ color: "#9ca3af", fontSize: 11, marginTop: 1, fontStyle: "italic" }}>{item.instruction}</div>
+                        )}
                       </div>
                     )
                   })}
@@ -1363,13 +1378,23 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       .finally(() => setRxCatalogLoading(false))
   }, [clinic.id, isRxVortex])
 
-  useEffect(() => { loadMappings(); loadProducts() }, [clinic.id])
+  const [dosageMappings, setDosageMappings] = useState<DosageMapping[]>([])
+
+  useEffect(() => { loadMappings(); loadProducts(); loadDosageMappings() }, [clinic.id])
 
   const loadMappings = async () => {
     try {
       const res = await fetch(`/admin/clinics/${clinic.id}/product-mappings`, { credentials: "include", headers: adminHeaders() })
       const data = await res.json()
       setMappings(data.mappings || [])
+    } catch {}
+  }
+
+  const loadDosageMappings = async () => {
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/dosage-mappings`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setDosageMappings(data.mappings || [])
     } catch {}
   }
 
@@ -1519,7 +1544,321 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
           + Add Mapping
         </button>
       </div>
+
+      {isRxVortex && (() => {
+        const treatmentsById = new Map<number, string>()
+        mappings.forEach(m => { if (m.treatment_id) treatmentsById.set(m.treatment_id, m.treatment_name || String(m.treatment_id)) })
+        const distinctTreatments = [...treatmentsById.entries()]
+
+        return (
+          <div style={{ marginTop: 24 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Dosage → Catalog Mapping</div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
+              Some pharmacies use a different catalog item per dosage/strength rather than one item per product.
+              Map each dosage tier below to the matching Strive catalog item — orders will prefer this over the
+              single product-level mapping above when a match exists.
+            </div>
+            {distinctTreatments.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>Map a product to a treatment above first.</div>
+            ) : (
+              distinctTreatments.map(([treatmentId, treatmentName]) => (
+                <DosageMappingSection
+                  key={treatmentId}
+                  clinicId={clinic.id}
+                  treatmentId={treatmentId}
+                  treatmentName={treatmentName}
+                  catalog={rxCatalog}
+                  catalogLoading={rxCatalogLoading}
+                  catalogError={rxCatalogError}
+                  existingMappings={dosageMappings.filter(dm => dm.treatment_id === treatmentId)}
+                  onSaved={loadDosageMappings}
+                />
+              ))
+            )}
+          </div>
+        )
+      })()}
     </div>
+  )
+}
+
+// ── Dosage Mapping — per-treatment dosage-tier → catalog mapping ───────────
+interface DosageMapping {
+  id: string
+  treatment_id: number
+  treatment_name: string
+  dosage: string
+  dosage_key: string | null
+  rxvortex_preset_catalog_id: string
+  rxvortex_instructions: string | null
+}
+
+interface MhcDosage {
+  id: number
+  treatmentId: number
+  key: string
+  value: string
+}
+
+function DosageMappingSection({
+  clinicId, treatmentId, treatmentName, catalog, catalogLoading, catalogError, existingMappings, onSaved,
+}: {
+  clinicId: string
+  treatmentId: number
+  treatmentName: string
+  catalog: RxVortexCatalogItem[]
+  catalogLoading: boolean
+  catalogError: string
+  existingMappings: DosageMapping[]
+  onSaved: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [dosages, setDosages] = useState<MhcDosage[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
+  const [loaded, setLoaded] = useState(false)
+
+  const loadDosages = async () => {
+    setLoading(true)
+    setError("")
+    try {
+      const res = await fetch(`/admin/clinics/${clinicId}/mhc-dosages/${treatmentId}`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      if (res.ok) {
+        setDosages(data.dosages || [])
+        setLoaded(true)
+      } else {
+        setError(data.message || "Failed to load dosages")
+      }
+    } catch {
+      setError("Network error loading dosages")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const toggle = () => {
+    const next = !expanded
+    setExpanded(next)
+    if (next && !loaded) loadDosages()
+  }
+
+  const mappedCount = existingMappings.length
+
+  return (
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, marginBottom: 10, overflow: expanded ? "visible" : "hidden" }}>
+      <div
+        onClick={toggle}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 14px", cursor: "pointer", background: "#f9fafb",
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 600 }}>
+          {treatmentName} <span style={{ color: "#9ca3af", fontWeight: 400 }}>(treatment {treatmentId})</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {mappedCount > 0 && (
+            <span style={{ fontSize: 11, color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "2px 8px" }}>
+              {mappedCount} dosage{mappedCount !== 1 ? "s" : ""} mapped
+            </span>
+          )}
+          <span style={{ fontSize: 12, color: "#9ca3af" }}>{expanded ? "▲" : "▼"}</span>
+        </div>
+      </div>
+
+      {expanded && (
+        <div style={{ padding: "10px 14px" }}>
+          {loading && <div style={{ fontSize: 12, color: "#9ca3af" }}>Loading dosages…</div>}
+          {error && (
+            <div style={{ fontSize: 12, color: "#dc2626" }}>
+              {error} <button onClick={loadDosages} style={{ ...s.btnOutline, marginLeft: 8, padding: "2px 8px", fontSize: 11 }}>Retry</button>
+            </div>
+          )}
+          {!loading && !error && dosages.length === 0 && loaded && (
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>No dosages found for this treatment.</div>
+          )}
+          {dosages.length > 0 && (
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  {["Month", "Dosage", "Strive Catalog Item"].map(h => <th key={h} style={s.th}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {dosages.map(d => {
+                  const existing = existingMappings.find(m => m.dosage.trim().toLowerCase() === d.value.trim().toLowerCase())
+                  return (
+                    <DosageCatalogRow
+                      key={d.id}
+                      clinicId={clinicId}
+                      treatmentId={treatmentId}
+                      treatmentName={treatmentName}
+                      dosageKey={d.key}
+                      dosageValue={d.value}
+                      existing={existing}
+                      catalog={catalog}
+                      catalogLoading={catalogLoading}
+                      catalogError={catalogError}
+                      onSaved={onSaved}
+                    />
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DosageCatalogRow({
+  clinicId, treatmentId, treatmentName, dosageKey, dosageValue, existing, catalog, catalogLoading, catalogError, onSaved,
+}: {
+  clinicId: string
+  treatmentId: number
+  treatmentName: string
+  dosageKey: string
+  dosageValue: string
+  existing?: DosageMapping
+  catalog: RxVortexCatalogItem[]
+  catalogLoading: boolean
+  catalogError: string
+  onSaved: () => void
+}) {
+  const [catalogId, setCatalogId] = useState(existing?.rxvortex_preset_catalog_id || "")
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const [query, setQuery] = useState(() => {
+    const found = catalog.find(c => c.catalog_id === catalogId)
+    return found ? catalogItemLabel(found) : ""
+  })
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (catalogId && catalog.length > 0 && !query) {
+      const found = catalog.find(c => c.catalog_id === catalogId)
+      if (found) setQuery(catalogItemLabel(found))
+    }
+  }, [catalog, catalogId])
+
+  const filtered = query.trim()
+    ? catalog.filter(item => {
+        const haystack = catalogItemSearchHaystack(item)
+        return query.toLowerCase().split(" ").every(word => haystack.includes(word))
+      })
+    : catalog
+
+  const save = async (newCatalogId: string) => {
+    setSaving(true)
+    setSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/dosage-mappings`, {
+        method: "POST",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          treatment_id: treatmentId,
+          treatment_name: treatmentName,
+          dosage: dosageValue,
+          dosage_key: dosageKey,
+          rxvortex_preset_catalog_id: newCatalogId,
+        }),
+      })
+      setSaved(true)
+      onSaved()
+      setTimeout(() => setSaved(false), 2000)
+    } catch {}
+    finally { setSaving(false) }
+  }
+
+  const selectItem = (item: RxVortexCatalogItem) => {
+    setQuery(catalogItemLabel(item))
+    setCatalogId(item.catalog_id)
+    setOpen(false)
+    save(item.catalog_id)
+  }
+
+  return (
+    <tr>
+      <td style={s.td}>{dosageKey}</td>
+      <td style={s.td}>{dosageValue}</td>
+      <td style={{ ...s.td, position: "relative" }}>
+        {catalogLoading ? (
+          <span style={{ fontSize: 12, color: "#9ca3af" }}>Loading catalog…</span>
+        ) : catalogError ? (
+          <span style={{ fontSize: 12, color: "#dc2626" }}>{catalogError}</span>
+        ) : (
+          <div style={{ position: "relative", minWidth: 300 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                style={{ ...s.input, fontSize: 12, padding: "4px 8px", flex: 1 }}
+                value={query}
+                placeholder="Type to search medications…"
+                onChange={e => { setQuery(e.target.value); setCatalogId(""); setOpen(true); setSaved(false) }}
+                onFocus={() => setOpen(true)}
+                onBlur={() => { setTimeout(() => setOpen(false), 180) }}
+                onKeyDown={e => {
+                  if (e.key === "Escape") setOpen(false)
+                  if (e.key === "Enter" && filtered.length === 1) selectItem(filtered[0])
+                }}
+              />
+              <button
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => {
+                  const idToSave = catalogId || query.trim()
+                  if (!idToSave) return
+                  setCatalogId(idToSave)
+                  setOpen(false)
+                  save(idToSave)
+                }}
+                disabled={!query.trim() || saving}
+                style={{ ...s.btnPrimary, fontSize: 11, padding: "4px 10px", opacity: (!query.trim() || saving) ? 0.5 : 1 }}
+              >
+                Save
+              </button>
+              {saving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+              {saved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+            </div>
+            {open && filtered.length > 0 && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0, right: 0, zIndex: 999,
+                background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.12)", maxHeight: 240, overflowY: "auto",
+                marginTop: 2,
+              }}>
+                {filtered.slice(0, 50).map(item => {
+                  const label = `${item.medication_name} ${item.medication_strength}`
+                  const sub = `${item.medication_form} · ${item.quantity} ${item.quantity_units} · ${item.days_supply}d`
+                  const isSelected = item.catalog_id === catalogId
+                  return (
+                    <div
+                      key={item.catalog_id}
+                      onMouseDown={() => selectItem(item)}
+                      style={{
+                        padding: "8px 12px", cursor: "pointer", fontSize: 12,
+                        background: isSelected ? "#eff6ff" : "transparent",
+                        borderBottom: "1px solid #f3f4f6",
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.background = "#f9fafb")}
+                      onMouseLeave={e => (e.currentTarget.style.background = isSelected ? "#eff6ff" : "transparent")}
+                    >
+                      <div style={{ fontWeight: 600, color: "#111" }}>{label}</div>
+                      <div style={{ color: "#6b7280", fontSize: 11, marginTop: 1 }}>{sub}</div>
+                      {item.instruction && (
+                        <div style={{ color: "#9ca3af", fontSize: 11, marginTop: 1, fontStyle: "italic" }}>{item.instruction}</div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </td>
+    </tr>
   )
 }
 
