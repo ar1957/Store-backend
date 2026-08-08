@@ -1140,13 +1140,14 @@ function catalogItemSearchHaystack(item: RxVortexCatalogItem): string {
   return `${item.medication_name} ${item.medication_strength} ${item.medication_form} ${item.instruction} ${item.quantity} ${item.quantity_units} ${item.days_supply}`.toLowerCase()
 }
 
-function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, onDelete }: {
+function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, hasDosageMapping, onDelete }: {
   mapping: Mapping
   clinicId: string
   showRxVortex: boolean
   catalog: RxVortexCatalogItem[]
   catalogLoading: boolean
   catalogError: string
+  hasDosageMapping: boolean
   onDelete: () => void
 }) {
   const [catalogId, setCatalogId] = useState(mapping.rxvortex_preset_catalog_id || "")
@@ -1233,12 +1234,20 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
       </td>
       {showRxVortex && (
         <td style={{ ...s.td, position: "relative" }}>
+          {hasDosageMapping && (
+            <div style={{
+              fontSize: 11, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a",
+              borderRadius: 6, padding: "4px 8px", marginBottom: 6,
+            }}>
+              ⚠ This treatment has dosage-specific mappings below — this field is ignored at submission time.
+            </div>
+          )}
           {catalogLoading ? (
             <span style={{ fontSize: 12, color: "#9ca3af" }}>Loading catalog…</span>
           ) : catalogError ? (
             <span style={{ fontSize: 12, color: "#dc2626" }}>{catalogError}</span>
           ) : (
-            <div style={{ position: "relative", minWidth: 300 }}>
+            <div style={{ position: "relative", minWidth: 300, opacity: hasDosageMapping ? 0.55 : 1 }}>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <input
                   style={{ ...s.input, fontSize: 12, padding: "4px 8px", flex: 1 }}
@@ -1506,6 +1515,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
                 catalog={rxCatalog}
                 catalogLoading={rxCatalogLoading}
                 catalogError={rxCatalogError}
+                hasDosageMapping={dosageMappings.some(dm => dm.treatment_id === m.treatment_id)}
                 onDelete={() => { fetch(`/admin/clinics/${clinic.id}/product-mappings/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() }); loadMappings() }}
               />
             ))}

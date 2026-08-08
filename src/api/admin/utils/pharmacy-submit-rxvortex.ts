@@ -167,6 +167,11 @@ export async function submitToRxVortex(
   // the single per-product catalog ID above when a match exists.
   const dosageCatalogMap: Record<string, string> = {}
   const dosageInstructionMap: Record<string, string> = {}
+  // Treatments that have ANY row in treatment_dosage_catalog_map are treated
+  // as dosage-driven — a single "default" catalog ID can't be clinically
+  // correct for a drug that's titrated, so these must resolve strictly via
+  // the dosage table with no silent fallback to the general/clinic ID.
+  const treatmentsWithDosageMapping = new Set<number>()
   const treatmentIds = [...new Set(Object.keys(dosageByTreatmentId).map(Number))]
   if (treatmentIds.length > 0 && tenantDomain) {
     const dosageMappingResult = await pg.raw(`
@@ -186,6 +191,7 @@ export async function submitToRxVortex(
       const key = `${row.treatment_id}::${normalizeDosage(row.dosage)}`
       dosageCatalogMap[key] = row.rxvortex_preset_catalog_id
       if (row.rxvortex_instructions) dosageInstructionMap[key] = row.rxvortex_instructions
+      treatmentsWithDosageMapping.add(Number(row.treatment_id))
     }
   }
 
@@ -213,13 +219,16 @@ export async function submitToRxVortex(
     // note field carries dosage explicitly for pharmacist clarity
     const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
 
-    // Resolve preset_catalog_id: dosage-specific → per-product → clinic fallback.
-    // Dosage-specific takes priority since pharmacies often use a different
-    // catalog item per strength/month rather than one item per product.
-    const presetCatalogId = (dosageKey && dosageCatalogMap[dosageKey])
-      || (li.product_id && productCatalogMap[li.product_id])
-      || clinicFallbackCatalogId
-      || null
+    // Resolve preset_catalog_id. Treatments with dosage-mapping rows are
+    // dosage-driven: resolve strictly via the dosage table, with NO fallback
+    // to the general product ID or clinic-wide ID — a titrated drug has no
+    // single "default" catalog item that's safe to guess, so a missing
+    // dosage match falls through to the abort-and-block check below instead.
+    // Treatments with no dosage mapping at all keep the old behavior.
+    const isDosageDriven = treatmentId ? treatmentsWithDosageMapping.has(treatmentId) : false
+    const presetCatalogId = isDosageDriven
+      ? ((dosageKey && dosageCatalogMap[dosageKey]) || null)
+      : ((li.product_id && productCatalogMap[li.product_id]) || clinicFallbackCatalogId || null)
 
     const request: Record<string, any> = {
       type: "new",
