@@ -205,9 +205,12 @@ function RefundEmail({ data }: { data: any }) {
         `Hi ${(data.patient_name || "there").split(" ")[0]},`
       ),
       e("p", { style: { fontSize: 14, color: "#374151", margin: "0 0 20px" } },
-        `We've successfully processed a refund for your order #${data.order_display_id}.`
+        data.refund_amount
+          ? `We've successfully processed a ${data.is_partial_refund ? "partial " : ""}refund of ${data.refund_amount} for your order #${data.order_display_id}.`
+          : `We've successfully processed a refund for your order #${data.order_display_id}.`
       ),
       e("div", { style: { background: "#F9FAFB", border: "1px solid #e5e7eb", borderRadius: 8, padding: "16px 20px", margin: "0 0 20px" } },
+        data.refund_amount && e("p", { style: { margin: "0 0 6px", fontSize: 13, fontWeight: 700, color: "#111" } }, `Amount refunded: ${data.refund_amount}`),
         e("p", { style: { margin: "0 0 6px", fontSize: 13, fontWeight: 700, color: "#111" } }, "Reason:"),
         e("p", { style: { margin: 0, fontSize: 13, color: "#374151" } }, data.refund_reason || "")
       ),

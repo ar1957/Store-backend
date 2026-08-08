@@ -1,9 +1,15 @@
 /**
- * POST /admin/clinics/:id/orders/:orderId/refund
+ * GET  /admin/clinics/:id/orders/:orderId/refund — remaining refundable amount
+ * POST /admin/clinics/:id/orders/:orderId/refund — issue a refund
  *
- * Issues a real Stripe refund using the clinic's own stripe_secret_key
- * (since payments go through pp_system_default, Medusa's refundPaymentWorkflow
- * won't call Stripe — we must do it directly).
+ * Issues a real Stripe/PayPal/Authorize.net refund using the clinic's own
+ * gateway credentials (since payments go through pp_system_default, Medusa's
+ * refundPaymentWorkflow won't call the gateway — we must do it directly).
+ *
+ * Supports partial refunds: `amount` (in dollars) may be any value greater
+ * than $0 and up to the payment's remaining refundable amount (captured
+ * amount minus any refunds already issued against it). Omitting `amount`
+ * refunds the full remaining amount, preserving old callers' behavior.
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules } from "@medusajs/framework/utils"
@@ -11,55 +17,133 @@ import { INotificationModuleService } from "@medusajs/framework/types"
 import { generateEntityId } from "@medusajs/utils"
 import Stripe from "stripe"
 
+// Medusa v2 core stores payment.amount in dollars (major currency unit)
+// natively — that's true for Stripe (pp_stripe_stripe), PayPal, and the
+// no-gateway (pp_system_default) path, all of which go through Medusa's own
+// payment workflows. The ONE exception is this codebase's custom Authorize.net
+// integration (create-authorizenet-charge/route.ts), which historically wrote
+// raw cents and only stamps amountUnit: "dollars" on payments created after
+// that was fixed — so "assume cents" must apply ONLY to unstamped Authorize.net
+// records, not to every payment that lacks the stamp.
+async function getRefundableAmount(pg: any, orderId: string) {
+  const paymentResult = await pg.raw(
+    `SELECT p.id AS payment_id, p.amount, p.currency_code, p.captured_at, p.data,
+            ps.provider_id
+     FROM order_payment_collection opc
+     JOIN payment_collection pc ON pc.id = opc.payment_collection_id
+     JOIN payment p ON p.payment_collection_id = pc.id
+     LEFT JOIN payment_session ps ON ps.id = p.payment_session_id
+     WHERE opc.order_id = ?
+       AND opc.deleted_at IS NULL
+       AND pc.deleted_at IS NULL
+       AND p.deleted_at IS NULL
+       AND p.canceled_at IS NULL
+     ORDER BY p.created_at DESC
+     LIMIT 1`,
+    [orderId]
+  )
+
+  if (!paymentResult.rows.length) return null
+  const payment = paymentResult.rows[0]
+
+  let paymentData: any = {}
+  try {
+    paymentData = typeof payment.data === "string" ? JSON.parse(payment.data) : (payment.data || {})
+  } catch {}
+
+  const transactionId: string = paymentData?.id || ""
+  const isPaypal = payment.provider_id?.startsWith("pp_paypal") || paymentData?.provider === "paypal"
+  const isAuthorizenet = !isPaypal && (paymentData?.provider === "authorizenet" || (!!transactionId && !transactionId.startsWith("pi_")))
+  // IMPORTANT: pp_system_default is the standard provider_id for every payment
+  // made through this app's custom clinic-Stripe integration — it does NOT
+  // mean "no real charge." A pp_system_default payment can still carry a real
+  // Stripe PaymentIntent id (pi_...) in its data, in which case it must fall
+  // through to the Stripe refund branch below, not be treated as no-gateway.
+  // Only classify as no-gateway when there's genuinely no transaction id at all.
+  const isNoGateway = !isPaypal && !isAuthorizenet && !transactionId
+
+  const isDollars = !isAuthorizenet || paymentData?.amountUnit === "dollars"
+  const capturedNative = Number(payment.amount)
+
+  const refundedResult = await pg.raw(
+    `SELECT COALESCE(SUM(amount), 0) AS refunded FROM refund WHERE payment_id = ?`,
+    [payment.payment_id]
+  )
+  const refundedNative = Number(refundedResult.rows[0]?.refunded || 0)
+
+  const remainingNative = capturedNative - refundedNative
+  const capturedDollars = isDollars ? capturedNative : capturedNative / 100
+  const refundedDollars = isDollars ? refundedNative : refundedNative / 100
+  const remainingDollars = isDollars ? remainingNative : remainingNative / 100
+
+  return {
+    payment, paymentData, isDollars,
+    transactionId, isPaypal, isAuthorizenet, isNoGateway,
+    capturedNative, refundedNative, remainingNative,
+    capturedDollars, refundedDollars, remainingDollars,
+    currency: (payment.currency_code || "usd").toUpperCase(),
+  }
+}
+
+// GET /admin/clinics/:id/orders/:orderId/refund
+export async function GET(req: MedusaRequest, res: MedusaResponse) {
+  try {
+    const pg = req.scope.resolve("__pg_connection__") as any
+    const info = await getRefundableAmount(pg, req.params.orderId)
+    if (!info) return res.status(404).json({ message: "No payment found for this order" })
+
+    return res.json({
+      captured: Number(info.capturedDollars.toFixed(2)),
+      already_refunded: Number(info.refundedDollars.toFixed(2)),
+      remaining: Number(Math.max(0, info.remainingDollars).toFixed(2)),
+      currency: info.currency,
+    })
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message })
+  }
+}
+
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
     const { id: clinicId, orderId } = req.params
-    const { reason } = req.body as any
+    const { reason, amount } = req.body as any
 
     if (!reason?.trim()) {
       return res.status(400).json({ message: "Refund reason is required" })
     }
 
-    // ── 1. Get the captured payment + session provider ────────────────────
-    const paymentResult = await pg.raw(
-      `SELECT p.id AS payment_id, p.amount, p.raw_amount, p.currency_code, p.captured_at, p.data,
-              ps.provider_id
-       FROM order_payment_collection opc
-       JOIN payment_collection pc ON pc.id = opc.payment_collection_id
-       JOIN payment p ON p.payment_collection_id = pc.id
-       LEFT JOIN payment_session ps ON ps.id = p.payment_session_id
-       WHERE opc.order_id = ?
-         AND opc.deleted_at IS NULL
-         AND pc.deleted_at IS NULL
-         AND p.deleted_at IS NULL
-         AND p.canceled_at IS NULL
-       ORDER BY p.created_at DESC
-       LIMIT 1`,
-      [orderId]
-    )
+    // ── 1. Get the captured payment + already-refunded amount ─────────────
+    const info = await getRefundableAmount(pg, orderId)
+    if (!info) return res.status(404).json({ message: "No payment found for this order" })
 
-    if (!paymentResult.rows.length) {
-      return res.status(404).json({ message: "No payment found for this order" })
+    const { payment, paymentData, isDollars, remainingDollars, currency, transactionId, isPaypal, isAuthorizenet, isNoGateway } = info
+
+    if (remainingDollars <= 0.005) {
+      return res.status(400).json({ message: "This payment has already been fully refunded." })
     }
 
-    const payment = paymentResult.rows[0]
+    // ── 2. Resolve + validate requested amount (defaults to full remaining) ──
+    const requestedDollars = amount !== undefined && amount !== null && amount !== ""
+      ? Number(amount)
+      : remainingDollars
 
-    // ── 2. Parse payment data to determine gateway ───────────────────────
-    let paymentData: any = {}
-    try {
-      paymentData = typeof payment.data === "string" ? JSON.parse(payment.data) : (payment.data || {})
-    } catch {}
+    if (!Number.isFinite(requestedDollars) || requestedDollars <= 0) {
+      return res.status(400).json({ message: "Refund amount must be greater than $0." })
+    }
+    if (requestedDollars > remainingDollars + 0.01) {
+      return res.status(400).json({
+        message: `Refund amount cannot exceed the remaining refundable amount ($${remainingDollars.toFixed(2)}).`,
+      })
+    }
 
-    const transactionId: string = paymentData?.id || ""
-    const isPaypal = payment.provider_id?.startsWith("pp_paypal") || paymentData?.provider === "paypal"
-    const isAuthorizenet = !isPaypal && (paymentData?.provider === "authorizenet" || (!!transactionId && !transactionId.startsWith("pi_")))
-    // pp_system_default bypasses all gateways — no real charge exists to refund
-    const isNoGateway = !isPaypal && !isAuthorizenet && (
-      payment.provider_id === "pp_system_default" || (!transactionId && !paymentData?.provider)
-    )
+    const isFullRefund = Math.abs(requestedDollars - remainingDollars) < 0.01
 
-    // ── 3. Get clinic credentials ────────────────────────────────────────
+    // (gateway type — isPaypal/isAuthorizenet/isNoGateway — already resolved
+    // by getRefundableAmount above, since it's needed there too for the
+    // dollars-vs-cents unit decision.)
+
+    // ── 4. Get clinic credentials ────────────────────────────────────────
     const clinicResult = await pg.raw(
       `SELECT stripe_secret_key,
               authorizenet_api_login_id, authorizenet_transaction_key, authorizenet_mode,
@@ -69,11 +153,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     )
     const clinic = clinicResult.rows[0]
 
-    let gatewayRefundId: string
-    let gatewayLabel: string
+    let gatewayRefundId: string = ""
+    let gatewayLabel: string = ""
 
     if (isPaypal) {
-      // ── 4a. PayPal refund ───────────────────────────────────────────────
+      // ── 5a. PayPal refund ───────────────────────────────────────────────
       if (!clinic?.paypal_client_id || !clinic?.paypal_client_secret) {
         return res.status(400).json({ message: "PayPal not configured for this clinic" })
       }
@@ -81,7 +165,6 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       const isLive = clinic.paypal_mode === "live"
       const paypalBase = isLive ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com"
 
-      // Get access token
       const tokenRes = await fetch(`${paypalBase}/v1/oauth2/token`, {
         method: "POST",
         headers: {
@@ -96,8 +179,6 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       }
       const accessToken = tokenData.access_token
 
-      // Find the capture ID — PayPal stores it in purchase_units[0].payments.captures[0].id
-      // or directly as the top-level id depending on plugin version
       let captureId: string | null = null
       try {
         captureId =
@@ -106,7 +187,6 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           paymentData?.capture_id ||
           null
 
-        // If not in local data, fetch the PayPal order to get the capture ID
         if (!captureId && transactionId) {
           const orderRes = await fetch(`${paypalBase}/v2/checkout/orders/${transactionId}`, {
             headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
@@ -128,6 +208,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         },
         body: JSON.stringify({
           note_to_payer: reason.trim().slice(0, 255),
+          // Omitting `amount` means "refund the full remaining captured amount" per PayPal's API.
+          ...(isFullRefund ? {} : { amount: { value: requestedDollars.toFixed(2), currency_code: currency } }),
         }),
       })
       const refundData = await refundRes.json() as any
@@ -143,7 +225,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       console.log(`[Refund] PayPal refund successful: ${refundData.id} status: ${refundData.status}`)
 
     } else if (isAuthorizenet) {
-      // ── 4a. Authorize.net refund ────────────────────────────────────────
+      // ── 5b. Authorize.net refund ────────────────────────────────────────
       if (!clinic?.authorizenet_api_login_id || !clinic?.authorizenet_transaction_key) {
         return res.status(400).json({ message: "Authorize.net not configured for this clinic" })
       }
@@ -156,41 +238,43 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         ? "https://apitest.authorize.net/xml/v1/request.api"
         : "https://api.authorize.net/xml/v1/request.api"
 
-      // amountUnit:"dollars" is stamped on payments created after the dollars-storage fix.
-      // Older payments stored amount in cents, so divide by 100.
-      const amountDollars = paymentData?.amountUnit === "dollars"
-        ? payment.amount.toFixed(2)
-        : (payment.amount / 100).toFixed(2)
       const last4 = paymentData?.last4 || "0000"
 
-      // Try void first (works if transaction not yet settled), then refund
-      const voidPayload = {
-        createTransactionRequest: {
-          merchantAuthentication: {
-            name: clinic.authorizenet_api_login_id,
-            transactionKey: clinic.authorizenet_transaction_key,
+      // Void only works for a FULL refund of an unsettled transaction — it
+      // can't cancel part of a charge. Partial refunds always go straight to
+      // the refundTransaction (credit) path below.
+      let voidOk = false
+      if (isFullRefund) {
+        const voidPayload = {
+          createTransactionRequest: {
+            merchantAuthentication: {
+              name: clinic.authorizenet_api_login_id,
+              transactionKey: clinic.authorizenet_transaction_key,
+            },
+            transactionRequest: {
+              transactionType: "voidTransaction",
+              refTransId: transactionId,
+            },
           },
-          transactionRequest: {
-            transactionType: "voidTransaction",
-            refTransId: transactionId,
-          },
-        },
+        }
+
+        const voidRes = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(voidPayload),
+        })
+        const voidData = await voidRes.json() as any
+        voidOk = voidData?.messages?.resultCode === "Ok" && voidData?.transactionResponse?.responseCode === "1"
+
+        if (voidOk) {
+          gatewayRefundId = voidData.transactionResponse.transId || transactionId
+          gatewayLabel = `Authorize.net void: ${gatewayRefundId}`
+          console.log(`[Refund] Authorize.net void successful: ${gatewayRefundId}`)
+        }
       }
 
-      const voidRes = await fetch(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(voidPayload),
-      })
-      const voidData = await voidRes.json() as any
-      const voidOk = voidData?.messages?.resultCode === "Ok" && voidData?.transactionResponse?.responseCode === "1"
-
-      if (voidOk) {
-        gatewayRefundId = voidData.transactionResponse.transId || transactionId
-        gatewayLabel = `Authorize.net void: ${gatewayRefundId}`
-        console.log(`[Refund] Authorize.net void successful: ${gatewayRefundId}`)
-      } else {
-        // Transaction already settled — issue a credit (refund)
+      if (!voidOk) {
+        // Transaction already settled, or this is a partial refund — issue a credit.
         const refundPayload = {
           createTransactionRequest: {
             merchantAuthentication: {
@@ -199,7 +283,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             },
             transactionRequest: {
               transactionType: "refundTransaction",
-              amount: amountDollars,
+              amount: requestedDollars.toFixed(2),
               payment: { creditCard: { cardNumber: last4, expirationDate: "XXXX" } },
               refTransId: transactionId,
             },
@@ -226,14 +310,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         console.log(`[Refund] Authorize.net refund successful: ${gatewayRefundId}`)
       }
     } else if (isNoGateway) {
-      // ── 4c. No gateway charge (pp_system_default) ────────────────────────
-      // Payment was auto-authorized without going through a real gateway — nothing to refund externally.
+      // ── 5c. No gateway charge (pp_system_default) ────────────────────────
       gatewayRefundId = `internal_${Date.now()}`
       gatewayLabel = "Internal (no gateway charge)"
       console.log(`[Refund] Order ${orderId} — no gateway charge on file, recording internal refund only`)
 
     } else {
-      // ── 4d. Stripe refund ───────────────────────────────────────────────
+      // ── 5d. Stripe refund ───────────────────────────────────────────────
       if (!clinic?.stripe_secret_key) {
         return res.status(400).json({ message: "Stripe not configured for this clinic" })
       }
@@ -246,6 +329,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       const stripe = new Stripe(clinic.stripe_secret_key, { apiVersion: "2024-06-20" as any })
       const stripeRefund = await stripe.refunds.create({
         payment_intent: transactionId,
+        amount: Math.round(requestedDollars * 100),
         reason: "requested_by_customer",
         metadata: { order_id: orderId, clinic_id: clinicId, internal_reason: reason.trim() },
       })
@@ -254,9 +338,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       console.log(`[Refund] Stripe refund created: ${stripeRefund.id} status: ${stripeRefund.status}`)
     }
 
-    // ── 5. Create refund record in Medusa DB ──────────────────────────────
-    const amount = payment.amount
-    const rawAmount = JSON.stringify({ value: String(amount), precision: 20 })
+    // ── 6. Create refund record in Medusa DB (native unit, same as payment.amount) ──
+    const refundNative = isDollars ? requestedDollars : Math.round(requestedDollars * 100)
+    const rawAmount = JSON.stringify({ value: String(refundNative), precision: 20 })
     const refundId = generateEntityId("", "ref")
     const actorId = (req.session as any)?.auth_context?.actor_id
 
@@ -264,34 +348,63 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       INSERT INTO refund (id, amount, raw_amount, payment_id, created_by, note, created_at, updated_at)
       VALUES (?, ?, ?::jsonb, ?, ?, ?, NOW(), NOW())
       ON CONFLICT DO NOTHING
-    `, [refundId, amount, rawAmount, payment.payment_id, actorId || null, reason.trim()])
+    `, [refundId, refundNative, rawAmount, payment.payment_id, actorId || null, reason.trim()])
 
-    // ── 7. Update payment_collection status ──────────────────────────────
-    const payColResult = await pg.raw(
-      `SELECT pc.id FROM order_payment_collection opc
-       JOIN payment_collection pc ON pc.id = opc.payment_collection_id
-       WHERE opc.order_id = ? AND opc.deleted_at IS NULL LIMIT 1`,
-      [orderId]
-    )
-    if (payColResult.rows.length) {
+    // ── 7. Update payment_collection / order_workflow status. Medusa's
+    // payment_collection status enum has no "partially_refunded" value, so
+    // that's only touched on a full refund. order_workflow.status, however,
+    // DOES need to move for a partial refund too — jobs like the GFE poll,
+    // the provider-reminder email, and pharmacy auto-submit all filter on
+    // an exact status match (e.g. WHERE status = 'pending_provider'), so
+    // leaving status untouched would let the patient keep connecting with a
+    // provider / the order keep auto-advancing after a partial refund that
+    // was meant to stop it (e.g. refunding minus a GFE fee to decline the visit).
+    // Skipped only when the order is already past the point where those jobs
+    // matter (shipped) or already in a refund-terminal status.
+    if (isFullRefund) {
+      const payColResult = await pg.raw(
+        `SELECT pc.id FROM order_payment_collection opc
+         JOIN payment_collection pc ON pc.id = opc.payment_collection_id
+         WHERE opc.order_id = ? AND opc.deleted_at IS NULL LIMIT 1`,
+        [orderId]
+      )
+      if (payColResult.rows.length) {
+        await pg.raw(
+          `UPDATE payment_collection SET status = 'canceled', updated_at = NOW() WHERE id = ?`,
+          [payColResult.rows[0].id]
+        )
+      }
+
       await pg.raw(
-        `UPDATE payment_collection SET status = 'canceled', updated_at = NOW() WHERE id = ?`,
-        [payColResult.rows[0].id]
+        `UPDATE order_workflow
+         SET status = 'refund_issued',
+             refund_reason = ?,
+             refund_issued_at = NOW(),
+             updated_at = NOW()
+         WHERE order_id = ? AND deleted_at IS NULL`,
+        [reason.trim(), orderId]
+      )
+    } else {
+      const wfStatusResult = await pg.raw(
+        `SELECT status FROM order_workflow WHERE order_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [orderId]
+      )
+      const currentStatus = wfStatusResult.rows[0]?.status
+      const shouldAdvanceStatus = !!currentStatus
+        && !["shipped", "refund_issued", "partial_refund_issued"].includes(currentStatus)
+
+      await pg.raw(
+        `UPDATE order_workflow
+         SET refund_reason = ?,
+             refund_issued_at = NOW(),
+             updated_at = NOW()
+             ${shouldAdvanceStatus ? ", status = 'partial_refund_issued'" : ""}
+         WHERE order_id = ? AND deleted_at IS NULL`,
+        [reason.trim(), orderId]
       )
     }
 
-    // ── 8. Update our workflow status to refund_issued ────────────────────
-    await pg.raw(
-      `UPDATE order_workflow
-       SET status = 'refund_issued',
-           refund_reason = ?,
-           refund_issued_at = NOW(),
-           updated_at = NOW()
-       WHERE order_id = ? AND deleted_at IS NULL`,
-      [reason.trim(), orderId]
-    )
-
-    // ── 9. Save refund reason as a comment ───────────────────────────────
+    // ── 8. Save refund reason as a comment ───────────────────────────────
     try {
       const wfResult = await pg.raw(
         `SELECT id FROM order_workflow WHERE order_id = ? AND deleted_at IS NULL LIMIT 1`,
@@ -313,6 +426,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           }
         }
         const commentId = `cmt_${Date.now()}`
+        const amountLabel = `$${requestedDollars.toFixed(2)}${isFullRefund ? "" : ` of $${(info.remainingDollars).toFixed(2)} remaining`}`
         await pg.raw(
           `INSERT INTO order_comment
            (id, order_workflow_id, user_id, user_email, user_name, role, comment, created_at)
@@ -324,7 +438,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             userEmail,
             userName,
             "refund",
-            `💸 Refund issued (${gatewayLabel}) — ${reason.trim()}`,
+            `💸 ${isFullRefund ? "Refund" : "Partial refund"} issued (${gatewayLabel}) — ${amountLabel} — ${reason.trim()}`,
           ]
         )
       }
@@ -332,7 +446,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       console.error("[Refund] Comment save error:", commentErr.message)
     }
 
-    // ── 10. Send refund email to patient ──────────────────────────────────
+    // ── 9. Send refund email to patient ──────────────────────────────────
     try {
       const orderResult = await pg.raw(
         `SELECT
@@ -373,6 +487,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             order_display_id: row.display_id,
             clinic_name: row.clinic_name,
             refund_reason: reason.trim(),
+            refund_amount: `$${requestedDollars.toFixed(2)}`,
+            is_partial_refund: !isFullRefund,
             from_email: row.clinic_from_email || undefined,
             from_name: row.clinic_from_name || undefined,
             reply_to: row.clinic_reply_to || undefined,
@@ -385,8 +501,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     return res.json({
       success: true,
-      message: "Refund issued successfully",
+      message: isFullRefund ? "Refund issued successfully" : "Partial refund issued successfully",
       refund_id: gatewayRefundId,
+      amount_refunded: Number(requestedDollars.toFixed(2)),
+      is_full_refund: isFullRefund,
+      remaining_after: Number(Math.max(0, remainingDollars - requestedDollars).toFixed(2)),
     })
   } catch (err: any) {
     console.error("[Refund] Error:", err.message)
