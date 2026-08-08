@@ -26,6 +26,9 @@ interface WorkflowData {
   treatment_dosages: { treatmentId: number; treatmentName: string; dosage: string | null }[]
   pharmacy_queue_id?: string | null
   pharmacy_status?: string | null
+  pharmacy_submit_attempts?: number | null
+  pharmacy_last_error?: string | null
+  pharmacy_blocked_at?: string | null
   location_id?: string | null
   location_name?: string | null
   refund_reason?: string | null
@@ -538,6 +541,38 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
               <span style={{ fontSize: 13, fontWeight: 700, color: "#166534" }}>{td.dosage || "—"}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Auto-submit failure info — shown whenever the poll job has tried and
+          failed at least once, regardless of pharmacy-configured/role gates,
+          so it's never hidden right when it's most needed. */}
+      {!!workflow.pharmacy_last_error && !workflow.pharmacy_queue_id && (
+        <div style={{
+          background: workflow.pharmacy_blocked_at ? "#fef2f2" : "#fffbeb",
+          border: `1px solid ${workflow.pharmacy_blocked_at ? "#fecaca" : "#fde68a"}`,
+          borderRadius: 8, padding: 12, marginBottom: 16,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: workflow.pharmacy_blocked_at ? "#991b1b" : "#92400e", marginBottom: 6 }}>
+            {workflow.pharmacy_blocked_at
+              ? "⛔ Auto-submit blocked after repeated failures"
+              : `⚠️ Auto-submit failed (attempt ${workflow.pharmacy_submit_attempts ?? "?"}/5)`}
+          </div>
+          <div style={{ fontSize: 12, color: "#374151", marginBottom: workflow.pharmacy_last_error.includes("not mapped") ? 6 : 0, fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
+            {workflow.pharmacy_last_error}
+          </div>
+          {workflow.pharmacy_last_error.includes("not mapped") && (
+            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+              → Fix in Provider Settings → this treatment's row → <strong>Dosage → Catalog Mapping</strong>, then use
+              "Submit to Pharmacy API" below to retry immediately.
+            </div>
+          )}
+          {workflow.pharmacy_blocked_at && (
+            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 6 }}>
+              Blocked at {new Date(workflow.pharmacy_blocked_at).toLocaleString()} — the automated poll job won't retry this
+              on its own anymore, but "Submit to Pharmacy API" below still works once the issue is fixed.
+            </div>
+          )}
         </div>
       )}
 
