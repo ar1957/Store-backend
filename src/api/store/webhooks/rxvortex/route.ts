@@ -59,6 +59,21 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const workflow = wfResult.rows[0]
     console.log(`[RxVortexWebhook] Matched workflow ${workflow.id} for order ${workflow.order_id}`)
 
+    // Record the raw webhook payload as the latest status-check response,
+    // regardless of what else happens below — for research/debugging.
+    try {
+      await pg.raw(
+        `UPDATE order_workflow
+         SET pharmacy_status_check_response = ?::jsonb,
+             pharmacy_status_check_source = 'webhook',
+             pharmacy_status_checked_at = NOW()
+         WHERE id = ?`,
+        [JSON.stringify(body), workflow.id]
+      )
+    } catch (logErr: any) {
+      console.error(`[RxVortexWebhook] Failed to persist status-check log:`, logErr.message)
+    }
+
     // Determine if the order has shipped based on status values
     const isShipped = !!(trackingNumber) || rxStatus.toLowerCase().includes("fulfillment complete") ||
       rxStatus.toLowerCase().includes("shipping") || externalStatus === "fulfilled" || externalStatus === "completed"

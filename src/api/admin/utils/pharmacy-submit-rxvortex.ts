@@ -9,6 +9,7 @@
  *   pharmacy_preset_catalog_id if not set at the product level.
  */
 import { normalizePhone } from "./normalize-phone"
+import { savePharmacySubmissionLog } from "./pharmacy-submission-log"
 
 interface RxVortexClinic {
   pharmacy_api_url: string
@@ -361,6 +362,7 @@ export async function submitToRxVortex(
 
   const data = await res.json()
   console.log(`[PharmacySubmit-RxVortex] Response:`, JSON.stringify(data))
+  await savePharmacySubmissionLog(pg, workflowId, payload, data)
 
   if (!res.ok) {
     const errMsg = data.message || `RxVortex API error: HTTP ${res.status}`

@@ -566,6 +566,8 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
         </div>
       )}
 
+      <PharmacySubmissionViewer clinicId={clinicId!} orderId={order.id} />
+
       {/* Actions */}
       {(canMdReview || canShip) && (
         <div style={{ marginBottom: 16 }}>
@@ -809,6 +811,92 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           {savingComment ? "Saving…" : "Add Comment"}
         </button>
       </div>
+    </div>
+  )
+}
+
+// ── Pharmacy Submission Viewer — for research/debugging ──────────────────
+function PharmacySubmissionViewer({ clinicId, orderId }: { clinicId: string; orderId: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState<{
+    pharmacy_submission_payload: any
+    pharmacy_submission_response: any
+    pharmacy_submitted_at: string | null
+    pharmacy_status_check_response: any
+    pharmacy_status_check_source: string | null
+    pharmacy_status_checked_at: string | null
+  } | null>(null)
+  const [error, setError] = useState("")
+
+  const toggle = async () => {
+    const next = !expanded
+    setExpanded(next)
+    if (next && !data) {
+      setLoading(true)
+      setError("")
+      try {
+        const res = await fetch(`/admin/clinics/${clinicId}/orders/${orderId}/pharmacy-submission`, { credentials: "include" })
+        const json = await res.json()
+        if (res.ok) setData(json)
+        else setError(json.message || "Failed to load submission data")
+      } catch {
+        setError("Network error loading submission data")
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <button
+        onClick={toggle}
+        style={{ background: "none", border: "none", color: "#6b7280", fontSize: 12, cursor: "pointer", padding: 0, textDecoration: "underline" }}
+      >
+        {expanded ? "▲" : "▼"} 🔍 View pharmacy submission (research)
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 8, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8, padding: 12 }}>
+          {loading && <div style={{ fontSize: 12, color: "#9ca3af" }}>Loading…</div>}
+          {error && <div style={{ fontSize: 12, color: "#dc2626" }}>{error}</div>}
+          {data && !data.pharmacy_submission_payload && !data.pharmacy_status_check_response && (
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>No submission or status-check data recorded for this order yet.</div>
+          )}
+          {data?.pharmacy_submission_payload && (
+            <>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
+                Payload sent
+              </div>
+              <pre style={{ fontSize: 11, background: "#111827", color: "#e5e7eb", padding: 10, borderRadius: 6, overflowX: "auto", marginBottom: 12 }}>
+                {JSON.stringify(data.pharmacy_submission_payload, null, 2)}
+              </pre>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
+                Response received
+              </div>
+              <pre style={{ fontSize: 11, background: "#111827", color: "#e5e7eb", padding: 10, borderRadius: 6, overflowX: "auto", marginBottom: data.pharmacy_status_check_response ? 12 : 0 }}>
+                {JSON.stringify(data.pharmacy_submission_response, null, 2)}
+              </pre>
+            </>
+          )}
+          {data?.pharmacy_status_check_response && (
+            <>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
+                Latest status check
+                {data.pharmacy_status_check_source && (
+                  <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 6, color: "#9ca3af" }}>
+                    via {data.pharmacy_status_check_source === "webhook" ? "webhook (pushed by pharmacy)" : "API poll"}
+                    {data.pharmacy_status_checked_at && ` — ${new Date(data.pharmacy_status_checked_at).toLocaleString()}`}
+                  </span>
+                )}
+              </div>
+              <pre style={{ fontSize: 11, background: "#111827", color: "#e5e7eb", padding: 10, borderRadius: 6, overflowX: "auto" }}>
+                {JSON.stringify(data.pharmacy_status_check_response, null, 2)}
+              </pre>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }

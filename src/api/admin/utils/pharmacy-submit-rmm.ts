@@ -3,6 +3,7 @@
  * Uses JWT authentication — token obtained fresh each submission.
  */
 import { normalizePhone } from "./normalize-phone"
+import { savePharmacySubmissionLog } from "./pharmacy-submission-log"
 
 interface RmmClinic {
   pharmacy_api_url: string
@@ -124,6 +125,7 @@ export async function submitToRmm(
 
   const data = await res.json()
   console.log(`[PharmacySubmit-RMM] Response:`, JSON.stringify(data))
+  await savePharmacySubmissionLog(pg, workflowId, payload, data)
 
   if (!res.ok) throw new Error(data.error || `RMM API error: ${res.status}`)
 
