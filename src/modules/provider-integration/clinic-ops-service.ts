@@ -15,6 +15,7 @@ export const ORDER_STATUS = {
   PHARMACY_PROCESSING:      "pharmacy_processing",
   SHIPPED:                  "shipped",
   REFUND_ISSUED:            "refund_issued",
+  PARTIAL_REFUND_ISSUED:    "partial_refund_issued",
 } as const
 
 export type OrderStatus = typeof ORDER_STATUS[keyof typeof ORDER_STATUS]
@@ -29,6 +30,7 @@ export const STATUS_LABELS: Record<OrderStatus, string> = {
   pharmacy_processing:      "Pharmacy Processing",
   shipped:                  "Shipped",
   refund_issued:            "Refund Issued",
+  partial_refund_issued:    "Partially Refunded",
 }
 
 // ── Service ────────────────────────────────────────────────────────────────

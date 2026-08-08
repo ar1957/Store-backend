@@ -119,6 +119,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   shipped:                  { label: "Shipped",            color: "#065f46", bg: "#d1fae5" },
   pending_pharmacy:         { label: "Pending Pharmacy",   color: "#0e7490", bg: "#cffafe" },
   refund_issued:            { label: "Refund Issued",      color: "#991b1b", bg: "#fee2e2" },
+  partial_refund_issued:    { label: "Partially Refunded", color: "#92400e", bg: "#fef3c7" },
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -1389,6 +1390,33 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
 
   const [dosageMappings, setDosageMappings] = useState<DosageMapping[]>([])
 
+  // Pre-fetch dosage availability per treatment so the Dosage Mapping section
+  // only lists treatments that actually have MHC dosage data — otherwise
+  // treatments with no dosage progression (e.g. NAD+, CJC-1295/Ipamorelin)
+  // show up as dead-end panels that just error with "No Dosage Found".
+  const [treatmentDosages, setTreatmentDosages] = useState<Record<number, MhcDosage[]>>({})
+  const [treatmentDosagesLoading, setTreatmentDosagesLoading] = useState(false)
+
+  useEffect(() => {
+    if (!isRxVortex) return
+    const treatmentIds = [...new Set(mappings.filter(m => m.treatment_id).map(m => m.treatment_id))]
+    if (treatmentIds.length === 0) { setTreatmentDosages({}); return }
+
+    setTreatmentDosagesLoading(true)
+    Promise.all(treatmentIds.map(async (tid): Promise<[number, MhcDosage[]]> => {
+      try {
+        const res = await fetch(`/admin/clinics/${clinic.id}/mhc-dosages/${tid}`, { credentials: "include", headers: adminHeaders() })
+        if (!res.ok) return [tid, []]
+        const data = await res.json()
+        return [tid, data.dosages || []]
+      } catch {
+        return [tid, []]
+      }
+    }))
+      .then(results => setTreatmentDosages(Object.fromEntries(results)))
+      .finally(() => setTreatmentDosagesLoading(false))
+  }, [clinic.id, isRxVortex, mappings])
+
   useEffect(() => { loadMappings(); loadProducts(); loadDosageMappings() }, [clinic.id])
 
   const loadMappings = async () => {
@@ -1558,7 +1586,8 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       {isRxVortex && (() => {
         const treatmentsById = new Map<number, string>()
         mappings.forEach(m => { if (m.treatment_id) treatmentsById.set(m.treatment_id, m.treatment_name || String(m.treatment_id)) })
-        const distinctTreatments = [...treatmentsById.entries()]
+        const dosageEligibleTreatments = [...treatmentsById.entries()]
+          .filter(([treatmentId]) => (treatmentDosages[treatmentId]?.length ?? 0) > 0)
 
         return (
           <div style={{ marginTop: 24 }}>
@@ -1566,17 +1595,23 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
             <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12 }}>
               Some pharmacies use a different catalog item per dosage/strength rather than one item per product.
               Map each dosage tier below to the matching Strive catalog item — orders will prefer this over the
-              single product-level mapping above when a match exists.
+              single product-level mapping above when a match exists. Only treatments with dosage progression
+              data are listed here — others (e.g. NAD+) use the general mapping above only.
             </div>
-            {distinctTreatments.length === 0 ? (
+            {treatmentDosagesLoading ? (
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>Checking treatments for dosage data…</div>
+            ) : treatmentsById.size === 0 ? (
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Map a product to a treatment above first.</div>
+            ) : dosageEligibleTreatments.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>None of your mapped treatments have dosage progression data.</div>
             ) : (
-              distinctTreatments.map(([treatmentId, treatmentName]) => (
+              dosageEligibleTreatments.map(([treatmentId, treatmentName]) => (
                 <DosageMappingSection
                   key={treatmentId}
                   clinicId={clinic.id}
                   treatmentId={treatmentId}
                   treatmentName={treatmentName}
+                  dosages={treatmentDosages[treatmentId] || []}
                   catalog={rxCatalog}
                   catalogLoading={rxCatalogLoading}
                   catalogError={rxCatalogError}
@@ -1611,11 +1646,12 @@ interface MhcDosage {
 }
 
 function DosageMappingSection({
-  clinicId, treatmentId, treatmentName, catalog, catalogLoading, catalogError, existingMappings, onSaved,
+  clinicId, treatmentId, treatmentName, dosages, catalog, catalogLoading, catalogError, existingMappings, onSaved,
 }: {
   clinicId: string
   treatmentId: number
   treatmentName: string
+  dosages: MhcDosage[]
   catalog: RxVortexCatalogItem[]
   catalogLoading: boolean
   catalogError: string
@@ -1623,36 +1659,7 @@ function DosageMappingSection({
   onSaved: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
-  const [dosages, setDosages] = useState<MhcDosage[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState("")
-  const [loaded, setLoaded] = useState(false)
-
-  const loadDosages = async () => {
-    setLoading(true)
-    setError("")
-    try {
-      const res = await fetch(`/admin/clinics/${clinicId}/mhc-dosages/${treatmentId}`, { credentials: "include", headers: adminHeaders() })
-      const data = await res.json()
-      if (res.ok) {
-        setDosages(data.dosages || [])
-        setLoaded(true)
-      } else {
-        setError(data.message || "Failed to load dosages")
-      }
-    } catch {
-      setError("Network error loading dosages")
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const toggle = () => {
-    const next = !expanded
-    setExpanded(next)
-    if (next && !loaded) loadDosages()
-  }
-
+  const toggle = () => setExpanded(e => !e)
   const mappedCount = existingMappings.length
 
   return (
@@ -1679,15 +1686,6 @@ function DosageMappingSection({
 
       {expanded && (
         <div style={{ padding: "10px 14px" }}>
-          {loading && <div style={{ fontSize: 12, color: "#9ca3af" }}>Loading dosages…</div>}
-          {error && (
-            <div style={{ fontSize: 12, color: "#dc2626" }}>
-              {error} <button onClick={loadDosages} style={{ ...s.btnOutline, marginLeft: 8, padding: "2px 8px", fontSize: 11 }}>Retry</button>
-            </div>
-          )}
-          {!loading && !error && dosages.length === 0 && loaded && (
-            <div style={{ fontSize: 12, color: "#9ca3af" }}>No dosages found for this treatment.</div>
-          )}
           {dosages.length > 0 && (
             <table style={s.table}>
               <thead>

@@ -28,6 +28,7 @@ interface WorkflowData {
   pharmacy_status?: string | null
   location_id?: string | null
   location_name?: string | null
+  refund_reason?: string | null
 }
 
 interface Comment {
@@ -62,6 +63,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   pharmacy_processing: { label: "Processing",        color: "#1e40af", bg: "#dbeafe" },
   shipped:             { label: "Shipped",           color: "#065f46", bg: "#d1fae5" },
   refund_issued:       { label: "Refund Issued",     color: "#991b1b", bg: "#fee2e2" },
+  partial_refund_issued: { label: "Partially Refunded", color: "#92400e", bg: "#fef3c7" },
   provider_approved:   { label: "Provider Approved", color: "#065f46", bg: "#d1fae5" },
 }
 
@@ -464,10 +466,17 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
       <div style={ws.header}>🏥 Clinic Workflow</div>
 
       {/* Status + role badge */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: si.bg, color: si.color }}>
           {si.label}
         </span>
+        {/* Legacy fallback: orders partially refunded before status auto-advance was
+            added will have refund_reason set but never moved off their old status. */}
+        {!["refund_issued", "partial_refund_issued"].includes(workflow.status) && workflow.refund_reason && (
+          <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: "#fef3c7", color: "#92400e" }}>
+            ⚠️ Partial refund issued — status not advanced
+          </span>
+        )}
         <span style={{ fontSize: 12, color: "#6b7280" }}>
           Logged in as: <strong>{ROLE_LABELS[role]}</strong>
         </span>
@@ -805,18 +814,50 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
 }
 
 // ── Refund Section Component ─────────────────────────────────────────────
-function RefundSection({ clinicId, orderId, onRefunded }: { 
+function RefundSection({ clinicId, orderId, onRefunded }: {
   clinicId: string
   orderId: string
-  onRefunded: () => void 
+  onRefunded: () => void
 }) {
   const [showRefund, setShowRefund] = useState(false)
   const [refundReason, setRefundReason] = useState("")
+  const [refundAmount, setRefundAmount] = useState("")
   const [processing, setProcessing] = useState(false)
   const [error, setError] = useState("")
 
+  const [maxRefundable, setMaxRefundable] = useState<number | null>(null)
+  const [alreadyRefunded, setAlreadyRefunded] = useState(0)
+  const [loadingMax, setLoadingMax] = useState(false)
+
+  const openRefund = async () => {
+    setShowRefund(true)
+    setLoadingMax(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinicId}/orders/${orderId}/refund`, {
+        credentials: "include",
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setMaxRefundable(data.remaining)
+        setAlreadyRefunded(data.already_refunded || 0)
+        setRefundAmount(data.remaining > 0 ? data.remaining.toFixed(2) : "")
+      } else {
+        setError(data.message || "Could not load refundable amount")
+      }
+    } catch {
+      setError("Network error loading refundable amount")
+    } finally {
+      setLoadingMax(false)
+    }
+  }
+
+  const amountNum = Number(refundAmount)
+  const amountValid = Number.isFinite(amountNum) && amountNum > 0
+    && (maxRefundable == null || amountNum <= maxRefundable + 0.005)
+
   const issueRefund = async () => {
     if (!refundReason.trim()) { setError("Please provide a reason"); return }
+    if (!amountValid) { setError("Please enter a valid refund amount"); return }
     setProcessing(true)
     setError("")
     try {
@@ -824,12 +865,14 @@ function RefundSection({ clinicId, orderId, onRefunded }: {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: refundReason }),
+        body: JSON.stringify({ reason: refundReason, amount: amountNum }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.message || "Refund failed"); return }
       setShowRefund(false)
       setRefundReason("")
+      setRefundAmount("")
+      setMaxRefundable(null)
       onRefunded()
     } catch (e: any) {
       setError(e.message || "Refund failed")
@@ -841,7 +884,7 @@ function RefundSection({ clinicId, orderId, onRefunded }: {
   return (
     <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 12, marginBottom: 12 }}>
       {!showRefund ? (
-        <button onClick={() => setShowRefund(true)} style={{
+        <button onClick={openRefund} style={{
           padding: "6px 14px", borderRadius: 6, border: "1px solid #fecaca",
           background: "#fef2f2", fontSize: 12, color: "#dc2626", cursor: "pointer", fontWeight: 500
         }}>
@@ -850,6 +893,44 @@ function RefundSection({ clinicId, orderId, onRefunded }: {
       ) : (
         <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 13, color: "#dc2626", marginBottom: 8 }}>Issue Refund</div>
+
+          {loadingMax ? (
+            <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 8 }}>Loading refundable amount…</div>
+          ) : maxRefundable != null && (
+            <div style={{ fontSize: 12, color: "#7f1d1d", marginBottom: 8 }}>
+              Up to <strong>${maxRefundable.toFixed(2)}</strong> refundable
+              {alreadyRefunded > 0 && ` (already refunded $${alreadyRefunded.toFixed(2)})`}.
+            </div>
+          )}
+
+          <label style={ws.label}>Refund amount</label>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 8 }}>
+            <span style={{ fontSize: 13, color: "#374151" }}>$</span>
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              max={maxRefundable ?? undefined}
+              style={{ ...ws.input, width: 120 }}
+              value={refundAmount}
+              onChange={e => setRefundAmount(e.target.value)}
+              disabled={loadingMax}
+            />
+            {maxRefundable != null && (
+              <button
+                onClick={() => setRefundAmount(maxRefundable.toFixed(2))}
+                style={{ fontSize: 11, color: "#dc2626", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
+              >
+                Refund full amount
+              </button>
+            )}
+          </div>
+          {refundAmount && !amountValid && !loadingMax && (
+            <div style={{ color: "#dc2626", fontSize: 11, marginBottom: 8 }}>
+              Enter an amount greater than $0{maxRefundable != null ? ` and up to $${maxRefundable.toFixed(2)}` : ""}.
+            </div>
+          )}
+
           <label style={ws.label}>Reason for refund</label>
           <textarea
             style={{ ...ws.input, height: 60, resize: "none", marginBottom: 8 }}
@@ -859,13 +940,13 @@ function RefundSection({ clinicId, orderId, onRefunded }: {
           />
           {error && <div style={{ color: "#dc2626", fontSize: 12, marginBottom: 8 }}>{error}</div>}
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={issueRefund} disabled={processing || !refundReason.trim()}
-              style={{ padding: "7px 14px", borderRadius: 6, border: "none", background: "#dc2626", 
+            <button onClick={issueRefund} disabled={processing || !refundReason.trim() || !amountValid}
+              style={{ padding: "7px 14px", borderRadius: 6, border: "none", background: "#dc2626",
                        color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer",
-                       opacity: !refundReason.trim() ? 0.5 : 1 }}>
-              {processing ? "Processing…" : "Confirm Refund"}
+                       opacity: (!refundReason.trim() || !amountValid) ? 0.5 : 1 }}>
+              {processing ? "Processing…" : `Confirm Refund${refundAmount ? ` ($${refundAmount})` : ""}`}
             </button>
-            <button onClick={() => { setShowRefund(false); setRefundReason(""); setError("") }}
+            <button onClick={() => { setShowRefund(false); setRefundReason(""); setRefundAmount(""); setMaxRefundable(null); setError("") }}
               style={{ padding: "7px 14px", borderRadius: 6, border: "1px solid #d1d5db",
                        background: "#fff", fontSize: 12, cursor: "pointer" }}>
               Cancel

@@ -19,6 +19,7 @@ type WorkflowStatus =
   | "shipped"
   | "md_denied"
   | "refund_issued"
+  | "partial_refund_issued"
 
 interface TreatmentDosage {
   dosage: string
@@ -37,6 +38,7 @@ interface OrderWorkflow {
   carrier: string | null
   location_name: string | null
   archived_at: string | null
+  refund_reason: string | null
 }
 
 interface PayoutInfo {
@@ -119,6 +121,11 @@ const STATUS_CONFIG: Record<WorkflowStatus, { label: string; color: string; bg: 
     color: "#374151",
     bg: "#F3F4F6",
   },
+  partial_refund_issued: {
+    label: "Partially Refunded",
+    color: "#92400E",
+    bg: "#FEF3C7",
+  },
   pending_pharmacy: {
     label: "Pending Pharmacy",
     color: "#0E7490",
@@ -186,9 +193,54 @@ function PayoutCell({ info }: { info: PayoutInfo | null }) {
   )
 }
 
-function StatusBadge({ status }: { status: WorkflowStatus | null }) {
+// A partial refund now advances status to "partial_refund_issued" directly
+// (which already gets its own badge below), EXCEPT for orders already past
+// the point where that matters (shipped) or refunded before this existed —
+// this fallback badge flags that legacy/exempt case: refund_reason is set
+// but status was never moved off its original value.
+function PartialRefundBadge() {
+  return (
+    <span style={{
+      display: "inline-flex",
+      alignItems: "center",
+      padding: "2px 10px",
+      borderRadius: "9999px",
+      fontSize: "11px",
+      fontWeight: 500,
+      background: "#FEF3C7",
+      color: "#92400E",
+      whiteSpace: "nowrap",
+    }}>
+      ⚠️ Partial Refund
+    </span>
+  )
+}
+
+function StatusBadge({ status, refundReason }: { status: WorkflowStatus | null; refundReason?: string | null }) {
+  const isPartiallyRefunded = !["refund_issued", "partial_refund_issued"].includes(status || "") && !!refundReason
+
   if (!status) {
     return (
+      <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+        <span style={{
+          display: "inline-flex",
+          alignItems: "center",
+          padding: "2px 10px",
+          borderRadius: "9999px",
+          fontSize: "12px",
+          fontWeight: 500,
+          background: "#F3F4F6",
+          color: "#6B7280",
+        }}>
+          No Status
+        </span>
+        {isPartiallyRefunded && <PartialRefundBadge />}
+      </span>
+    )
+  }
+  const cfg = STATUS_CONFIG[status] ?? { label: status, color: "#374151", bg: "#F3F4F6" }
+  return (
+    <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
       <span style={{
         display: "inline-flex",
         alignItems: "center",
@@ -196,27 +248,13 @@ function StatusBadge({ status }: { status: WorkflowStatus | null }) {
         borderRadius: "9999px",
         fontSize: "12px",
         fontWeight: 500,
-        background: "#F3F4F6",
-        color: "#6B7280",
+        background: cfg.bg,
+        color: cfg.color,
+        whiteSpace: "nowrap",
       }}>
-        No Status
+        {cfg.label}
       </span>
-    )
-  }
-  const cfg = STATUS_CONFIG[status] ?? { label: status, color: "#374151", bg: "#F3F4F6" }
-  return (
-    <span style={{
-      display: "inline-flex",
-      alignItems: "center",
-      padding: "2px 10px",
-      borderRadius: "9999px",
-      fontSize: "12px",
-      fontWeight: 500,
-      background: cfg.bg,
-      color: cfg.color,
-      whiteSpace: "nowrap",
-    }}>
-      {cfg.label}
+      {isPartiallyRefunded && <PartialRefundBadge />}
     </span>
   )
 }
@@ -730,6 +768,7 @@ export default function ClinicOrdersPage() {
           <option value="shipped">Shipped</option>
           <option value="md_denied">Denied</option>
           <option value="refund_issued">Refunded</option>
+          <option value="partial_refund_issued">Partially Refunded</option>
         </select>
 
         <select
@@ -993,7 +1032,7 @@ export default function ClinicOrdersPage() {
 
                       {/* Workflow Status */}
                       <td style={{ padding: "14px 16px" }}>
-                        <StatusBadge status={order.workflow?.status ?? null} />
+                        <StatusBadge status={order.workflow?.status ?? null} refundReason={order.workflow?.refund_reason} />
                       </td>
 
                       {/* Ship Date */}
