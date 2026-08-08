@@ -112,6 +112,26 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         : `Your prescription has been submitted to the pharmacy. Reference: #${order.pharmacy_queue_id}`
     }
 
+    // Split orders ship as multiple independent pharmacy orders — surface
+    // each one's own tracking, not just the single legacy tracking_number
+    // (which is only ever set when there's exactly one pharmacy order).
+    const subOrdersResult = await pgConnection.raw(`
+      SELECT split_index, dosage, pharmacy_queue_id, pharmacy_status, tracking_number, carrier, shipped_at
+      FROM pharmacy_sub_order
+      WHERE order_workflow_id = ?
+      ORDER BY split_index
+    `, [order.id])
+    const subOrders = subOrdersResult.rows.map((so: any) => ({
+      dosage: so.dosage,
+      pharmacyQueueId: so.pharmacy_queue_id,
+      pharmacyStatus: so.pharmacy_status,
+      tracking: so.tracking_number ? {
+        trackingNumber: so.tracking_number,
+        carrier: so.carrier,
+        shippedAt: so.shipped_at,
+      } : null,
+    }))
+
     return res.json({
       gfeId: order.gfe_id,
       status: order.status,
@@ -127,6 +147,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         carrier: order.carrier,
         shippedAt: order.shipped_at,
       } : null,
+      // Present only when this order was split into multiple pharmacy
+      // orders (length > 1) — the storefront shows this instead of the
+      // single `tracking` field in that case.
+      subOrders,
       timeline: {
         submitted: order.created_at,
         providerReviewed: order.provider_reviewed_at,
