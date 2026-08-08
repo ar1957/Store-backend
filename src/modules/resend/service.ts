@@ -13,6 +13,25 @@ import * as React from "react"
 
 // ── Email Templates ────────────────────────────────────────────────────────
 
+// Product/item names can carry "<...>" HTML for full control (shows literal
+// tags anywhere that can't render HTML) or a "|" marker for a safe line
+// break (no HTML injection, degrades to a plain separator elsewhere).
+function renderItemTitle(e: typeof React.createElement, title: string) {
+  if (typeof title !== "string") return title
+  if (title.includes("<")) {
+    return e("div", { dangerouslySetInnerHTML: { __html: title } })
+  }
+  if (title.includes("|")) {
+    const parts = title.split("|")
+    return e(
+      "div",
+      null,
+      ...parts.flatMap((part, i) => (i === 0 ? [part.trim()] : [e("br", { key: i }), part.trim()]))
+    )
+  }
+  return e("div", null, title)
+}
+
 function OrderConfirmationEmail({ data }: { data: any }) {
   const brand = data.brand_color || "#6d28d9"
   const items: any[] = data.line_items || []
@@ -67,9 +86,7 @@ function OrderConfirmationEmail({ data }: { data: any }) {
           ...items.map((item: any, i: number) =>
             e("tr", { key: i, style: { borderBottom: "1px solid #f3f4f6" } },
               e("td", { style: { padding: "10px 12px", color: "#374151", verticalAlign: "top" } },
-                typeof item.title === "string" && item.title.includes("<")
-                  ? e("div", { dangerouslySetInnerHTML: { __html: item.title } })
-                  : e("div", null, item.title),
+                renderItemTitle(e, item.title),
                 ...(item.notes || []).map((n: string, j: number) =>
                   e("div", { key: j, style: { fontSize: 12, color: "#6b7280", marginTop: 4 } },
                     e("strong", null, n.split(":")[0] + ":"),
