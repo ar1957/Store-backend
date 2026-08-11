@@ -461,6 +461,19 @@ const steps = [
     `,
   },
   {
+    // NOTE: this is Migration20240101000020.ts — the "Migration20" label two
+    // steps up is a coincidental naming collision with an unrelated earlier
+    // step (archived_at) and is NOT this migration. Kept fully qualified here
+    // to avoid that confusion recurring.
+    name: "Migration20240101000020 - pharmacy_submit_attempts/pharmacy_last_error/pharmacy_blocked_at on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "pharmacy_submit_attempts" INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "pharmacy_last_error"       TEXT,
+        ADD COLUMN IF NOT EXISTS "pharmacy_blocked_at"       TIMESTAMPTZ;
+    `,
+  },
+  {
     name: "Migration21 - treatment_dosage_catalog_map table",
     sql: `
       CREATE TABLE IF NOT EXISTS "treatment_dosage_catalog_map" (
