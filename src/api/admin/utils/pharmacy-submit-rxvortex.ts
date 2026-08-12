@@ -23,7 +23,7 @@
  *   skipped, only unsubmitted ones are retried.
  */
 import { normalizePhone } from "./normalize-phone"
-import { savePharmacySubmissionLog } from "./pharmacy-submission-log"
+import { savePharmacySubmissionLog, saveSubOrder, getExistingSubOrderQueueIds } from "./pharmacy-submission-log"
 
 interface RxVortexClinic {
   pharmacy_api_url: string
@@ -96,43 +96,8 @@ export async function getRxVortexToken(baseUrl: string, clientId: string, client
   return data.access_token
 }
 
-// Upserts a pharmacy_sub_order row — used for both the bundled order (index
-// 1) and each individual split. ON CONFLICT so a retry that re-touches an
-// already-recorded row (shouldn't normally happen, but safe under races)
-// updates rather than errors.
-async function saveSubOrder(pg: any, row: {
-  id: string
-  workflowId: string
-  splitIndex: number
-  splitCount: number
-  treatmentId: number | null
-  productId: string | null
-  dosage: string | null
-  dosageKey: string | null
-  catalogId: string | null
-  queueId: string
-  payload: any
-  response: any
-}) {
-  await pg.raw(`
-    INSERT INTO pharmacy_sub_order
-      (id, order_workflow_id, split_index, split_count, treatment_id, product_id, dosage, dosage_key,
-       rxvortex_preset_catalog_id, pharmacy_queue_id, pharmacy_status, pharmacy_submitted_at,
-       pharmacy_submission_payload, pharmacy_submission_response, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', NOW(), ?::jsonb, ?::jsonb, NOW(), NOW())
-    ON CONFLICT (order_workflow_id, split_index) DO UPDATE SET
-      pharmacy_queue_id = EXCLUDED.pharmacy_queue_id,
-      pharmacy_status = EXCLUDED.pharmacy_status,
-      pharmacy_submitted_at = EXCLUDED.pharmacy_submitted_at,
-      pharmacy_submission_payload = EXCLUDED.pharmacy_submission_payload,
-      pharmacy_submission_response = EXCLUDED.pharmacy_submission_response,
-      updated_at = NOW()
-  `, [
-    row.id, row.workflowId, row.splitIndex, row.splitCount, row.treatmentId, row.productId,
-    row.dosage, row.dosageKey, row.catalogId, row.queueId,
-    JSON.stringify(row.payload ?? null), JSON.stringify(row.response ?? null),
-  ])
-}
+// saveSubOrder / getExistingSubOrderQueueIds moved to pharmacy-submission-log.ts
+// (shared with RMM, which uses the same pharmacy_sub_order tracking).
 
 export async function submitToRxVortex(
   pg: any,
@@ -385,14 +350,7 @@ export async function submitToRxVortex(
   }
 
   // ── Load already-submitted sub-orders for idempotent retry ────────────────
-  const existingResult = await pg.raw(
-    `SELECT split_index, pharmacy_queue_id FROM pharmacy_sub_order WHERE order_workflow_id = ?`,
-    [workflowId]
-  )
-  const existingByIndex = new Map<number, string>()
-  for (const row of existingResult.rows) {
-    if (row.pharmacy_queue_id) existingByIndex.set(Number(row.split_index), row.pharmacy_queue_id)
-  }
+  const existingByIndex = await getExistingSubOrderQueueIds(pg, workflowId)
 
   const errors: string[] = []
   let firstQueueId: string | null = null
