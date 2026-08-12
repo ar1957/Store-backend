@@ -2875,7 +2875,7 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
         <div style={{ padding: "10px 14px", background: "#fefce8", border: "1px solid #fde047", borderRadius: 8, fontSize: 12, color: "#713f12" }}>
           ⚡ RxVortex uses <strong>webhooks</strong> for real-time status updates (no polling). Configure your webhook URL in the RxVortex/Strive portal as:<br />
           <code style={{ fontFamily: "monospace", fontSize: 11, background: "#fef9c3", padding: "2px 6px", borderRadius: 4 }}>
-            https://yourdomain.com/store/webhooks/rxvortex
+            https://yourdomain.com/webhooks/rxvortex
           </code>
         </div>
       </>)}
