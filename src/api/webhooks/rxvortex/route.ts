@@ -1,5 +1,5 @@
 /**
- * POST /store/webhooks/rxvortex
+ * POST /webhooks/rxvortex
  *
  * Receives real-time status updates from RxVortex (Strive) pharmacy.
  * RxVortex sends a webhook payload whenever an order status changes.
@@ -21,9 +21,13 @@
  * before pharmacy_sub_order existed. order_workflow.status only flips to
  * 'shipped' once every sub-order for that order has a tracking number.
  *
- * This endpoint is intentionally unauthenticated (no Medusa JWT required).
- * RxVortex does not sign payloads; security relies on the secret URL path.
- * Add IP allowlisting in nginx/ALB if desired for additional protection.
+ * This route lives outside /store and /admin on purpose: Medusa mounts its
+ * publishable-API-key requirement unconditionally on the entire /store
+ * namespace with no per-route opt-out, so a webhook endpoint under /store
+ * can never be reached by an external caller that doesn't send that key.
+ * Security instead relies on the secret URL path (add IP allowlisting in
+ * nginx/ALB if desired for additional protection) — RxVortex does not sign
+ * payloads.
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 
