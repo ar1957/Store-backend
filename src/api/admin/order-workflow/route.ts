@@ -178,7 +178,12 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
         vl_agg.pharmacy_payout_status,
         vl_agg.pharmacy_payout_amount,
         vp_p.reference_number AS pharmacy_payout_ref,
-        vp_p.paid_at          AS pharmacy_paid_at
+        vp_p.paid_at          AS pharmacy_paid_at,
+        so_agg.sub_order_count,
+        so_agg.sub_order_shipped_count,
+        so_agg.sub_order_last_shipped_at,
+        so_agg.sub_order_tracking_numbers,
+        so_agg.sub_order_carrier
        FROM "order" o
        LEFT JOIN "customer" c         ON c.id  = o.customer_id
        LEFT JOIN "order_address" oa   ON oa.id = o.shipping_address_id
@@ -202,6 +207,16 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
        ) vl_agg ON true
        LEFT JOIN vendor_payout vp_c ON vp_c.id = vl_agg.clinic_payout_id
        LEFT JOIN vendor_payout vp_p ON vp_p.id = vl_agg.pharmacy_payout_id
+       LEFT JOIN LATERAL (
+         SELECT
+           COUNT(*)                       AS sub_order_count,
+           COUNT(tracking_number)         AS sub_order_shipped_count,
+           MAX(shipped_at)                AS sub_order_last_shipped_at,
+           STRING_AGG(tracking_number, ', ' ORDER BY split_index) FILTER (WHERE tracking_number IS NOT NULL) AS sub_order_tracking_numbers,
+           MAX(carrier)                   AS sub_order_carrier
+         FROM pharmacy_sub_order
+         WHERE order_workflow_id = wf.id
+       ) so_agg ON true
        WHERE o.deleted_at IS NULL
          AND o.is_draft_order = false
          ${clinicFilter}
@@ -260,9 +275,14 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
           status: row.wf_status,
           provider_status: row.provider_status,
           treatment_dosages,
-          shipped_at: row.shipped_at,
-          tracking_number: row.tracking_number,
-          carrier: row.carrier,
+          // Split orders (>1 pharmacy_sub_order rows) never populate these
+          // legacy columns on order_workflow directly — each sub-order ships
+          // independently, so fall back to the sub-order aggregate.
+          shipped_at: row.shipped_at ?? row.sub_order_last_shipped_at ?? null,
+          tracking_number: row.tracking_number ?? row.sub_order_tracking_numbers ?? null,
+          carrier: row.carrier ?? row.sub_order_carrier ?? null,
+          sub_order_count: Number(row.sub_order_count) || 0,
+          sub_order_shipped_count: Number(row.sub_order_shipped_count) || 0,
           location_name: row.location_name ?? null,
           archived_at: row.archived_at ?? null,
         } : null,

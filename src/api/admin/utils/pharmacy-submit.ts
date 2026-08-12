@@ -87,7 +87,7 @@ export async function submitToPharmacyIfEnabled(
 
     // ── RMM path ──────────────────────────────────────────────────────────────
     if (isRmm) {
-      await submitToRmm(pg, clinic, order, workflowId, drugName, rxNumber, treatmentDosages)
+      await submitToRmm(pg, clinicId, clinic, order, workflowId, drugName, rxNumber, treatmentDosages)
       return
     }
 
