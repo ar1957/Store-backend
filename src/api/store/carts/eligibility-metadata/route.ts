@@ -14,6 +14,16 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "eligibilityData is required" })
     }
 
+    if (eligibilityData.dob) {
+      const todayStr = new Date().toISOString().split("T")[0]
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(eligibilityData.dob)) {
+        return res.status(400).json({ message: "Invalid date of birth" })
+      }
+      if (eligibilityData.dob > todayStr) {
+        return res.status(400).json({ message: "Date of birth cannot be in the future" })
+      }
+    }
+
     // Get cart ID from body first, then cookie, then header
     const cartId = bodyCartId
       || req.cookies?.["_medusa_cart_id"]
