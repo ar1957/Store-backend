@@ -27,6 +27,19 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "Missing required fields" })
     }
 
+    // 3. Parse DOB — split the "YYYY-MM-DD" string directly rather than
+    // routing it through `new Date(dob)`, which parses as UTC midnight and
+    // would shift by a day if read back with local-timezone getters.
+    const dobMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dob)
+    if (!dobMatch) {
+      return res.status(400).json({ message: "Invalid date of birth" })
+    }
+    const [, birthYear, birthMonth, birthDay] = dobMatch
+    const todayStr = new Date().toISOString().split("T")[0]
+    if (dob > todayStr) {
+      return res.status(400).json({ message: "Date of birth cannot be in the future" })
+    }
+
     // 1. Get clinic
     const clinic = await clinicSvc.getClinicByDomain(domain)
     if (!clinic) return res.status(404).json({ message: "Clinic not found" })
@@ -36,12 +49,6 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const baseUrl = clinic.api_env === "prod"
       ? clinic.api_base_url_prod
       : clinic.api_base_url_test
-
-    // 3. Parse DOB
-    const dobDate = new Date(dob)
-    const birthYear = dobDate.getFullYear()
-    const birthMonth = String(dobDate.getMonth() + 1).padStart(2, "0")
-    const birthDay = String(dobDate.getDate()).padStart(2, "0")
 
     // 4. Create patient
     const patientPayload = {
