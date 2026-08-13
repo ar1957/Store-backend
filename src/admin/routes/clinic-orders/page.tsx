@@ -36,6 +36,8 @@ interface OrderWorkflow {
   shipped_at: string | null
   tracking_number: string | null
   carrier: string | null
+  sub_order_count?: number
+  sub_order_shipped_count?: number
   location_name: string | null
   archived_at: string | null
   refund_reason: string | null
@@ -632,14 +634,27 @@ export default function ClinicOrdersPage() {
     setRefreshing(true)
     setRefreshMsg(null)
     try {
-      const res = await fetch("/admin/gfe-poll", {
-        method: "POST",
-        credentials: "include",
-      })
-      const data = await res.json()
-      setRefreshMsg(`Checked ${data.checked} orders — ${data.updated} status${data.updated !== 1 ? "es" : ""} updated`)
+      const [gfeResult, pharmacyResult] = await Promise.allSettled([
+        fetch("/admin/gfe-poll", { method: "POST", credentials: "include" }).then(r => r.json()),
+        fetch("/admin/pharmacy-status-poll", { method: "POST", credentials: "include" }).then(r => r.json()),
+      ])
+
+      const parts: string[] = []
+      if (gfeResult.status === "fulfilled") {
+        const d = gfeResult.value
+        parts.push(`GFE: checked ${d.checked}, ${d.updated} update${d.updated !== 1 ? "s" : ""}`)
+      } else {
+        parts.push("GFE poll failed")
+      }
+      if (pharmacyResult.status === "fulfilled") {
+        const d = pharmacyResult.value
+        parts.push(`Pharmacy: checked ${d.checked}, ${d.updated} update${d.updated !== 1 ? "s" : ""}`)
+      } else {
+        parts.push("Pharmacy status check failed")
+      }
+      setRefreshMsg(parts.join(" · "))
     } catch {
-      setRefreshMsg("GFE poll failed — showing cached data")
+      setRefreshMsg("Refresh failed — showing cached data")
     } finally {
       await fetchOrders()
       setRefreshing(false)
@@ -827,7 +842,7 @@ export default function ClinicOrdersPage() {
             opacity: refreshing ? 0.7 : 1,
           }}
         >
-          {refreshing ? "⏳ Checking GFE…" : "↻ Refresh"}
+          {refreshing ? "⏳ Checking…" : "↻ Refresh"}
         </button>
 
         {/* Excel export */}
@@ -1050,6 +1065,10 @@ export default function ClinicOrdersPage() {
                               </span>
                             )}
                             {order.workflow.tracking_number}
+                          </span>
+                        ) : (order.workflow?.sub_order_count ?? 0) > 1 ? (
+                          <span style={{ fontSize: "12px", color: "#9CA3AF" }}>
+                            {order.workflow!.sub_order_shipped_count ?? 0} of {order.workflow!.sub_order_count} shipped
                           </span>
                         ) : "—"}
                       </td>

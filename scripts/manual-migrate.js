@@ -461,6 +461,19 @@ const steps = [
     `,
   },
   {
+    // NOTE: this is Migration20240101000020.ts — the "Migration20" label two
+    // steps up is a coincidental naming collision with an unrelated earlier
+    // step (archived_at) and is NOT this migration. Kept fully qualified here
+    // to avoid that confusion recurring.
+    name: "Migration20240101000020 - pharmacy_submit_attempts/pharmacy_last_error/pharmacy_blocked_at on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "pharmacy_submit_attempts" INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "pharmacy_last_error"       TEXT,
+        ADD COLUMN IF NOT EXISTS "pharmacy_blocked_at"       TIMESTAMPTZ;
+    `,
+  },
+  {
     name: "Migration21 - treatment_dosage_catalog_map table",
     sql: `
       CREATE TABLE IF NOT EXISTS "treatment_dosage_catalog_map" (
@@ -480,6 +493,60 @@ const steps = [
       );
       CREATE INDEX IF NOT EXISTS "idx_treatment_dosage_catalog_tenant" ON "treatment_dosage_catalog_map" ("tenant_domain");
       CREATE INDEX IF NOT EXISTS "idx_treatment_dosage_catalog_treatment" ON "treatment_dosage_catalog_map" ("tenant_domain", "treatment_id");
+    `,
+  },
+  {
+    name: "Migration22 - pharmacy_submission_payload/response on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "pharmacy_submission_payload"  JSONB,
+        ADD COLUMN IF NOT EXISTS "pharmacy_submission_response" JSONB;
+    `,
+  },
+  {
+    name: "Migration23 - pharmacy_status_check_response on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow"
+        ADD COLUMN IF NOT EXISTS "pharmacy_status_check_response" JSONB,
+        ADD COLUMN IF NOT EXISTS "pharmacy_status_check_source"   VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS "pharmacy_status_checked_at"     TIMESTAMPTZ;
+    `,
+  },
+  {
+    name: "Migration24 - order_split_count + pharmacy_sub_order table",
+    sql: `
+      ALTER TABLE "product_treatment_map"
+        ADD COLUMN IF NOT EXISTS "order_split_count" INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE IF NOT EXISTS "pharmacy_sub_order" (
+        "id"                            VARCHAR(255) NOT NULL,
+        "order_workflow_id"             VARCHAR(255) NOT NULL,
+        "split_index"                   INTEGER      NOT NULL,
+        "split_count"                   INTEGER      NOT NULL DEFAULT 1,
+        "treatment_id"                  INTEGER,
+        "product_id"                    VARCHAR(255),
+        "dosage"                        VARCHAR(255),
+        "dosage_key"                    VARCHAR(100),
+        "rxvortex_preset_catalog_id"    VARCHAR(255),
+        "pharmacy_queue_id"             TEXT,
+        "pharmacy_status"               TEXT,
+        "pharmacy_submitted_at"         TIMESTAMPTZ,
+        "tracking_number"               VARCHAR(255),
+        "carrier"                       VARCHAR(100),
+        "shipped_at"                    TIMESTAMPTZ,
+        "pharmacy_submission_payload"   JSONB,
+        "pharmacy_submission_response"  JSONB,
+        "pharmacy_status_check_response" JSONB,
+        "pharmacy_status_check_source"  VARCHAR(20),
+        "pharmacy_status_checked_at"    TIMESTAMPTZ,
+        "created_at"                    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        "updated_at"                    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        PRIMARY KEY ("id"),
+        UNIQUE ("order_workflow_id", "split_index")
+      );
+
+      CREATE INDEX IF NOT EXISTS "idx_pharmacy_sub_order_workflow" ON "pharmacy_sub_order" ("order_workflow_id");
+      CREATE INDEX IF NOT EXISTS "idx_pharmacy_sub_order_queue" ON "pharmacy_sub_order" ("pharmacy_queue_id");
     `,
   },
   {
@@ -505,7 +572,10 @@ const steps = [
       ('Migration20240101000018'),
       ('Migration20240101000019'),
       ('Migration20240101000020'),
-      ('Migration20240101000021')
+      ('Migration20240101000021'),
+      ('Migration20240101000022'),
+      ('Migration20240101000023'),
+      ('Migration20240101000024')
       ON CONFLICT DO NOTHING`,
   },
 ]

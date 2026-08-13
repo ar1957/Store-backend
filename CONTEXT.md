@@ -148,12 +148,22 @@ Email subscriber joins clinic via `sales_channel_id` fallback (not just `tenant_
 2. **Partell Pharmacy (RequestMyMeds)** — `pharmacy_type = "rmm"`
    - Sandbox: `https://requestmymeds.net/api/v2/sandbox`
    - Status endpoint: `GET /prescriptions/{rx_unique_id}`
+3. **Strive Pharmacy (RxVortex)** — `pharmacy_type = "rxvortex"`
+   - Sandbox: `https://sandbox.rxvortex.net`; production uses a per-clinic `Organization Subdomain` (e.g. `myclinic.rxvortex.net`)
+   - Webhook-driven (no polling) — see below
 
 ### Key Files
 - `src/api/admin/utils/pharmacy-submit.ts` — shared helper, handles both DigitalRX and RMM
 - `src/api/admin/utils/pharmacy-submit-rmm.ts` — RMM-specific submission
-- `src/jobs/pharmacy-poll.ts` — cron every 5 min, Step 1: auto-submit unsubmitted orders, Step 2: poll status
+- `src/api/admin/utils/pharmacy-submit-rxvortex.ts` — RxVortex-specific submission
+- `src/jobs/pharmacy-poll.ts` — cron every 5 min, Step 1: auto-submit unsubmitted orders, Step 2: poll status (DigitalRX/RMM; RxVortex is webhook-driven, see below)
 - `src/api/admin/clinics/[id]/test-pharmacy/route.ts` — test connection (in postbuild.js, not compiled by Medusa build)
+
+### RxVortex (Strive) — Webhook Setup & Clinic Onboarding
+- Status updates arrive via `POST /webhooks/rxvortex` (`src/api/webhooks/rxvortex/route.ts`), **not** under `/store` or `/admin` — Medusa mounts an unconditional publishable-API-key requirement on the entire `/store` namespace with no per-route opt-out, so a webhook receiver can never live there. Same reasoning rules out `/admin` (session auth) and `/auth`. Any future unauthenticated external-integration endpoint must go under a top-level path like `/webhooks/*`.
+- **Strive's onboarding is fully manual/support-mediated — there is no self-service portal or API for any of this.** Confirmed against their public docs: `client_id`/`client_secret`, the `Organization Subdomain`, Preset Catalog IDs, and the webhook destination URL are all "contact Strive support" (`support@rxvortex.net`) items.
+- **Every new clinic going live on RxVortex needs its own email/support exchange with Strive** to register that clinic's production webhook URL (`https://<clinic-domain>/webhooks/rxvortex`) — this can't be automated from our side and should be a standard step in the clinic's pharmacy-provider onboarding checklist.
+- Debugging tip: if Strive says they've sent webhooks but nothing shows up in `/var/log/web.stdout.log` (grep for `RxVortexWebhook`), first confirm the URL on file with Strive support matches the clinic's actual domain + `/webhooks/rxvortex` (no `/store` prefix) before suspecting a network/DNS/firewall issue.
 
 ### Pharmacy Poll — Clinic JOIN Fix
 All pharmacy/dashboard queries join clinic using both domain AND sales_channel_id:

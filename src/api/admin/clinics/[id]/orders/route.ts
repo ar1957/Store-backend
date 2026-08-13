@@ -46,6 +46,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         ow.treatment_dosages,
         ow.refund_reason, ow.refunded_at,
         ow.pharmacy_queue_id, ow.pharmacy_status, ow.pharmacy_submitted_at,
+        ow.pharmacy_submit_attempts, ow.pharmacy_last_error, ow.pharmacy_blocked_at,
         ow.location_id, ow.location_name,
         ow.created_at, ow.updated_at,
         o.display_id,

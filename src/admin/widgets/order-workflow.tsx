@@ -26,6 +26,9 @@ interface WorkflowData {
   treatment_dosages: { treatmentId: number; treatmentName: string; dosage: string | null }[]
   pharmacy_queue_id?: string | null
   pharmacy_status?: string | null
+  pharmacy_submit_attempts?: number | null
+  pharmacy_last_error?: string | null
+  pharmacy_blocked_at?: string | null
   location_id?: string | null
   location_name?: string | null
   refund_reason?: string | null
@@ -224,7 +227,7 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           const clinicData = await clinicRes.json()
           const c = clinicData.clinic || {}
           const hasPharmacy = c.pharmacy_enabled === true &&
-            !!(c.pharmacy_api_key || c.pharmacy_username)
+            !!(c.pharmacy_api_key || c.pharmacy_username || (c.pharmacy_client_id && c.pharmacy_client_secret))
           setPharmacyConfigured(hasPharmacy)
 
           // Build GFE portal URL
@@ -541,6 +544,38 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
         </div>
       )}
 
+      {/* Auto-submit failure info — shown whenever the poll job has tried and
+          failed at least once, regardless of pharmacy-configured/role gates,
+          so it's never hidden right when it's most needed. */}
+      {!!workflow.pharmacy_last_error && !workflow.pharmacy_queue_id && (
+        <div style={{
+          background: workflow.pharmacy_blocked_at ? "#fef2f2" : "#fffbeb",
+          border: `1px solid ${workflow.pharmacy_blocked_at ? "#fecaca" : "#fde68a"}`,
+          borderRadius: 8, padding: 12, marginBottom: 16,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: workflow.pharmacy_blocked_at ? "#991b1b" : "#92400e", marginBottom: 6 }}>
+            {workflow.pharmacy_blocked_at
+              ? "⛔ Auto-submit blocked after repeated failures"
+              : `⚠️ Auto-submit failed (attempt ${workflow.pharmacy_submit_attempts ?? "?"}/5)`}
+          </div>
+          <div style={{ fontSize: 12, color: "#374151", marginBottom: workflow.pharmacy_last_error.includes("not mapped") ? 6 : 0, fontFamily: "monospace", whiteSpace: "pre-wrap" }}>
+            {workflow.pharmacy_last_error}
+          </div>
+          {workflow.pharmacy_last_error.includes("not mapped") && (
+            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+              → Fix in Provider Settings → this treatment's row → <strong>Dosage → Catalog Mapping</strong>, then use
+              "Submit to Pharmacy API" below to retry immediately.
+            </div>
+          )}
+          {workflow.pharmacy_blocked_at && (
+            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 6 }}>
+              Blocked at {new Date(workflow.pharmacy_blocked_at).toLocaleString()} — the automated poll job won't retry this
+              on its own anymore, but "Submit to Pharmacy API" below still works once the issue is fixed.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Pharmacy submit button — shown when processing_pharmacy but not yet submitted, and pharmacy is configured */}
       {workflow.status === "processing_pharmacy" && !workflow.pharmacy_queue_id && pharmacyConfigured && (role === "super_admin" || role === "clinic_admin" || role === "pharmacist") && (
         <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: 12, marginBottom: 16 }}>
@@ -558,12 +593,22 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
         </div>
       )}
 
-      {/* Pharmacy queue info — shown when already submitted */}
-      {workflow.pharmacy_queue_id && (
-        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: 10, marginBottom: 16, fontSize: 13 }}>
-          💊 Pharmacy Queue ID: <strong>{workflow.pharmacy_queue_id}</strong>
-          {workflow.pharmacy_status && <span style={{ marginLeft: 8, color: "#6b7280" }}>({workflow.pharmacy_status})</span>}
-        </div>
+      {/* Pharmacy order(s) + submission viewer — only meaningful when this
+          clinic actually submits to a pharmacy API (RxVortex/RMM/DigitalRX).
+          Clinics without API pharmacy integration never have this data. */}
+      {pharmacyConfigured && (
+        <>
+          {workflow.pharmacy_queue_id && (
+            <PharmacySubOrdersList
+              clinicId={clinicId!}
+              orderId={order.id}
+              legacyQueueId={workflow.pharmacy_queue_id}
+              legacyStatus={workflow.pharmacy_status}
+            />
+          )}
+
+          <PharmacySubmissionViewer clinicId={clinicId!} orderId={order.id} />
+        </>
       )}
 
       {/* Actions */}
@@ -809,6 +854,237 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
           {savingComment ? "Saving…" : "Add Comment"}
         </button>
       </div>
+    </div>
+  )
+}
+
+// ── Pharmacy Sub-Orders List — one card per pharmacy order actually placed ──
+interface PharmacySubOrder {
+  id: string
+  split_index: number
+  split_count: number
+  treatment_id: number | null
+  product_id: string | null
+  dosage: string | null
+  dosage_key: string | null
+  rxvortex_preset_catalog_id: string | null
+  pharmacy_queue_id: string | null
+  pharmacy_status: string | null
+  pharmacy_submitted_at: string | null
+  tracking_number: string | null
+  carrier: string | null
+  shipped_at: string | null
+}
+
+function PharmacySubOrdersList({ clinicId, orderId, legacyQueueId, legacyStatus }: {
+  clinicId: string
+  orderId: string
+  legacyQueueId: string
+  legacyStatus?: string | null
+}) {
+  const [subOrders, setSubOrders] = useState<PharmacySubOrder[] | null>(null)
+
+  useEffect(() => {
+    fetch(`/admin/clinics/${clinicId}/orders/${orderId}/pharmacy-sub-orders`, { credentials: "include" })
+      .then(r => r.json())
+      .then(data => setSubOrders(data.subOrders || []))
+      .catch(() => setSubOrders([]))
+  }, [clinicId, orderId])
+
+  // Still loading, or this order predates pharmacy_sub_order — fall back to
+  // the single legacy box driven by order_workflow's own columns.
+  if (subOrders === null || subOrders.length === 0) {
+    return (
+      <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: 10, marginBottom: 16, fontSize: 13 }}>
+        💊 Pharmacy Queue ID: <strong>{legacyQueueId}</strong>
+        {legacyStatus && <span style={{ marginLeft: 8, color: "#6b7280" }}>({legacyStatus})</span>}
+      </div>
+    )
+  }
+
+  const multi = subOrders.length > 1
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {multi && (
+        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>
+          This order was split into {subOrders.length} separate pharmacy orders (one per month) —
+          each ships and tracks independently.
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {subOrders.map((so, i) => {
+          const shipped = !!so.tracking_number
+          return (
+            <div
+              key={so.id}
+              style={{
+                background: shipped ? "#f0fdf4" : "#f0f9ff",
+                border: `1px solid ${shipped ? "#bbf7d0" : "#bae6fd"}`,
+                borderRadius: 8, padding: 10, fontSize: 13,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                <div>
+                  {multi && <strong>Order {i + 1} of {subOrders.length} — </strong>}
+                  💊 Queue ID: <strong>{so.pharmacy_queue_id}</strong>
+                  {so.pharmacy_status && <span style={{ marginLeft: 8, color: "#6b7280" }}>({so.pharmacy_status})</span>}
+                </div>
+                {shipped && (
+                  <span style={{ fontSize: 12, color: "#065f46", fontWeight: 600 }}>
+                    ✓ Shipped {so.carrier ? `via ${so.carrier}` : ""} — {so.tracking_number}
+                  </span>
+                )}
+              </div>
+              {so.dosage && (
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                  Dosage: {so.dosage}{so.dosage_key ? ` (${so.dosage_key})` : ""}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// Renders one payload/response/status-check block — shared by the legacy
+// single view and each per-split entry.
+function SubmissionBlock({ payload, response, statusCheck, statusCheckSource, statusCheckedAt }: {
+  payload: any
+  response: any
+  statusCheck: any
+  statusCheckSource?: string | null
+  statusCheckedAt?: string | null
+}) {
+  return (
+    <>
+      {payload && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
+            Payload sent
+          </div>
+          <pre style={{ fontSize: 11, background: "#111827", color: "#e5e7eb", padding: 10, borderRadius: 6, overflowX: "auto", marginBottom: 12 }}>
+            {JSON.stringify(payload, null, 2)}
+          </pre>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
+            Response received
+          </div>
+          <pre style={{ fontSize: 11, background: "#111827", color: "#e5e7eb", padding: 10, borderRadius: 6, overflowX: "auto", marginBottom: statusCheck ? 12 : 0 }}>
+            {JSON.stringify(response, null, 2)}
+          </pre>
+        </>
+      )}
+      {statusCheck && (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", marginBottom: 4, textTransform: "uppercase" }}>
+            Latest status check
+            {statusCheckSource && (
+              <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 6, color: "#9ca3af" }}>
+                via {statusCheckSource === "webhook" ? "webhook (pushed by pharmacy)" : "API poll"}
+                {statusCheckedAt && ` — ${new Date(statusCheckedAt).toLocaleString()}`}
+              </span>
+            )}
+          </div>
+          <pre style={{ fontSize: 11, background: "#111827", color: "#e5e7eb", padding: 10, borderRadius: 6, overflowX: "auto" }}>
+            {JSON.stringify(statusCheck, null, 2)}
+          </pre>
+        </>
+      )}
+    </>
+  )
+}
+
+// ── Pharmacy Submission Viewer — for research/debugging ──────────────────
+function PharmacySubmissionViewer({ clinicId, orderId }: { clinicId: string; orderId: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState<{
+    pharmacy_submission_payload: any
+    pharmacy_submission_response: any
+    pharmacy_submitted_at: string | null
+    pharmacy_status_check_response: any
+    pharmacy_status_check_source: string | null
+    pharmacy_status_checked_at: string | null
+    subOrderSubmissions: {
+      split_index: number
+      split_count: number
+      dosage: string | null
+      pharmacy_queue_id: string | null
+      pharmacy_submission_payload: any
+      pharmacy_submission_response: any
+      pharmacy_status_check_response: any
+      pharmacy_status_check_source: string | null
+      pharmacy_status_checked_at: string | null
+    }[]
+  } | null>(null)
+  const [error, setError] = useState("")
+
+  const toggle = async () => {
+    const next = !expanded
+    setExpanded(next)
+    if (next && !data) {
+      setLoading(true)
+      setError("")
+      try {
+        const res = await fetch(`/admin/clinics/${clinicId}/orders/${orderId}/pharmacy-submission`, { credentials: "include" })
+        const json = await res.json()
+        if (res.ok) setData(json)
+        else setError(json.message || "Failed to load submission data")
+      } catch {
+        setError("Network error loading submission data")
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  const hasSubOrderData = !!data?.subOrderSubmissions?.length
+  const hasLegacyData = !!(data?.pharmacy_submission_payload || data?.pharmacy_status_check_response)
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <button
+        onClick={toggle}
+        style={{ background: "none", border: "none", color: "#6b7280", fontSize: 12, cursor: "pointer", padding: 0, textDecoration: "underline" }}
+      >
+        {expanded ? "▲" : "▼"} 🔍 View pharmacy submission (research)
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 8, background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8, padding: 12 }}>
+          {loading && <div style={{ fontSize: 12, color: "#9ca3af" }}>Loading…</div>}
+          {error && <div style={{ fontSize: 12, color: "#dc2626" }}>{error}</div>}
+          {data && !hasSubOrderData && !hasLegacyData && (
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>No submission or status-check data recorded for this order yet.</div>
+          )}
+          {hasSubOrderData ? (
+            data!.subOrderSubmissions.map((so, i) => (
+              <div key={so.split_index} style={{ marginBottom: i < data!.subOrderSubmissions.length - 1 ? 16 : 0, paddingBottom: i < data!.subOrderSubmissions.length - 1 ? 16 : 0, borderBottom: i < data!.subOrderSubmissions.length - 1 ? "1px solid #e5e7eb" : "none" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#111", marginBottom: 6 }}>
+                  Order {i + 1} of {data!.subOrderSubmissions.length}{so.dosage ? ` — ${so.dosage}` : ""}
+                  {so.pharmacy_queue_id && <span style={{ fontWeight: 400, color: "#6b7280" }}> ({so.pharmacy_queue_id})</span>}
+                </div>
+                <SubmissionBlock
+                  payload={so.pharmacy_submission_payload}
+                  response={so.pharmacy_submission_response}
+                  statusCheck={so.pharmacy_status_check_response}
+                  statusCheckSource={so.pharmacy_status_check_source}
+                  statusCheckedAt={so.pharmacy_status_checked_at}
+                />
+              </div>
+            ))
+          ) : hasLegacyData && (
+            <SubmissionBlock
+              payload={data!.pharmacy_submission_payload}
+              response={data!.pharmacy_submission_response}
+              statusCheck={data!.pharmacy_status_check_response}
+              statusCheckSource={data!.pharmacy_status_check_source}
+              statusCheckedAt={data!.pharmacy_status_checked_at}
+            />
+          )}
+        </div>
+      )}
     </div>
   )
 }

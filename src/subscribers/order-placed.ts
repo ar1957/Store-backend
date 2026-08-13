@@ -155,11 +155,15 @@ export default async function orderPlacedHandler({
       ? clinic.api_base_url_prod
       : clinic.api_base_url_test
 
-    // 4. Parse DOB
-    const dobDate = new Date(dob)
-    const birthYear = dobDate.getFullYear()
-    const birthMonth = String(dobDate.getMonth() + 1).padStart(2, "0")
-    const birthDay = String(dobDate.getDate()).padStart(2, "0")
+    // 4. Parse DOB — split the "YYYY-MM-DD" string directly rather than
+    // routing it through `new Date(dob)`, which parses as UTC midnight and
+    // would shift by a day if read back with local-timezone getters.
+    const dobMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dob)
+    if (!dobMatch) {
+      logger.error(`[OrderPlaced] Invalid date of birth "${dob}" for order ${orderId}`)
+      return
+    }
+    const [, birthYear, birthMonth, birthDay] = dobMatch
 
     // 5. Create patient
     // Name priority: shipping address > customer profile > email prefix > fallback

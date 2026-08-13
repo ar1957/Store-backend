@@ -22,9 +22,15 @@ function OrderPatientDobWidget({ data: order }: DetailWidgetProps<HttpTypes.Admi
   }
 
   // Format the date nicely (e.g., "September 9, 1990")
+  // dateString is a plain "YYYY-MM-DD" date with no time/timezone component.
+  // Parsing it directly via `new Date(dateString)` reads it as UTC midnight,
+  // which toLocaleDateString then renders in the browser's local timezone —
+  // shifting it back a day for any timezone behind UTC. Building the Date
+  // from explicit local year/month/day components avoids that shift.
   const formatDate = (dateString: string): string => {
     try {
-      const date = new Date(dateString)
+      const [year, month, day] = dateString.split("-").map(Number)
+      const date = new Date(year, month - 1, day)
       return date.toLocaleDateString("en-US", {
         year: "numeric",
         month: "long",
