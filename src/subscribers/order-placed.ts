@@ -10,6 +10,7 @@
 
 import { IEventBusModuleService } from "@medusajs/framework/types"
 import { MedusaContainer } from "@medusajs/framework"
+import { resolveOrderClinicPharmacyId } from "../api/admin/utils/pharmacy-submit"
 
 const CLINIC_MODULE = "clinic"
 
@@ -111,6 +112,17 @@ export default async function orderPlacedHandler({
           clinicIdNoElig = domainResult.rows[0]?.id || null
         }
         if (tenantDomain) {
+          if (!clinicIdNoElig) {
+            const cr = await pgConnection.raw(
+              `SELECT id FROM clinic WHERE ? = ANY(domains) AND deleted_at IS NULL LIMIT 1`,
+              [tenantDomain]
+            )
+            clinicIdNoElig = cr.rows[0]?.id || null
+          }
+          const clinicPharmacyId = clinicIdNoElig
+            ? await resolveOrderClinicPharmacyId(pgConnection, clinicIdNoElig, orderId)
+            : null
+
           const workflowId = `wf_${Date.now()}`
           const orderMeta = (metadata || {}) as any
           const locationId = orderMeta.location_id || null
@@ -118,10 +130,10 @@ export default async function orderPlacedHandler({
           await pgConnection.raw(`
             INSERT INTO order_workflow
               (id, order_id, tenant_domain, gfe_id, patient_id, room_no,
-               virtual_room_url, status, location_id, location_name, created_at, updated_at)
-            VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'pending_pharmacy', ?, ?, NOW(), NOW())
+               virtual_room_url, status, location_id, location_name, clinic_pharmacy_id, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'pending_pharmacy', ?, ?, ?, NOW(), NOW())
             ON CONFLICT DO NOTHING
-          `, [workflowId, orderId, tenantDomain, locationId, locationName])
+          `, [workflowId, orderId, tenantDomain, locationId, locationName, clinicPharmacyId])
           await pgConnection.raw(`
             UPDATE "order" SET metadata = ?, updated_at = NOW() WHERE id = ?
           `, [JSON.stringify({ ...metadata, workflowStatus: "pending_pharmacy" }), orderId])
@@ -259,13 +271,14 @@ export default async function orderPlacedHandler({
       const orderMetaNoTreatment = (metadata || {}) as any
       const locationIdNoTreatment = orderMetaNoTreatment.location_id || null
       const locationNameNoTreatment = orderMetaNoTreatment.location_name || null
+      const clinicPharmacyIdNoTreatment = await resolveOrderClinicPharmacyId(pgConnection, clinic.id, orderId)
       await pgConnection.raw(`
         INSERT INTO order_workflow
           (id, order_id, tenant_domain, gfe_id, patient_id, room_no,
-           virtual_room_url, status, location_id, location_name, created_at, updated_at)
-        VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'pending_pharmacy', ?, ?, NOW(), NOW())
+           virtual_room_url, status, location_id, location_name, clinic_pharmacy_id, created_at, updated_at)
+        VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'pending_pharmacy', ?, ?, ?, NOW(), NOW())
         ON CONFLICT (order_id) DO NOTHING
-      `, [workflowId, orderId, domain, locationIdNoTreatment, locationNameNoTreatment])
+      `, [workflowId, orderId, domain, locationIdNoTreatment, locationNameNoTreatment, clinicPharmacyIdNoTreatment])
 
       const updatedMetadata = {
         ...metadata,
@@ -324,15 +337,16 @@ export default async function orderPlacedHandler({
     const orderMeta = (metadata || {}) as any
     const cartLocationId = orderMeta.location_id || null
     const cartLocationName = orderMeta.location_name || null
+    const clinicPharmacyId = await resolveOrderClinicPharmacyId(pgConnection, clinic.id, orderId)
     await pgConnection.raw(`
       INSERT INTO order_workflow
         (id, order_id, tenant_domain, gfe_id, patient_id, room_no,
-         virtual_room_url, status, location_id, location_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_provider', ?, ?, NOW(), NOW())
+         virtual_room_url, status, location_id, location_name, clinic_pharmacy_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_provider', ?, ?, ?, NOW(), NOW())
       ON CONFLICT (gfe_id) DO UPDATE
         SET order_id = EXCLUDED.order_id, updated_at = NOW()
     `, [workflowId, orderId, domain, String(gfeId), String(patientId),
-        String(roomNo), virtualRoomUrl, cartLocationId, cartLocationName])
+        String(roomNo), virtualRoomUrl, cartLocationId, cartLocationName, clinicPharmacyId])
 
     // 9. Update order metadata with gfeId and virtualRoomUrl for storefront
     const updatedMetadata = {

@@ -99,6 +99,24 @@ export async function getRxVortexToken(baseUrl: string, clientId: string, client
 // saveSubOrder / getExistingSubOrderQueueIds moved to pharmacy-submission-log.ts
 // (shared with RMM, which uses the same pharmacy_sub_order tracking).
 
+export interface PharmacySubmitOpts {
+  // When set, only line items whose product_id is in this list are submitted
+  // — used when an order's products are split across multiple pharmacies and
+  // this call handles just one pharmacy's share.
+  productIdFilter?: string[] | null
+  // Offsets every pharmacy_sub_order.split_index this call creates, so
+  // multiple calls against the same order_workflow (one per pharmacy group)
+  // never collide on the (order_workflow_id, split_index) unique constraint.
+  splitIndexBase?: number
+  // When true, skip this function's own order_workflow UPDATE — the caller
+  // is aggregating results across multiple pharmacy groups and will do a
+  // single UPDATE itself once all groups are attempted.
+  skipWorkflowUpdate?: boolean
+  // Which clinic_pharmacy this submission belongs to, recorded on every
+  // pharmacy_sub_order row it creates.
+  clinicPharmacyId?: string | null
+}
+
 export async function submitToRxVortex(
   pg: any,
   clinic: RxVortexClinic,
@@ -106,8 +124,10 @@ export async function submitToRxVortex(
   workflowId: string,
   drugName: string,
   rxNumber: string,
-  treatmentDosages: any[]
-): Promise<void> {
+  treatmentDosages: any[],
+  opts?: PharmacySubmitOpts
+): Promise<{ queueId: string | null }> {
+  const base = opts?.splitIndexBase || 0
   const baseUrl = resolveBaseUrl(clinic)
 
   // Get OAuth access token
@@ -121,7 +141,8 @@ export async function submitToRxVortex(
 
   const dosages = Array.isArray(treatmentDosages) ? treatmentDosages : []
 
-  // ── Fetch all line items for this order with their product IDs ─────────────
+  // ── Fetch line items for this order with their product IDs (optionally
+  // scoped to just the products this pharmacy group is responsible for) ─────
   const itemsResult = await pg.raw(`
     SELECT
       oli.id        AS line_item_id,
@@ -132,8 +153,9 @@ export async function submitToRxVortex(
     FROM order_item oi
     JOIN order_line_item oli ON oli.id = oi.item_id
     WHERE oi.order_id = ?
+    ${opts?.productIdFilter ? "AND oli.product_id = ANY(?)" : ""}
     ORDER BY oi.created_at
-  `, [order.id])
+  `, opts?.productIdFilter ? [order.id, opts.productIdFilter] : [order.id])
 
   const lineItems = itemsResult.rows
 
@@ -328,16 +350,19 @@ export async function submitToRxVortex(
       throw new Error(data.errors ? `${errMsg} — ${JSON.stringify(data.errors)}` : errMsg)
     }
     await saveSubOrder(pg, {
-      id: `pso_${Date.now()}`, workflowId, splitIndex: 1, splitCount: 1,
+      id: `pso_${Date.now()}`, workflowId, splitIndex: base + 1, splitCount: 1,
       treatmentId: null, productId: null, dosage: fallbackDosage || null, dosageKey: null,
       catalogId: fallback.preset_catalog_id || null, queueId: rxNumber, payload, response: data,
+      clinicPharmacyId: opts?.clinicPharmacyId ?? null,
     })
-    await pg.raw(
-      `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', updated_at = NOW() WHERE id = ?`,
-      [rxNumber, workflowId]
-    )
+    if (!opts?.skipWorkflowUpdate) {
+      await pg.raw(
+        `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', clinic_pharmacy_id = ?, updated_at = NOW() WHERE id = ?`,
+        [rxNumber, opts?.clinicPharmacyId ?? null, workflowId]
+      )
+    }
     console.log(`[PharmacySubmit-RxVortex] Order submitted. Stored as pharmacy_queue_id: ${rxNumber}`)
-    return
+    return { queueId: rxNumber }
   }
 
   // ── Partition line items: split (own orders per month) vs bundled (today's behavior) ──
@@ -354,11 +379,11 @@ export async function submitToRxVortex(
 
   const errors: string[] = []
   let firstQueueId: string | null = null
-  let splitIndexCounter = bundledLineItems.length > 0 ? 2 : 1
+  let splitIndexCounter = base + (bundledLineItems.length > 0 ? 2 : 1)
 
-  // ── Bundled order (index 1) — same medication_requests logic as before ────
+  // ── Bundled order (index base+1) — same medication_requests logic as before ────
   if (bundledLineItems.length > 0) {
-    const existingQueueId = existingByIndex.get(1)
+    const existingQueueId = existingByIndex.get(base + 1)
     if (existingQueueId) {
       firstQueueId = firstQueueId || existingQueueId
     } else {
@@ -426,9 +451,10 @@ export async function submitToRxVortex(
           throw new Error(data.errors ? `${errMsg} — ${JSON.stringify(data.errors)}` : errMsg)
         }
         await saveSubOrder(pg, {
-          id: `pso_${Date.now()}_1`, workflowId, splitIndex: 1, splitCount: 1,
+          id: `pso_${Date.now()}_1`, workflowId, splitIndex: base + 1, splitCount: 1,
           treatmentId: null, productId: null, dosage: null, dosageKey: null,
           catalogId: null, queueId: rxNumber, payload, response: data,
+          clinicPharmacyId: opts?.clinicPharmacyId ?? null,
         })
         firstQueueId = firstQueueId || rxNumber
       } catch (err: any) {
@@ -507,6 +533,7 @@ export async function submitToRxVortex(
           id: `pso_${Date.now()}_${splitIndex}`, workflowId, splitIndex, splitCount: li.splitCount,
           treatmentId, productId: li.product_id, dosage: tier.dosage, dosageKey: tier.dosageKey,
           catalogId: tier.catalogId, queueId: splitSenderOrderId, payload, response: data,
+          clinicPharmacyId: opts?.clinicPharmacyId ?? null,
         })
         firstQueueId = firstQueueId || splitSenderOrderId
       } catch (err: any) {
@@ -523,9 +550,12 @@ export async function submitToRxVortex(
     throw new Error(`RxVortex submission incomplete — ${errors.join(" | ")}`)
   }
 
-  await pg.raw(
-    `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', updated_at = NOW() WHERE id = ?`,
-    [firstQueueId, workflowId]
-  )
+  if (!opts?.skipWorkflowUpdate) {
+    await pg.raw(
+      `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', clinic_pharmacy_id = ?, updated_at = NOW() WHERE id = ?`,
+      [firstQueueId, opts?.clinicPharmacyId ?? null, workflowId]
+    )
+  }
   console.log(`[PharmacySubmit-RxVortex] Order fully submitted. Primary pharmacy_queue_id: ${firstQueueId}`)
+  return { queueId: firstQueueId }
 }

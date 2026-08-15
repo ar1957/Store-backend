@@ -19,6 +19,7 @@
  */
 import { normalizePhone } from "./normalize-phone"
 import { savePharmacySubmissionLog, saveSubOrder, getExistingSubOrderQueueIds } from "./pharmacy-submission-log"
+import type { PharmacySubmitOpts } from "./pharmacy-submit-rxvortex"
 
 interface RmmClinic {
   pharmacy_api_url: string
@@ -143,8 +144,10 @@ export async function submitToRmm(
   workflowId: string,
   drugName: string,
   rxNumber: string,
-  treatmentDosages: any[]
-): Promise<void> {
+  treatmentDosages: any[],
+  opts?: PharmacySubmitOpts
+): Promise<{ queueId: string | null }> {
+  const base = opts?.splitIndexBase || 0
   const baseUrl = (clinic.pharmacy_api_url || "https://requestmymeds.net/api/v2").replace(/\/$/, "")
 
   const token = await getRmmToken(baseUrl, clinic.pharmacy_username, clinic.pharmacy_password)
@@ -203,14 +206,15 @@ export async function submitToRmm(
     patient_icd10: "",
   })
 
-  // ── Fetch line items ────────────────────────────────────────────────────
+  // ── Fetch line items (optionally scoped to just this pharmacy group's products) ──
   const itemsResult = await pg.raw(`
     SELECT oli.id AS line_item_id, oli.title AS item_title, oi.quantity, oli.product_id
     FROM order_item oi
     JOIN order_line_item oli ON oli.id = oi.item_id
     WHERE oi.order_id = ?
+    ${opts?.productIdFilter ? "AND oli.product_id = ANY(?)" : ""}
     ORDER BY oi.created_at
-  `, [order.id])
+  `, opts?.productIdFilter ? [order.id, opts.productIdFilter] : [order.id])
   const lineItems = itemsResult.rows
 
   // ── No line items at all — single free-text fallback (matches RxVortex) ──
@@ -235,16 +239,19 @@ export async function submitToRmm(
     if (!res.ok) throw new Error(data.error || `RMM API error: ${res.status}`)
     const queueId = data.rx_unique_id || item.rxUniqueId
     await saveSubOrder(pg, {
-      id: `pso_${Date.now()}_1`, workflowId, splitIndex: 1, splitCount: 1,
+      id: `pso_${Date.now()}_1`, workflowId, splitIndex: base + 1, splitCount: 1,
       treatmentId: null, productId: null, dosage: item.dosage, dosageKey: null,
       catalogId: null, queueId, payload, response: data,
+      clinicPharmacyId: opts?.clinicPharmacyId ?? null,
     })
-    await pg.raw(
-      `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', updated_at = NOW() WHERE id = ?`,
-      [String(queueId), workflowId]
-    )
+    if (!opts?.skipWorkflowUpdate) {
+      await pg.raw(
+        `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', clinic_pharmacy_id = ?, updated_at = NOW() WHERE id = ?`,
+        [String(queueId), opts?.clinicPharmacyId ?? null, workflowId]
+      )
+    }
     console.log(`[PharmacySubmit-RMM] Order submitted. rx_unique_id: ${queueId}`)
-    return
+    return { queueId: String(queueId) }
   }
 
   // ── Look up product → treatment + order_split_count ────────────────────
@@ -286,7 +293,7 @@ export async function submitToRmm(
   const allItems: RmmPrescriptionItem[] = []
   const toSubmit: RmmPrescriptionItem[] = []
 
-  let splitIndexCounter = 1
+  let splitIndexCounter = base + 1
   for (const li of lineItems) {
     const treatmentId = li.product_id ? productTreatmentMap[li.product_id] : undefined
     const splitCount = li.product_id ? (productSplitCountMap[li.product_id] || 0) : 0
@@ -370,6 +377,7 @@ export async function submitToRmm(
           treatmentId: toSubmit[0].treatmentId, productId: toSubmit[0].productId,
           dosage: toSubmit[0].dosage, dosageKey: toSubmit[0].dosageKey,
           catalogId: null, queueId, payload: requestBody, response: data,
+          clinicPharmacyId: opts?.clinicPharmacyId ?? null,
         })
       }
     } else {
@@ -389,6 +397,7 @@ export async function submitToRmm(
           treatmentId: item.treatmentId, productId: item.productId,
           dosage: item.dosage, dosageKey: item.dosageKey,
           catalogId: null, queueId, payload: payloads[i], response: itemResult,
+          clinicPharmacyId: opts?.clinicPharmacyId ?? null,
         })
       }
     }
@@ -402,9 +411,12 @@ export async function submitToRmm(
   }
 
   const firstQueueId = allItems[0]?.rxUniqueId || rxNumber
-  await pg.raw(
-    `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', updated_at = NOW() WHERE id = ?`,
-    [firstQueueId, workflowId]
-  )
+  if (!opts?.skipWorkflowUpdate) {
+    await pg.raw(
+      `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', clinic_pharmacy_id = ?, updated_at = NOW() WHERE id = ?`,
+      [firstQueueId, opts?.clinicPharmacyId ?? null, workflowId]
+    )
+  }
   console.log(`[PharmacySubmit-RMM] Order fully submitted (${totalScripts} script(s)). Primary pharmacy_queue_id: ${firstQueueId}`)
+  return { queueId: firstQueueId }
 }

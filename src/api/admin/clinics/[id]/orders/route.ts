@@ -20,6 +20,36 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     const salesChannelId = clinic.sales_channel_id || null
     const statusFilter = req.query.status as string | undefined
 
+    // A user who is purely a pharmacist (every active staff row has that
+    // role) only sees orders touching a pharmacy they're assigned to — fails
+    // closed to zero orders if unassigned. Mixed-role users (e.g. clinic_admin
+    // at one clinic, pharmacist at another) keep unscoped clinic-level access,
+    // matching /admin/order-workflow's list-level filtering.
+    let pharmacyIds: string[] = []
+    let isPharmacistOnly = false
+    const actorId = (req as any).session?.auth_context?.actor_id
+    if (actorId) {
+      const userResult = await pgConnection.raw(`SELECT email FROM "user" WHERE id = ? LIMIT 1`, [actorId])
+      const userEmail = userResult.rows[0]?.email
+      if (userEmail) {
+        const staffResult = await pgConnection.raw(
+          `SELECT id, role FROM clinic_staff WHERE email = ? AND is_active = true AND deleted_at IS NULL`,
+          [userEmail]
+        )
+        const staffRows = staffResult.rows ?? []
+        isPharmacistOnly = staffRows.length > 0 && staffRows.every((r: any) => r.role === "pharmacist")
+        if (isPharmacistOnly) {
+          const staffIds = staffRows.map((r: any) => r.id)
+          const pharmacyResult = await pgConnection.raw(
+            `SELECT DISTINCT clinic_pharmacy_id FROM clinic_staff_pharmacy WHERE clinic_staff_id = ANY(?)`,
+            [staffIds]
+          )
+          pharmacyIds = (pharmacyResult.rows ?? []).map((r: any) => r.clinic_pharmacy_id)
+          if (pharmacyIds.length === 0) return res.json({ orders: [] })
+        }
+      }
+    }
+
     // Build WHERE: match by sales_channel_id (most reliable) OR tenant_domain
     const conditions: string[] = []
     const params: any[] = []
@@ -58,6 +88,17 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       LEFT JOIN order_address oa ON oa.id = o.shipping_address_id
       WHERE (${conditions.join(" OR ")})
     `
+
+    if (isPharmacistOnly) {
+      query += ` AND (
+        ow.clinic_pharmacy_id = ANY(?)
+        OR EXISTS (
+          SELECT 1 FROM pharmacy_sub_order pso
+          WHERE pso.order_workflow_id = ow.id AND pso.clinic_pharmacy_id = ANY(?)
+        )
+      )`
+      params.push(pharmacyIds, pharmacyIds)
+    }
 
     if (statusFilter) {
       query += ` AND ow.status = ?`
