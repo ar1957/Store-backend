@@ -26,6 +26,7 @@ export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
     if ("rxvortex_preset_catalog_id" in body) fields.rxvortex_preset_catalog_id = body.rxvortex_preset_catalog_id || null
     if ("rxvortex_instructions" in body) fields.rxvortex_instructions = body.rxvortex_instructions || null
     if ("order_split_count" in body) fields.order_split_count = Number(body.order_split_count) || 0
+    if ("clinic_pharmacy_id" in body) fields.clinic_pharmacy_id = body.clinic_pharmacy_id || null
 
     const setClauses = Object.keys(fields).filter(k => k !== "updated_at").map(k => `${k} = ?`).join(", ")
     const values = [...Object.keys(fields).filter(k => k !== "updated_at").map(k => fields[k]), req.params.mappingId]

@@ -66,7 +66,7 @@ interface Clinic {
 
 interface Staff { id: string; email: string; full_name: string; role: string }
 interface Treatment { id: number; name: string }
-interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number; clinic_pharmacy_id?: string | null }
 interface Product { id: string; title: string }
 interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
 interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
@@ -946,7 +946,50 @@ function StaffTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () =
   const [pwSaving, setPwSaving] = useState(false)
   const [pwMsg, setPwMsg] = useState<{ text: string; ok: boolean } | null>(null)
 
-  useEffect(() => { loadStaff() }, [clinic.id])
+  // Pharmacy assignment (pharmacist role only) — which clinic_pharmacy rows
+  // this staff member can see orders for.
+  const [pharmacies, setPharmacies] = useState<{ id: string; name: string; is_default: boolean }[]>([])
+  const [pharmacyTarget, setPharmacyTarget] = useState<Staff | null>(null)
+  const [assignedPharmacyIds, setAssignedPharmacyIds] = useState<string[]>([])
+  const [addPharmacySelect, setAddPharmacySelect] = useState("")
+  const [pharmacyLoading, setPharmacyLoading] = useState(false)
+  const [pharmacySaving, setPharmacySaving] = useState(false)
+
+  useEffect(() => { loadStaff(); loadPharmacies() }, [clinic.id])
+
+  const loadPharmacies = async () => {
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/pharmacies`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setPharmacies(data.pharmacies || [])
+    } catch {}
+  }
+
+  const openPharmacyModal = async (m: Staff) => {
+    setPharmacyTarget(m)
+    setAddPharmacySelect("")
+    setPharmacyLoading(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/staff/${m.id}/pharmacies`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setAssignedPharmacyIds(data.pharmacy_ids || [])
+    } catch { setAssignedPharmacyIds([]) }
+    finally { setPharmacyLoading(false) }
+  }
+
+  const savePharmacyAssignments = async (ids: string[]) => {
+    if (!pharmacyTarget) return
+    setAssignedPharmacyIds(ids)
+    setPharmacySaving(true)
+    try {
+      await fetch(`/admin/clinics/${clinic.id}/staff/${pharmacyTarget.id}/pharmacies`, {
+        method: "PUT", credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ clinic_pharmacy_ids: ids }),
+      })
+    } catch {}
+    finally { setPharmacySaving(false) }
+  }
 
   const loadStaff = async () => {
     try {
@@ -1073,6 +1116,78 @@ function StaffTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () =
         </div>
       )}
 
+      {/* Assign Pharmacies modal (pharmacist role) */}
+      {pharmacyTarget && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 12, padding: 28, width: 420,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+          }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Assigned Pharmacies</div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 16 }}>{pharmacyTarget.full_name || pharmacyTarget.email}</div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 16 }}>
+              This pharmacist only sees orders that touch at least one of the pharmacies below.
+              With none assigned, they see nothing until you add one here.
+            </div>
+
+            {pharmacyLoading ? (
+              <div style={{ fontSize: 13, color: "#9ca3af" }}>Loading…</div>
+            ) : (
+              <>
+                {assignedPharmacyIds.length === 0 ? (
+                  <div style={{ padding: "10px 12px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, fontSize: 12, color: "#991b1b", marginBottom: 12 }}>
+                    No pharmacies assigned — this pharmacist currently sees zero orders.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+                    {assignedPharmacyIds.map(id => {
+                      const p = pharmacies.find(ph => ph.id === id)
+                      return (
+                        <div key={id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", border: "1px solid #e5e7eb", borderRadius: 6, fontSize: 13 }}>
+                          <span>{p?.name || id}{p?.is_default ? " (default)" : ""}</span>
+                          <button
+                            onClick={() => savePharmacyAssignments(assignedPharmacyIds.filter(x => x !== id))}
+                            disabled={pharmacySaving}
+                            style={{ background: "none", border: "none", cursor: "pointer", color: "#dc2626", fontSize: 12 }}
+                          >Remove</button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {pharmacies.filter(p => !assignedPharmacyIds.includes(p.id)).length > 0 && (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <select
+                      style={{ ...s.input, flex: 1 }}
+                      value={addPharmacySelect}
+                      onChange={e => setAddPharmacySelect(e.target.value)}
+                    >
+                      <option value="">Select a pharmacy…</option>
+                      {pharmacies.filter(p => !assignedPharmacyIds.includes(p.id)).map(p => (
+                        <option key={p.id} value={p.id}>{p.name}{p.is_default ? " (default)" : ""}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => { if (addPharmacySelect) { savePharmacyAssignments([...assignedPharmacyIds, addPharmacySelect]); setAddPharmacySelect("") } }}
+                      disabled={!addPharmacySelect || pharmacySaving}
+                      style={{ ...s.btnPrimary, opacity: (!addPharmacySelect || pharmacySaving) ? 0.5 : 1 }}
+                    >Assign</button>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={() => setPharmacyTarget(null)} style={s.btnOutline}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {staff.length === 0 ? (
         <EmptyState icon="👥" message="No staff assigned to this clinic yet" />
       ) : (
@@ -1097,6 +1212,12 @@ function StaffTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () =
                       <button onClick={() => { setPwTarget(m); setNewPw(""); setPwMsg(null) }}
                         style={{ ...s.btnOutline, fontSize: 12 }}>
                         🔒 Set Password
+                      </button>
+                    )}
+                    {canManage && m.role === "pharmacist" && (
+                      <button onClick={() => openPharmacyModal(m)}
+                        style={{ ...s.btnOutline, fontSize: 12 }}>
+                        💊 Pharmacies
                       </button>
                     )}
                     {canManage && (
@@ -1141,7 +1262,7 @@ function catalogItemSearchHaystack(item: RxVortexCatalogItem): string {
   return `${item.medication_name} ${item.medication_strength} ${item.medication_form} ${item.instruction} ${item.quantity} ${item.quantity_units} ${item.days_supply}`.toLowerCase()
 }
 
-function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, hasDosageMapping, onDelete }: {
+function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, hasDosageMapping, pharmacies, onDelete }: {
   mapping: Mapping
   clinicId: string
   showRxVortex: boolean
@@ -1149,6 +1270,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   catalogLoading: boolean
   catalogError: string
   hasDosageMapping: boolean
+  pharmacies: { id: string; name: string; is_default: boolean }[]
   onDelete: () => void
 }) {
   const [catalogId, setCatalogId] = useState(mapping.rxvortex_preset_catalog_id || "")
@@ -1160,6 +1282,22 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   const [splitCount, setSplitCount] = useState(mapping.order_split_count ?? 0)
   const [splitSaving, setSplitSaving] = useState(false)
   const [splitSaved, setSplitSaved] = useState(false)
+  const [pharmacyId, setPharmacyId] = useState(mapping.clinic_pharmacy_id || "")
+  const [pharmacySaving, setPharmacySaving] = useState(false)
+
+  const savePharmacyId = async (value: string) => {
+    setPharmacyId(value)
+    setPharmacySaving(true)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ clinic_pharmacy_id: value || null }),
+      })
+    } catch {}
+    finally { setPharmacySaving(false) }
+  }
 
   const saveSplitCount = async (value: number) => {
     setSplitSaving(true)
@@ -1267,6 +1405,27 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
           />
           {splitSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
           {splitSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+        </div>
+      </td>
+      <td style={s.td}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <select
+            style={{ ...s.input, fontSize: 12, padding: "4px 6px", minWidth: 140 }}
+            value={pharmacyId}
+            onChange={e => savePharmacyId(e.target.value)}
+            title="Which pharmacy this product routes to. Default = the clinic's default pharmacy."
+          >
+            <option value="">
+              {(() => {
+                const def = pharmacies.find(p => p.is_default)
+                return def ? `Default (${def.name})` : "Default"
+              })()}
+            </option>
+            {pharmacies.map(p => (
+              <option key={p.id} value={p.id}>{p.name}{p.is_default ? " (default)" : ""}</option>
+            ))}
+          </select>
+          {pharmacySaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
         </div>
       </td>
       {showRxVortex && (
@@ -1453,7 +1612,16 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       .finally(() => setTreatmentDosagesLoading(false))
   }, [clinic.id, isRxVortex, mappings])
 
-  useEffect(() => { loadMappings(); loadProducts(); loadDosageMappings() }, [clinic.id])
+  const [pharmacies, setPharmacies] = useState<{ id: string; name: string; is_default: boolean }[]>([])
+  const loadPharmacies = async () => {
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/pharmacies`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setPharmacies(data.pharmacies || [])
+    } catch {}
+  }
+
+  useEffect(() => { loadMappings(); loadProducts(); loadDosageMappings(); loadPharmacies() }, [clinic.id])
 
   const loadMappings = async () => {
     try {
@@ -1566,7 +1734,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
         <table style={{ ...s.table, marginBottom: 24 }}>
           <thead>
             <tr>
-              {["Product", "Treatment", "Eligibility Required", "Order Split", ...(isRxVortex ? ["RxVortex Catalog ID"] : []), ""].map(h => <th key={h} style={s.th}>{h}</th>)}
+              {["Product", "Treatment", "Eligibility Required", "Order Split", "Pharmacy", ...(isRxVortex ? ["RxVortex Catalog ID"] : []), ""].map(h => <th key={h} style={s.th}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -1580,6 +1748,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
                 catalogLoading={rxCatalogLoading}
                 catalogError={rxCatalogError}
                 hasDosageMapping={dosageMappings.some(dm => dm.treatment_id === m.treatment_id)}
+                pharmacies={pharmacies}
                 onDelete={() => { fetch(`/admin/clinics/${clinic.id}/product-mappings/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() }); loadMappings() }}
               />
             ))}
@@ -2608,74 +2777,138 @@ function UiConfigTab({ clinic }: { clinic: Clinic }) {
 }
 
 // ── Pharmacy Tab ──────────────────────────────────────────────────────────
+const PHARMACY_TYPE_LABELS: Record<string, string> = {
+  digitalrx: "DigitalRX (SmartConnect)",
+  rmm: "Partell Pharmacy (RequestMyMeds)",
+  rxvortex: "Strive Pharmacy (RxVortex)",
+  custom: "Custom",
+}
+
 function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => void }) {
-  const ca = clinic as any
+  const [pharmacies, setPharmacies] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [editingId, setEditingId] = useState<string | "new" | null>(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/pharmacies`, { credentials: "include" })
+      const data = await res.json()
+      setPharmacies(data.pharmacies || [])
+    } catch { /* leave list as-is */ }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [clinic.id])
+
+  const remove = async (id: string) => {
+    if (!confirm("Remove this pharmacy? Products mapped to it will fall back to the clinic's default pharmacy.")) return
+    await fetch(`/admin/clinics/${clinic.id}/pharmacies/${id}`, { method: "DELETE", credentials: "include" })
+    load(); onUpdated()
+  }
+
+  if (editingId) {
+    const pharmacy = editingId === "new" ? null : pharmacies.find(p => p.id === editingId) || null
+    return (
+      <PharmacyForm
+        clinicId={clinic.id}
+        pharmacy={pharmacy}
+        onSaved={() => { load(); onUpdated() }}
+        onClose={() => { setEditingId(null); load() }}
+      />
+    )
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#6b7280", letterSpacing: "0.05em" }}>
+          Pharmacy API Integrations
+        </div>
+        <button onClick={() => setEditingId("new")} style={s.btnPrimary}>+ Add Pharmacy</button>
+      </div>
+      <div style={{ fontSize: 13, color: "#6b7280" }}>
+        A clinic can work with more than one pharmacy — assign which pharmacy each product routes to on the Mappings tab.
+        Products with no explicit assignment use whichever pharmacy is marked <strong>Default</strong> below.
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 24, color: "#9ca3af" }}>Loading…</div>
+      ) : pharmacies.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: "#9ca3af", border: "1px dashed #e5e7eb", borderRadius: 8 }}>
+          No pharmacies configured yet.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {pharmacies.map(p => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", border: "1px solid #e5e7eb", borderRadius: 8, background: "#fff" }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</span>
+                  {p.is_default && (
+                    <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: "#dcfce7", color: "#166534" }}>Default</span>
+                  )}
+                  {!p.is_enabled && (
+                    <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20, background: "#f3f4f6", color: "#6b7280" }}>Disabled</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                  {PHARMACY_TYPE_LABELS[p.pharmacy_type] || p.pharmacy_type || "—"}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setEditingId(p.id)} style={s.btnOutline}>Edit</button>
+                <button onClick={() => remove(p.id)} style={{ ...s.btnOutline, color: "#dc2626" }}>Remove</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PharmacyForm({ clinicId, pharmacy, onSaved, onClose }: {
+  clinicId: string
+  pharmacy: any | null // null = creating a new pharmacy
+  onSaved: () => void
+  onClose: () => void
+}) {
+  const [currentId, setCurrentId] = useState<string | null>(pharmacy?.id || null)
   const [form, setForm] = useState({
-    pharmacy_type: ca.pharmacy_type || "digitalrx",
-    pharmacy_api_url: ca.pharmacy_api_url || "",
-    pharmacy_api_key: ca.pharmacy_api_key || "",
-    pharmacy_store_id: ca.pharmacy_store_id || "",
-    pharmacy_vendor_name: ca.pharmacy_vendor_name || "",
-    pharmacy_doctor_first_name: ca.pharmacy_doctor_first_name || "",
-    pharmacy_doctor_last_name: ca.pharmacy_doctor_last_name || "",
-    pharmacy_doctor_npi: ca.pharmacy_doctor_npi || "",
-    pharmacy_enabled: ca.pharmacy_enabled === true,
+    name: pharmacy?.name || "",
+    pharmacy_type: pharmacy?.pharmacy_type || "digitalrx",
+    is_enabled: pharmacy?.is_enabled !== false,
+    is_default: pharmacy?.is_default === true,
+    pharmacy_api_url: pharmacy?.pharmacy_api_url || "",
+    pharmacy_api_key: pharmacy?.pharmacy_api_key || "",
+    pharmacy_store_id: pharmacy?.pharmacy_store_id || "",
+    pharmacy_vendor_name: pharmacy?.pharmacy_vendor_name || "",
+    pharmacy_doctor_first_name: pharmacy?.pharmacy_doctor_first_name || "",
+    pharmacy_doctor_last_name: pharmacy?.pharmacy_doctor_last_name || "",
+    pharmacy_doctor_npi: pharmacy?.pharmacy_doctor_npi || "",
     // RMM fields
-    pharmacy_username: ca.pharmacy_username || "",
-    pharmacy_password: ca.pharmacy_password || "",
-    pharmacy_prescriber_id: ca.pharmacy_prescriber_id || "",
-    pharmacy_prescriber_address: ca.pharmacy_prescriber_address || "",
-    pharmacy_prescriber_city: ca.pharmacy_prescriber_city || "",
-    pharmacy_prescriber_state: ca.pharmacy_prescriber_state || "",
-    pharmacy_prescriber_zip: ca.pharmacy_prescriber_zip || "",
-    pharmacy_prescriber_phone: ca.pharmacy_prescriber_phone || "",
-    pharmacy_prescriber_dea: ca.pharmacy_prescriber_dea || "",
-    pharmacy_ship_type: ca.pharmacy_ship_type || "ship_to_patient",
-    pharmacy_ship_rate: ca.pharmacy_ship_rate || "2_day",
-    pharmacy_pay_type: ca.pharmacy_pay_type || "patient_pay",
+    pharmacy_username: pharmacy?.pharmacy_username || "",
+    pharmacy_password: pharmacy?.pharmacy_password || "",
+    pharmacy_prescriber_id: pharmacy?.pharmacy_prescriber_id || "",
+    pharmacy_prescriber_address: pharmacy?.pharmacy_prescriber_address || "",
+    pharmacy_prescriber_city: pharmacy?.pharmacy_prescriber_city || "",
+    pharmacy_prescriber_state: pharmacy?.pharmacy_prescriber_state || "",
+    pharmacy_prescriber_zip: pharmacy?.pharmacy_prescriber_zip || "",
+    pharmacy_prescriber_phone: pharmacy?.pharmacy_prescriber_phone || "",
+    pharmacy_prescriber_dea: pharmacy?.pharmacy_prescriber_dea || "",
+    pharmacy_ship_type: pharmacy?.pharmacy_ship_type || "ship_to_patient",
+    pharmacy_ship_rate: pharmacy?.pharmacy_ship_rate || "2_day",
+    pharmacy_pay_type: pharmacy?.pharmacy_pay_type || "patient_pay",
     // RxVortex (Strive) fields
-    pharmacy_client_id: ca.pharmacy_client_id || "",
-    pharmacy_client_secret: ca.pharmacy_client_secret || "",
-    pharmacy_subdomain: ca.pharmacy_subdomain || "",
-    pharmacy_preset_catalog_id: ca.pharmacy_preset_catalog_id || "",
+    pharmacy_client_id: pharmacy?.pharmacy_client_id || "",
+    pharmacy_client_secret: pharmacy?.pharmacy_client_secret || "",
+    pharmacy_subdomain: pharmacy?.pharmacy_subdomain || "",
+    pharmacy_preset_catalog_id: pharmacy?.pharmacy_preset_catalog_id || "",
   })
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState("")
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
-
-  // Sync form when clinic data changes (e.g. after save + reload)
-  useEffect(() => {
-    const c = clinic as any
-    setForm({
-      pharmacy_type: c.pharmacy_type || "digitalrx",
-      pharmacy_api_url: c.pharmacy_api_url || "",
-      pharmacy_api_key: c.pharmacy_api_key || "",
-      pharmacy_store_id: c.pharmacy_store_id || "",
-      pharmacy_vendor_name: c.pharmacy_vendor_name || "",
-      pharmacy_doctor_first_name: c.pharmacy_doctor_first_name || "",
-      pharmacy_doctor_last_name: c.pharmacy_doctor_last_name || "",
-      pharmacy_doctor_npi: c.pharmacy_doctor_npi || "",
-      pharmacy_enabled: c.pharmacy_enabled === true,
-      pharmacy_username: c.pharmacy_username || "",
-      pharmacy_password: c.pharmacy_password || "",
-      pharmacy_prescriber_id: c.pharmacy_prescriber_id || "",
-      pharmacy_prescriber_address: c.pharmacy_prescriber_address || "",
-      pharmacy_prescriber_city: c.pharmacy_prescriber_city || "",
-      pharmacy_prescriber_state: c.pharmacy_prescriber_state || "",
-      pharmacy_prescriber_zip: c.pharmacy_prescriber_zip || "",
-      pharmacy_prescriber_phone: c.pharmacy_prescriber_phone || "",
-      pharmacy_prescriber_dea: c.pharmacy_prescriber_dea || "",
-      pharmacy_ship_type: c.pharmacy_ship_type || "ship_to_patient",
-      pharmacy_ship_rate: c.pharmacy_ship_rate || "2_day",
-      pharmacy_pay_type: c.pharmacy_pay_type || "patient_pay",
-      // RxVortex (Strive) fields
-      pharmacy_client_id: c.pharmacy_client_id || "",
-      pharmacy_client_secret: c.pharmacy_client_secret || "",
-      pharmacy_subdomain: c.pharmacy_subdomain || "",
-      pharmacy_preset_catalog_id: c.pharmacy_preset_catalog_id || "",
-    })
-  }, [clinic.id])
 
   const isRmm = form.pharmacy_type === "rmm"
   const isDigitalRx = form.pharmacy_type === "digitalrx" || form.pharmacy_type === "custom"
@@ -2702,38 +2935,37 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
 
   const rmmEnv = form.pharmacy_api_url?.includes("sandbox") ? "sandbox" : "production"
 
-  const save = async () => {
+  const save = async (): Promise<string | null> => {
     setSaving(true); setStatus("")
     try {
-      const res = await fetch(`/admin/clinics/${clinic.id}`, {
-        method: "POST", credentials: "include",
+      const url = currentId ? `/admin/clinics/${clinicId}/pharmacies/${currentId}` : `/admin/clinics/${clinicId}/pharmacies`
+      const method = currentId ? "PUT" : "POST"
+      const res = await fetch(url, {
+        method, credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       })
-      if (res.ok) { setStatus("saved"); onUpdated() } else { setStatus("error") }
-    } catch { setStatus("error") }
+      if (!res.ok) { setStatus("error"); return null }
+      let id = currentId
+      if (!id) {
+        const data = await res.json()
+        id = data.id
+        setCurrentId(id)
+      }
+      setStatus("saved")
+      onSaved()
+      return id
+    } catch { setStatus("error"); return null }
     finally { setSaving(false) }
   }
 
   const testConnection = async () => {
     setTesting(true); setTestResult(null)
-    await save()  // persist current form values so DB secret matches what we're testing
+    const id = await save() // persist current form values so DB secret matches what we're testing
+    if (!id) { setTesting(false); return }
     try {
-      const res = await fetch(`/admin/clinics/${clinic.id}/test-pharmacy`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pharmacy_type: form.pharmacy_type,
-          pharmacy_api_url: form.pharmacy_api_url,
-          pharmacy_api_key: form.pharmacy_api_key,
-          pharmacy_store_id: form.pharmacy_store_id,
-          pharmacy_username: form.pharmacy_username,
-          pharmacy_password: form.pharmacy_password,
-          pharmacy_client_id: form.pharmacy_client_id,
-          pharmacy_client_secret: form.pharmacy_client_secret,
-          pharmacy_subdomain: form.pharmacy_subdomain,
-        }),
+      const res = await fetch(`/admin/clinics/${clinicId}/pharmacies/${id}/test`, {
+        method: "POST", credentials: "include",
       })
       const data = await res.json()
       setTestResult(data.success ? "✓ " + data.message : "✗ " + data.message)
@@ -2745,32 +2977,46 @@ function PharmacyTab({ clinic, onUpdated }: { clinic: Clinic; onUpdated: () => v
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#6b7280", letterSpacing: "0.05em" }}>
-        Pharmacy API Integration
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", color: "#6b7280", letterSpacing: "0.05em" }}>
+          {pharmacy ? "Edit Pharmacy" : "New Pharmacy"}
+        </div>
+        <button onClick={onClose} style={s.btnOutline}>← Back to list</button>
       </div>
 
+      <Field label="Pharmacy Name">
+        <input style={s.input} value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Strive - GLP-1, DigitalRX - General" />
+      </Field>
+
       {/* Enable toggle */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: form.pharmacy_enabled ? "#f0fdf4" : "#f9fafb", borderRadius: 8, border: `1px solid ${form.pharmacy_enabled ? "#bbf7d0" : "#e5e7eb"}` }}>
-        <div onClick={() => setForm(p => ({ ...p, pharmacy_enabled: !p.pharmacy_enabled }))} style={{
-          width: 40, height: 22, borderRadius: 11, background: form.pharmacy_enabled ? "#10b981" : "#d1d5db",
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: form.is_enabled ? "#f0fdf4" : "#f9fafb", borderRadius: 8, border: `1px solid ${form.is_enabled ? "#bbf7d0" : "#e5e7eb"}` }}>
+        <div onClick={() => setForm(p => ({ ...p, is_enabled: !p.is_enabled }))} style={{
+          width: 40, height: 22, borderRadius: 11, background: form.is_enabled ? "#10b981" : "#d1d5db",
           position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0,
         }}>
           <div style={{
-            position: "absolute", top: 3, left: form.pharmacy_enabled ? 21 : 3,
+            position: "absolute", top: 3, left: form.is_enabled ? 21 : 3,
             width: 16, height: 16, borderRadius: "50%", background: "#fff",
             transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
           }} />
         </div>
         <div>
           <div style={{ fontSize: 13, fontWeight: 600 }}>
-            {form.pharmacy_enabled ? "Pharmacy API Enabled" : "Pharmacy API Disabled"}
+            {form.is_enabled ? "Pharmacy Enabled" : "Pharmacy Disabled"}
           </div>
           <div style={{ fontSize: 12, color: "#6b7280" }}>
-            {form.pharmacy_enabled
-              ? "Orders will be automatically submitted to the pharmacy API when approved."
+            {form.is_enabled
+              ? "Orders routed here will be automatically submitted to this pharmacy's API when approved."
               : "Orders will require manual pharmacy processing. Credentials are saved but not used."}
           </div>
         </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <input type="checkbox" id="is_default" checked={form.is_default} onChange={e => setForm(p => ({ ...p, is_default: e.target.checked }))} />
+        <label htmlFor="is_default" style={{ fontSize: 13 }}>
+          Default pharmacy — products with no explicit pharmacy assignment route here
+        </label>
       </div>
 
       <Field label="Pharmacy Type">
