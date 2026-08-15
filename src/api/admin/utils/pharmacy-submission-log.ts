@@ -45,24 +45,27 @@ export async function saveSubOrder(pg: any, row: {
   queueId: string
   payload: any
   response: any
+  clinicPharmacyId?: string | null
 }) {
   await pg.raw(`
     INSERT INTO pharmacy_sub_order
       (id, order_workflow_id, split_index, split_count, treatment_id, product_id, dosage, dosage_key,
        rxvortex_preset_catalog_id, pharmacy_queue_id, pharmacy_status, pharmacy_submitted_at,
-       pharmacy_submission_payload, pharmacy_submission_response, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', NOW(), ?::jsonb, ?::jsonb, NOW(), NOW())
+       pharmacy_submission_payload, pharmacy_submission_response, clinic_pharmacy_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', NOW(), ?::jsonb, ?::jsonb, ?, NOW(), NOW())
     ON CONFLICT (order_workflow_id, split_index) DO UPDATE SET
       pharmacy_queue_id = EXCLUDED.pharmacy_queue_id,
       pharmacy_status = EXCLUDED.pharmacy_status,
       pharmacy_submitted_at = EXCLUDED.pharmacy_submitted_at,
       pharmacy_submission_payload = EXCLUDED.pharmacy_submission_payload,
       pharmacy_submission_response = EXCLUDED.pharmacy_submission_response,
+      clinic_pharmacy_id = EXCLUDED.clinic_pharmacy_id,
       updated_at = NOW()
   `, [
     row.id, row.workflowId, row.splitIndex, row.splitCount, row.treatmentId, row.productId,
     row.dosage, row.dosageKey, row.catalogId, row.queueId,
     JSON.stringify(row.payload ?? null), JSON.stringify(row.response ?? null),
+    row.clinicPharmacyId ?? null,
   ])
 }
 

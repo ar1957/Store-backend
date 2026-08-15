@@ -34,7 +34,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
 
     // ── 2. Look up clinic_staff rows for this user ────────────────────────
     const staffResult = await pg.raw(
-      `SELECT clinic_id, role, tenant_domain
+      `SELECT id, clinic_id, role, tenant_domain
        FROM clinic_staff
        WHERE email = ?
          AND is_active = true
@@ -46,6 +46,26 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     // Super admin = not in clinic_staff at all
     const isSuperAdmin = staffRows.length === 0
 
+    // A user who is purely a pharmacist (every active staff row has that
+    // role) only sees orders that touch a pharmacy they're assigned to —
+    // fails closed to zero orders if they haven't been assigned one yet.
+    // Users with a mix of roles across clinics (e.g. clinic_admin at one,
+    // pharmacist at another) keep today's clinic-only scoping, since this
+    // route doesn't currently distinguish role on a per-clinic basis.
+    const isPharmacistOnly = staffRows.length > 0 && staffRows.every((r: any) => r.role === "pharmacist")
+    let pharmacyIds: string[] = []
+    if (isPharmacistOnly) {
+      const staffIds = staffRows.map((r: any) => r.id)
+      const pharmacyResult = await pg.raw(
+        `SELECT DISTINCT clinic_pharmacy_id FROM clinic_staff_pharmacy WHERE clinic_staff_id = ANY(?)`,
+        [staffIds]
+      )
+      pharmacyIds = (pharmacyResult.rows ?? []).map((r: any) => r.clinic_pharmacy_id)
+      if (pharmacyIds.length === 0) {
+        return res.json({ orders: [], count: 0, limit, offset })
+      }
+    }
+
     // ── 3. Build clinic filter ────────────────────────────────────────────
     // clinic_staff has tenant_domain (e.g. 'spaderx.com')
     // clinic.domains is an array (e.g. {spaderx.com, localhost:8000})
@@ -53,7 +73,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     // So we: staff.tenant_domain → ANY(clinic.domains) → get clinic ids
     //        then filter wf.tenant_domain = ANY(clinic.domains) for those clinics
     let clinicFilter = ""
-    let clinicParams: string[] = []
+    let clinicParams: any[] = []
 
     if (!isSuperAdmin) {
       const staffDomains: string[] = staffRows.map((r: any) => r.tenant_domain).filter(Boolean)
@@ -91,6 +111,20 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
           )
       )`
       clinicParams = [] // no params needed — IDs are inlined
+
+      // Pharmacist scoping: only orders touching one of their assigned
+      // pharmacies, per order-level visibility (a mixed order shows in full
+      // if any part of it belongs to them, not just their own line items).
+      if (isPharmacistOnly) {
+        clinicFilter += ` AND (
+          wf.clinic_pharmacy_id = ANY(?)
+          OR EXISTS (
+            SELECT 1 FROM pharmacy_sub_order pso
+            WHERE pso.order_workflow_id = wf.id AND pso.clinic_pharmacy_id = ANY(?)
+          )
+        )`
+        clinicParams = [pharmacyIds, pharmacyIds]
+      }
     }
 
     // ── 4. Build search filter ────────────────────────────────────────────

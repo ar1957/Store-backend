@@ -39,7 +39,10 @@ export default async function pharmacyPollJob(container: MedusaContainer) {
         AND ow.pharmacy_queue_id IS NULL
         AND ow.pharmacy_blocked_at IS NULL
         AND ow.deleted_at IS NULL
-        AND c.pharmacy_enabled = true
+        AND EXISTS (
+          SELECT 1 FROM clinic_pharmacy cp
+          WHERE cp.clinic_id = c.id AND cp.is_enabled = true AND cp.deleted_at IS NULL
+        )
       LIMIT 50
     `)
 
