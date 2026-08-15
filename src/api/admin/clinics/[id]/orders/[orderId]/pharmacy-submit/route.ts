@@ -15,31 +15,18 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const pg = req.scope.resolve("__pg_connection__") as any
     const { id: clinicId, orderId } = req.params
 
-    // 1. Get clinic pharmacy config — same gate submitToPharmacyIfEnabled uses
-    // internally, but checked here first so a misconfigured clinic gives the
-    // admin a clear error instead of a silent no-op.
-    const clinicResult = await pg.raw(
-      `SELECT pharmacy_type, pharmacy_enabled, pharmacy_api_key, pharmacy_store_id,
-              pharmacy_username, pharmacy_password, pharmacy_client_id, pharmacy_client_secret
-       FROM clinic WHERE id = ? LIMIT 1`,
+    // 1. Confirm this clinic has at least one pharmacy configured — checked
+    // here first so a misconfigured clinic gives the admin a clear error
+    // instead of a silent no-op. Per-pharmacy credential/enabled validation
+    // is submitToPharmacyIfEnabled's job below, since different products on
+    // the same order can resolve to different pharmacies with different
+    // credential states.
+    const pharmacyCountResult = await pg.raw(
+      `SELECT COUNT(*) AS count FROM clinic_pharmacy WHERE clinic_id = ? AND deleted_at IS NULL`,
       [clinicId]
     )
-    const clinic = clinicResult.rows[0]
-    if (!clinic?.pharmacy_enabled) {
-      return res.status(400).json({ message: "Pharmacy integration is not enabled for this clinic" })
-    }
-
-    const isRmm = clinic.pharmacy_type === "rmm"
-    const isRxVortex = clinic.pharmacy_type === "rxvortex"
-
-    if (isRmm && (!clinic.pharmacy_username || !clinic.pharmacy_password)) {
-      return res.status(400).json({ message: "No RMM credentials configured for this clinic" })
-    }
-    if (isRxVortex && (!clinic.pharmacy_client_id || !clinic.pharmacy_client_secret)) {
-      return res.status(400).json({ message: "No RxVortex credentials configured for this clinic" })
-    }
-    if (!isRmm && !isRxVortex && (!clinic.pharmacy_api_key || !clinic.pharmacy_store_id)) {
-      return res.status(400).json({ message: "No pharmacy API configured for this clinic" })
+    if (Number(pharmacyCountResult.rows[0]?.count || 0) === 0) {
+      return res.status(400).json({ message: "No pharmacy is configured for this clinic" })
     }
 
     // 2. Get order + workflow

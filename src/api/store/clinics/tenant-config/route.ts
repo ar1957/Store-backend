@@ -69,6 +69,19 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     )
     const uiConfig = uiResult.rows[0] || {}
 
+    // A clinic can have multiple pharmacies now (clinic_pharmacy table) —
+    // clinic.pharmacy_enabled/pharmacy_type are the legacy single-pharmacy
+    // columns and are never touched once a clinic uses the Pharmacy tab's
+    // multi-pharmacy CRUD, so check for any enabled RxVortex pharmacy directly.
+    const rxvortexResult = await pool.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM clinic_pharmacy
+         WHERE clinic_id = $1 AND pharmacy_type = 'rxvortex' AND is_enabled = true AND deleted_at IS NULL
+       ) AS has_rxvortex`,
+      [clinic.id]
+    )
+    const hasRxVortex = rxvortexResult.rows[0]?.has_rxvortex === true
+
     const response = {
       tenant: {
         name:            clinic.name,
@@ -98,7 +111,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         authorizenet_public_client_key: clinic.authorizenet_public_client_key || "",
         authorizenet_mode: clinic.authorizenet_mode || "sandbox",
         is_translation_allowed: clinic.is_translation_allowed === true || clinic.is_translation_allowed === 1,
-        pharmacy_requires_phone: !!(clinic.pharmacy_enabled && clinic.pharmacy_type === "rxvortex"),
+        pharmacy_requires_phone: hasRxVortex,
       }
     }
 
