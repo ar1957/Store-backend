@@ -14,11 +14,18 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     // Phone-required check for RxVortex (Strive) pharmacies.
     // RxVortex rejects submissions with a blank patient phone, so we gate here
     // before the order is created rather than failing silently after placement.
+    // A clinic can have multiple pharmacies now (clinic_pharmacy table) —
+    // cl.pharmacy_enabled/pharmacy_type are the legacy single-pharmacy columns
+    // and are never touched once a clinic uses the Pharmacy tab's multi-pharmacy
+    // CRUD, so check for any enabled RxVortex pharmacy directly instead.
     try {
       const rxCheck = await pg.raw(`
         SELECT
-          cl.pharmacy_enabled,
-          cl.pharmacy_type,
+          EXISTS (
+            SELECT 1 FROM clinic_pharmacy cp
+            WHERE cp.clinic_id = cl.id AND cp.pharmacy_type = 'rxvortex'
+              AND cp.is_enabled = true AND cp.deleted_at IS NULL
+          ) AS has_rxvortex,
           COALESCE(sa.phone, ba.phone) AS address_phone,
           ct.customer_id
         FROM cart ct
@@ -31,7 +38,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       `, [cartId])
 
       const row = rxCheck.rows[0]
-      if (row?.pharmacy_enabled && row?.pharmacy_type === "rxvortex") {
+      if (row?.has_rxvortex) {
         let phone: string = row.address_phone || ""
 
         // Fall back to customer profile phone

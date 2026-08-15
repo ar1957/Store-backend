@@ -2,7 +2,10 @@
  * GET /admin/clinics/:id/rxvortex-catalog
  * Proxies the RxVortex preset catalog API so the admin UI can display
  * a dropdown of medications without exposing credentials to the browser.
- * Only available when the clinic's pharmacy_type is "rxvortex".
+ * Looks up an RxVortex pharmacy from clinic_pharmacy (a clinic can have
+ * multiple pharmacies now) — prefers the default one if it's RxVortex,
+ * otherwise the first RxVortex-type pharmacy found. Optional ?pharmacyId=
+ * targets a specific one directly.
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { getRxVortexToken } from "../../../utils/pharmacy-submit-rxvortex"
@@ -10,16 +13,20 @@ import { getRxVortexToken } from "../../../utils/pharmacy-submit-rxvortex"
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
+    const pharmacyId = (req.query?.pharmacyId as string) || null
 
-    const clinicResult = await pg.raw(
-      `SELECT pharmacy_type, pharmacy_api_url, pharmacy_client_id, pharmacy_client_secret, pharmacy_subdomain
-       FROM clinic WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-      [req.params.id]
+    const pharmacyResult = await pg.raw(
+      `SELECT id, pharmacy_api_url, pharmacy_client_id, pharmacy_client_secret, pharmacy_subdomain
+       FROM clinic_pharmacy
+       WHERE clinic_id = ? AND pharmacy_type = 'rxvortex' AND deleted_at IS NULL
+         ${pharmacyId ? "AND id = ?" : ""}
+       ORDER BY is_default DESC, created_at ASC
+       LIMIT 1`,
+      pharmacyId ? [req.params.id, pharmacyId] : [req.params.id]
     )
-    const clinic = clinicResult.rows[0]
+    const clinic = pharmacyResult.rows[0]
 
-    if (!clinic) return res.status(404).json({ message: "Clinic not found" })
-    if (clinic.pharmacy_type !== "rxvortex") {
+    if (!clinic) {
       return res.status(400).json({ message: "This clinic does not use RxVortex" })
     }
     if (!clinic.pharmacy_client_id || !clinic.pharmacy_client_secret) {
