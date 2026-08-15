@@ -1562,7 +1562,19 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
   const [form, setForm] = useState({ product_id: "", treatment_id: 0 })
   const [loadingTreatments, setLoadingTreatments] = useState(false)
 
-  const isRxVortex = clinic.pharmacy_type === "rxvortex"
+  // Pharmacies configured for this clinic (multi-pharmacy model) — not the
+  // legacy clinic.pharmacy_type, which is never touched once a clinic uses
+  // the Pharmacy tab's CRUD list instead of the old single-pharmacy form.
+  const [pharmacies, setPharmacies] = useState<{ id: string; name: string; pharmacy_type: string; is_default: boolean }[]>([])
+  const loadPharmacies = async () => {
+    try {
+      const res = await fetch(`/admin/clinics/${clinic.id}/pharmacies`, { credentials: "include", headers: adminHeaders() })
+      const data = await res.json()
+      setPharmacies(data.pharmacies || [])
+    } catch {}
+  }
+
+  const isRxVortex = pharmacies.some(p => p.pharmacy_type === "rxvortex")
 
   // Fetch RxVortex catalog once at the tab level, shared across all rows
   const [rxCatalog, setRxCatalog] = useState<RxVortexCatalogItem[]>([])
@@ -1611,15 +1623,6 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       .then(results => setTreatmentDosages(Object.fromEntries(results)))
       .finally(() => setTreatmentDosagesLoading(false))
   }, [clinic.id, isRxVortex, mappings])
-
-  const [pharmacies, setPharmacies] = useState<{ id: string; name: string; is_default: boolean }[]>([])
-  const loadPharmacies = async () => {
-    try {
-      const res = await fetch(`/admin/clinics/${clinic.id}/pharmacies`, { credentials: "include", headers: adminHeaders() })
-      const data = await res.json()
-      setPharmacies(data.pharmacies || [])
-    } catch {}
-  }
 
   useEffect(() => { loadMappings(); loadProducts(); loadDosageMappings(); loadPharmacies() }, [clinic.id])
 
