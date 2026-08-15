@@ -197,6 +197,10 @@ async function pollRmm(pg: any, logger: any, order: any): Promise<boolean> {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 export async function checkPharmacyStatuses(pg: any, logger: any): Promise<{ checked: number; updated: number; errors: number }> {
+  // Joins via order_workflow.clinic_pharmacy_id — the specific pharmacy this
+  // order actually resolved to — rather than the clinic's legacy single
+  // pharmacy_type column, which is wrong for any clinic using more than one
+  // pharmacy type at once (e.g. RMM for one product, RxVortex for another).
   const submitted = await pg.raw(`
     SELECT
       ow.id AS workflow_id,
@@ -204,17 +208,14 @@ export async function checkPharmacyStatuses(pg: any, logger: any): Promise<{ che
       ow.pharmacy_queue_id,
       ow.pharmacy_status,
       ow.tenant_domain,
-      c.pharmacy_type,
-      c.pharmacy_api_url,
-      c.pharmacy_api_key,
-      c.pharmacy_store_id,
-      c.pharmacy_username,
-      c.pharmacy_password
+      cp.pharmacy_type,
+      cp.pharmacy_api_url,
+      cp.pharmacy_api_key,
+      cp.pharmacy_store_id,
+      cp.pharmacy_username,
+      cp.pharmacy_password
     FROM order_workflow ow
-    JOIN clinic c ON (
-      ow.tenant_domain = ANY(c.domains)
-      OR ow.tenant_domain = ANY(SELECT split_part(d, ':', 1) FROM unnest(c.domains) AS d)
-    )
+    LEFT JOIN clinic_pharmacy cp ON cp.id = ow.clinic_pharmacy_id AND cp.deleted_at IS NULL
     WHERE ow.pharmacy_queue_id IS NOT NULL
       AND ow.status = 'processing_pharmacy'
       AND ow.tracking_number IS NULL

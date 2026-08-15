@@ -220,14 +220,23 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
       if (!targetClinicId) targetClinicId = allClinics[0]?.id
       setClinicId(targetClinicId)
 
-      // Check if this clinic has pharmacy configured
+      // Check if this clinic has pharmacy configured — a clinic can have
+      // multiple pharmacies now (clinic_pharmacy table); clinic.pharmacy_enabled
+      // is the legacy single-pharmacy column and is never touched once a
+      // clinic uses the Pharmacy tab's multi-pharmacy CRUD instead.
       if (targetClinicId) {
         try {
-          const clinicRes = await fetch(`/admin/clinics/${targetClinicId}`, { credentials: "include" })
+          const [clinicRes, pharmaciesRes] = await Promise.all([
+            fetch(`/admin/clinics/${targetClinicId}`, { credentials: "include" }),
+            fetch(`/admin/clinics/${targetClinicId}/pharmacies`, { credentials: "include" }),
+          ])
           const clinicData = await clinicRes.json()
           const c = clinicData.clinic || {}
-          const hasPharmacy = c.pharmacy_enabled === true &&
-            !!(c.pharmacy_api_key || c.pharmacy_username || (c.pharmacy_client_id && c.pharmacy_client_secret))
+          const pharmaciesData = await pharmaciesRes.json()
+          const pharmacies: any[] = pharmaciesData.pharmacies || []
+          const hasPharmacy = pharmacies.some((p: any) =>
+            p.is_enabled && (p.pharmacy_api_key || p.pharmacy_username || (p.pharmacy_client_id && p.pharmacy_client_secret))
+          )
           setPharmacyConfigured(hasPharmacy)
 
           // Build GFE portal URL

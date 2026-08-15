@@ -1270,7 +1270,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   catalogLoading: boolean
   catalogError: string
   hasDosageMapping: boolean
-  pharmacies: { id: string; name: string; is_default: boolean }[]
+  pharmacies: { id: string; name: string; pharmacy_type: string; is_default: boolean }[]
   onDelete: () => void
 }) {
   const [catalogId, setCatalogId] = useState(mapping.rxvortex_preset_catalog_id || "")
@@ -1298,6 +1298,15 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
     } catch {}
     finally { setPharmacySaving(false) }
   }
+
+  // Which pharmacy THIS row is actually routed to (its explicit selection,
+  // or the clinic default when unset) — the clinic-wide "does it use
+  // RxVortex" flag isn't enough once a clinic mixes RxVortex with other
+  // pharmacy types, since a given row might be routed to a non-RxVortex one.
+  const rowPharmacy = pharmacyId
+    ? pharmacies.find(p => p.id === pharmacyId)
+    : pharmacies.find(p => p.is_default)
+  const rowIsRxVortex = rowPharmacy?.pharmacy_type === "rxvortex"
 
   const saveSplitCount = async (value: number) => {
     setSplitSaving(true)
@@ -1430,6 +1439,11 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
       </td>
       {showRxVortex && (
         <td style={{ ...s.td, position: "relative" }}>
+          {!rowIsRxVortex ? (
+            <span style={{ fontSize: 12, color: "#9ca3af" }}>
+              — routed to {rowPharmacy?.name || "a non-RxVortex pharmacy"}
+            </span>
+          ) : (<>
           {hasDosageMapping && (
             <div style={{
               fontSize: 11, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a",
@@ -1545,6 +1559,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
               {instrSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
             </div>
           </div>
+          </>)}
         </td>
       )}
       <td style={s.td}>
