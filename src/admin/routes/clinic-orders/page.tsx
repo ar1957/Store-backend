@@ -598,6 +598,44 @@ export default function ClinicOrdersPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null)
 
+  const [myRole, setMyRole] = useState<string>("")
+  const [scanningMissing, setScanningMissing] = useState(false)
+  const [missingOrders, setMissingOrders] = useState<{ order_id: string; display_id: number; email: string; created_at: string }[] | null>(null)
+  const [recoveringMissing, setRecoveringMissing] = useState(false)
+  const [recoverSummary, setRecoverSummary] = useState<{ total: number; recovered: number; results: any[] } | null>(null)
+
+  const scanMissingWorkflows = async () => {
+    setScanningMissing(true)
+    setMissingOrders(null)
+    setRecoverSummary(null)
+    try {
+      const res = await fetch("/admin/order-workflow/missing", { credentials: "include" })
+      const data = await res.json()
+      setMissingOrders(data.orders || [])
+    } catch (err: any) {
+      alert(`Scan failed: ${err.message}`)
+    } finally {
+      setScanningMissing(false)
+    }
+  }
+
+  const recoverMissingWorkflows = async () => {
+    if (!missingOrders?.length) return
+    if (!confirm(`Recover ${missingOrders.length} order(s)? This makes real calls to the provider API to create patients/GFEs.`)) return
+    setRecoveringMissing(true)
+    try {
+      const res = await fetch("/admin/order-workflow/missing", { method: "POST", credentials: "include" })
+      const data = await res.json()
+      setRecoverSummary(data)
+      setMissingOrders(null)
+      await fetchOrders()
+    } catch (err: any) {
+      alert(`Recovery failed: ${err.message}`)
+    } finally {
+      setRecoveringMissing(false)
+    }
+  }
+
   const fetchOrders = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -673,6 +711,7 @@ export default function ClinicOrdersPage() {
   // Apply nav restrictions on mount + redirect /app/orders to here for restricted roles
   useEffect(() => {
     resolveMyRole().then(role => {
+      setMyRole(role)
       applyNavForRole(role)
       // If a restricted user somehow lands on /app/orders, redirect them here
       if (RESTRICTED_ROLES.includes(role) && window.location.pathname === "/app/orders") {
@@ -894,7 +933,73 @@ export default function ClinicOrdersPage() {
           <span>📊</span>
           <span style={{ fontSize: 13, fontWeight: 500 }}>Export</span>
         </button>
+
+        {(myRole === "super_admin" || myRole === "clinic_admin") && (
+          <button
+            onClick={scanMissingWorkflows}
+            disabled={scanningMissing}
+            title="Find orders that were paid for but never got a clinic workflow (e.g. GFE creation) — happens if the order.placed event was lost during a server restart"
+            style={{
+              padding: "8px 12px",
+              borderRadius: "8px",
+              border: "1px solid #FDE68A",
+              background: "#FFFBEB",
+              fontSize: "13px",
+              cursor: scanningMissing ? "default" : "pointer",
+              color: "#92400E",
+              fontWeight: 500,
+              opacity: scanningMissing ? 0.7 : 1,
+            }}
+          >
+            {scanningMissing ? "⏳ Scanning…" : "🔧 Check for Missing Workflows"}
+          </button>
+        )}
       </div>
+
+      {/* Missing-workflow scan / recovery panel */}
+      {missingOrders !== null && (
+        <div style={{ marginBottom: 12, padding: "12px 16px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8 }}>
+          {missingOrders.length === 0 ? (
+            <div style={{ fontSize: 13, color: "#166534" }}>✓ No missing workflows found — every paid order has one.</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, color: "#92400e", marginBottom: 8, fontWeight: 600 }}>
+                Found {missingOrders.length} order(s) with payment but no clinic workflow:
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10, fontSize: 12, color: "#78350f" }}>
+                {missingOrders.map(o => (
+                  <div key={o.order_id}>#{o.display_id} — {o.email} — {new Date(o.created_at).toLocaleString()}</div>
+                ))}
+              </div>
+              <button
+                onClick={recoverMissingWorkflows}
+                disabled={recoveringMissing}
+                style={{
+                  padding: "8px 16px", borderRadius: 8, border: "none", background: "#d97706", color: "#fff",
+                  fontSize: 13, fontWeight: 600, cursor: recoveringMissing ? "default" : "pointer",
+                  opacity: recoveringMissing ? 0.7 : 1,
+                }}
+              >
+                {recoveringMissing ? "⏳ Recovering…" : `Recover All (${missingOrders.length})`}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {recoverSummary && (
+        <div style={{ marginBottom: 12, padding: "12px 16px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8 }}>
+          <div style={{ fontSize: 13, color: "#166534", fontWeight: 600, marginBottom: 6 }}>
+            Recovered {recoverSummary.recovered} of {recoverSummary.total} order(s).
+          </div>
+          {recoverSummary.results.filter(r => !r.success).length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "#991b1b" }}>
+              {recoverSummary.results.filter(r => !r.success).map((r: any) => (
+                <div key={r.order_id}>✗ #{r.display_id}: {r.message}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Refresh status message */}
       {refreshMsg && (
