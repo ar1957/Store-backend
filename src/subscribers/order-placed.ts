@@ -11,6 +11,7 @@
 import { IEventBusModuleService } from "@medusajs/framework/types"
 import { MedusaContainer } from "@medusajs/framework"
 import { resolveOrderClinicPharmacyId } from "../api/admin/utils/pharmacy-submit"
+import Stripe from "stripe"
 
 const CLINIC_MODULE = "clinic"
 
@@ -31,7 +32,7 @@ export default async function orderPlacedHandler({
   try {
     // 1. Get order with metadata + total (total lives in order_summary.totals JSONB)
     const orderResult = await pgConnection.raw(`
-      SELECT o.id, o.metadata, o.email,
+      SELECT o.id, o.display_id, o.sales_channel_id, o.metadata, o.email,
              COALESCE(
                (os.totals->>'current_order_total')::numeric,
                (os.totals->>'original_order_total')::numeric,
@@ -87,6 +88,41 @@ export default async function orderPlacedHandler({
     if (!isPaid) {
       logger.warn(`[OrderPlaced] Order ${orderId} skipped — payment session not completed (session_status: ${sessionStatus}, collection_amount: ${collectionAmount}). Customer likely abandoned checkout.`)
       return
+    }
+
+    // Tag the Stripe PaymentIntent with the Medusa order number so support
+    // can search Stripe's dashboard directly by order # instead of having to
+    // look up the cart_id first. Best-effort — the order has already been
+    // paid for at this point, so a tagging failure must never block the rest
+    // of order processing (GFE/pharmacy submission) below.
+    try {
+      const clinicStripeResult = await pgConnection.raw(
+        `SELECT stripe_secret_key FROM clinic WHERE sales_channel_id = ? AND deleted_at IS NULL LIMIT 1`,
+        [order.sales_channel_id]
+      )
+      const stripeSecretKey = clinicStripeResult.rows[0]?.stripe_secret_key
+      if (stripeSecretKey) {
+        const piResult = await pgConnection.raw(`
+          SELECT pay.data->>'id' AS pi_id
+          FROM order_payment_collection opc
+          JOIN payment_collection pc ON pc.id = opc.payment_collection_id
+          JOIN payment pay ON pay.payment_collection_id = pc.id
+          WHERE opc.order_id = ? AND pay.data->>'id' LIKE 'pi_%'
+          ORDER BY pay.created_at DESC LIMIT 1
+        `, [orderId])
+        const piId = piResult.rows[0]?.pi_id
+        if (piId) {
+          const stripe = new Stripe(stripeSecretKey, { apiVersion: "2024-06-20" as any })
+          // Metadata updates are a merge, not a replace — cartId/clinicId/
+          // clinicName/domain set at PaymentIntent creation stay intact.
+          await stripe.paymentIntents.update(piId, {
+            metadata: { orderId: order.id, orderDisplayId: String(order.display_id) },
+          })
+          logger.info(`[OrderPlaced] Tagged Stripe PI ${piId} with order #${order.display_id}`)
+        }
+      }
+    } catch (e: any) {
+      logger.warn(`[OrderPlaced] Failed to tag Stripe PaymentIntent with order number (non-fatal): ${e.message}`)
     }
 
     const metadata = order.metadata || {}
