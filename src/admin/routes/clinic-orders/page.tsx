@@ -137,7 +137,8 @@ const STATUS_CONFIG: Record<WorkflowStatus, { label: string; color: string; bg: 
 
 /**
  * Parse treatment_dosages JSON and return a human-readable string.
- * Strips the "E-Commerce Online Order: " prefix from treatmentName.
+ * Strips the "E-Commerce Online Order: " / "Pharmacy Online Order: " /
+ * "Pharmacy Returning Online Order: " prefix from treatmentName.
  * If multiple treatments, joins with " / ".
  */
 function parseMedDosage(raw: string | null): string {
@@ -148,7 +149,7 @@ function parseMedDosage(raw: string | null): string {
     return treatments
       .map((t) => {
         const name = (t.treatmentName ?? "")
-          .replace(/^E-Commerce Online Order:\s*/i, "")
+          .replace(/^(?:E-Commerce|Pharmacy(?:\s+Returning)?)\s+Online\s+Order:\s*/i, "")
           .trim()
         const dosage = (t.dosage ?? "").trim()
         return name && dosage ? `${name} — ${dosage}` : name || dosage || "—"

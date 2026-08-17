@@ -874,6 +874,7 @@ interface PharmacySubOrder {
   split_count: number
   treatment_id: number | null
   product_id: string | null
+  product_title: string | null
   dosage: string | null
   dosage_key: string | null
   rxvortex_preset_catalog_id: string | null
@@ -912,13 +913,21 @@ function PharmacySubOrdersList({ clinicId, orderId, legacyQueueId, legacyStatus 
   }
 
   const multi = subOrders.length > 1
+  // "One per month" only actually describes a genuine dosage-tier split of a
+  // single product (order_split_count > 0). A multi-item cart with different
+  // products also produces multiple pharmacy_sub_order rows — each is its own
+  // unrelated prescription, not sequential months of the same medication —
+  // so the label needs to say something else in that case.
+  const sameProduct = multi && subOrders.every(so => so.product_id && so.product_id === subOrders[0].product_id)
 
   return (
     <div style={{ marginBottom: 16 }}>
       {multi && (
         <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>
-          This order was split into {subOrders.length} separate pharmacy orders (one per month) —
-          each ships and tracks independently.
+          {sameProduct
+            ? <>This order was split into {subOrders.length} separate pharmacy orders (one per month) — each ships and tracks independently.</>
+            : <>This order contains {subOrders.length} separate pharmacy prescriptions (different products) — each ships and tracks independently.</>
+          }
         </div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -935,7 +944,7 @@ function PharmacySubOrdersList({ clinicId, orderId, legacyQueueId, legacyStatus 
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
                 <div>
-                  {multi && <strong>Order {i + 1} of {subOrders.length} — </strong>}
+                  {multi && <strong>Order {i + 1} of {subOrders.length}{!sameProduct && so.product_title ? ` — ${so.product_title}` : ""} — </strong>}
                   💊 Queue ID: <strong>{so.pharmacy_queue_id}</strong>
                   {so.pharmacy_status && <span style={{ marginLeft: 8, color: "#6b7280" }}>({so.pharmacy_status})</span>}
                 </div>
