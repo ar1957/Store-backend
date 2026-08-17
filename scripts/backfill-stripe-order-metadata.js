@@ -13,11 +13,16 @@
  * (rather than replace) existing keys, so cartId/clinicId/clinicName/domain
  * set at PaymentIntent creation are never touched.
  *
- * Usage (run from the my-medusa-store directory, same as manual-migrate.js):
+ * Usage (locally, from the my-medusa-store directory):
  *   node scripts/backfill-stripe-order-metadata.js            # dry run — reports what it would do, writes nothing
  *   node scripts/backfill-stripe-order-metadata.js --live     # actually writes to Stripe
+ *
+ * Usage (on AWS — EB doesn't populate DATABASE_URL into an interactive SSH
+ * shell on its own, same requirement as manual-migrate.js):
+ *   export DATABASE_URL=$(/opt/elasticbeanstalk/bin/get-config environment --key DATABASE_URL)
+ *   node /var/app/current/scripts/backfill-stripe-order-metadata.js [--live]
  */
-require("dotenv").config()
+require("dotenv").config({ path: require("path").join(__dirname, "../.env") })
 const { Pool } = require("pg")
 const Stripe = require("stripe")
 
