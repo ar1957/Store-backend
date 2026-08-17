@@ -19,12 +19,18 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     }
 
     const result = await pg.raw(
-      `SELECT id, split_index, split_count, treatment_id, product_id, dosage, dosage_key,
-              rxvortex_preset_catalog_id, pharmacy_queue_id, pharmacy_status,
-              pharmacy_submitted_at, tracking_number, carrier, shipped_at
-       FROM pharmacy_sub_order
-       WHERE order_workflow_id = ?
-       ORDER BY split_index`,
+      `SELECT pso.id, pso.split_index, pso.split_count, pso.treatment_id, pso.product_id, pso.dosage, pso.dosage_key,
+              pso.rxvortex_preset_catalog_id, pso.pharmacy_queue_id, pso.pharmacy_status,
+              pso.pharmacy_submitted_at, pso.tracking_number, pso.carrier, pso.shipped_at,
+              ptm.product_title
+       FROM pharmacy_sub_order pso
+       LEFT JOIN LATERAL (
+         SELECT product_title FROM product_treatment_map
+         WHERE product_id = pso.product_id AND product_title IS NOT NULL AND product_title != ''
+         LIMIT 1
+       ) ptm ON true
+       WHERE pso.order_workflow_id = ?
+       ORDER BY pso.split_index`,
       [wfResult.rows[0].id]
     )
 
