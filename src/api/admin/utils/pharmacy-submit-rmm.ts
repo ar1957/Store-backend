@@ -110,7 +110,7 @@ function normalizeDosage(dosage: string): string {
 
 function cleanTreatmentName(name: string): string {
   return (name || "Medication")
-    .replace(/^E-Commerce Online Order:\s*/i, "")
+    .replace(/^(?:E-Commerce|Pharmacy(?:\s+Returning)?)\s+Online\s+Order:\s*/i, "")
     .replace(/\s*-\s*\d+\s*month\s*supply.*/i, "")
     .trim()
 }

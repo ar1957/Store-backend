@@ -283,7 +283,7 @@ export async function submitToPharmacyIfEnabled(
       if (dosages.length > 0) {
         const d = dosages[0]
         const name = (d.treatmentName || item?.title || "Medication")
-          .replace(/^E-Commerce Online Order:\s*/i, "")
+          .replace(/^(?:E-Commerce|Pharmacy(?:\s+Returning)?)\s+Online\s+Order:\s*/i, "")
           .replace(/\s*-\s*\d+\s*month\s*supply.*/i, "")
           .trim()
         drugName = d.dosage ? `RXI-${name} - ${d.dosage}` : `RXI-${name}`

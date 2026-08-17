@@ -171,7 +171,7 @@ export default function ClinicDashboardPage() {
   }))
 
   const productSlices = byProduct.map((r, i) => ({
-    label: r.product.replace(/^E-Commerce Online Order:\s*/i, "").replace(/\s*-\s*\d+\s*month.*/i, "").trim(),
+    label: r.product.replace(/^(?:E-Commerce|Pharmacy(?:\s+Returning)?)\s+Online\s+Order:\s*/i, "").replace(/\s*-\s*\d+\s*month.*/i, "").trim(),
     value: r.count,
     color: PALETTE[i % PALETTE.length],
   }))
@@ -268,7 +268,7 @@ export default function ClinicDashboardPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
               <PieChart slices={productSlices} size={180} centerTotal={summary?.total_orders} />
               <Legend items={byProduct.map((r, i) => ({
-                label: r.product.replace(/^E-Commerce Online Order:\s*/i, "").replace(/\s*-\s*\d+\s*month.*/i, "").trim(),
+                label: r.product.replace(/^(?:E-Commerce|Pharmacy(?:\s+Returning)?)\s+Online\s+Order:\s*/i, "").replace(/\s*-\s*\d+\s*month.*/i, "").trim(),
                 color: PALETTE[i % PALETTE.length],
                 count: r.count,
                 total: Number(r.total),
