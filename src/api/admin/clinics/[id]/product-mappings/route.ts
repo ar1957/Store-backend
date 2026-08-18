@@ -17,6 +17,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       SELECT id, tenant_domain, product_id, product_title, variant_id,
              treatment_id, treatment_name, requires_eligibility,
              rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count,
+             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity,
              clinic_pharmacy_id, created_at
       FROM product_treatment_map
       WHERE tenant_domain = ?
@@ -45,8 +46,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     await pgConnection.raw(`
       INSERT INTO product_treatment_map
-        (id, tenant_domain, product_id, product_title, treatment_id, treatment_name, requires_eligibility, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count, clinic_pharmacy_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (id, tenant_domain, product_id, product_title, treatment_id, treatment_name, requires_eligibility, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count, clinic_pharmacy_id, rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
     `, [
       id,
       tenantDomain,
@@ -59,6 +60,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       body.rxvortex_instructions || null,
       Number(body.order_split_count) || 0,
       body.clinic_pharmacy_id || null,
+      body.rxvortex_medication_form || null,
+      body.rxvortex_quantity_units || null,
+      body.rxvortex_quantity != null ? String(body.rxvortex_quantity) : null,
     ])
 
     return res.json({ mapping: { id, tenant_domain: tenantDomain, ...body } })

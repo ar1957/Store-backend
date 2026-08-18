@@ -24,6 +24,9 @@ export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
     const fields: Record<string, any> = {}
     if ("rxvortex_preset_catalog_id" in body) fields.rxvortex_preset_catalog_id = body.rxvortex_preset_catalog_id || null
     if ("rxvortex_instructions" in body) fields.rxvortex_instructions = body.rxvortex_instructions || null
+    if ("rxvortex_medication_form" in body) fields.rxvortex_medication_form = body.rxvortex_medication_form || null
+    if ("rxvortex_quantity_units" in body) fields.rxvortex_quantity_units = body.rxvortex_quantity_units || null
+    if ("rxvortex_quantity" in body) fields.rxvortex_quantity = body.rxvortex_quantity != null ? String(body.rxvortex_quantity) : null
 
     if (Object.keys(fields).length === 0) {
       return res.status(400).json({ message: "No editable fields provided" })

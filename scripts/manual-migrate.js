@@ -704,6 +704,17 @@ const steps = [
     `,
   },
   {
+    name: "Migration20240101000026 - rxvortex medication_form + quantity_units + quantity on catalog mapping tables",
+    sql: `
+      ALTER TABLE "product_treatment_map" ADD COLUMN IF NOT EXISTS "rxvortex_medication_form" VARCHAR(255);
+      ALTER TABLE "product_treatment_map" ADD COLUMN IF NOT EXISTS "rxvortex_quantity_units" VARCHAR(50);
+      ALTER TABLE "product_treatment_map" ADD COLUMN IF NOT EXISTS "rxvortex_quantity" VARCHAR(50);
+      ALTER TABLE "treatment_dosage_catalog_map" ADD COLUMN IF NOT EXISTS "rxvortex_medication_form" VARCHAR(255);
+      ALTER TABLE "treatment_dosage_catalog_map" ADD COLUMN IF NOT EXISTS "rxvortex_quantity_units" VARCHAR(50);
+      ALTER TABLE "treatment_dosage_catalog_map" ADD COLUMN IF NOT EXISTS "rxvortex_quantity" VARCHAR(50);
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -730,7 +741,8 @@ const steps = [
       ('Migration20240101000022'),
       ('Migration20240101000023'),
       ('Migration20240101000024'),
-      ('Migration20240101000025')
+      ('Migration20240101000025'),
+      ('Migration20240101000026')
       ON CONFLICT DO NOTHING`,
   },
 ]

@@ -79,6 +79,94 @@ function parseMonthNumber(dosageKey: string | null | undefined): number {
   return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER
 }
 
+// RxVortex requires quantity_units to be exactly "each" / "ML" / "grams".
+// The value stored on the mapping comes straight from their own catalog
+// item (captured when the admin picked it in provider-settings), so this
+// only normalizes formatting drift (case, "gm"/"g" abbreviations) — it never
+// guesses a unit that wasn't already on the catalog item. No mapping stored
+// (legacy mappings picked before this field existed, or a manually-typed
+// catalog ID) falls back to "each", matching the previous flat behavior.
+function normalizeQuantityUnits(raw: string | null | undefined): "each" | "ML" | "grams" {
+  const v = (raw || "").trim().toLowerCase()
+  if (v === "ml") return "ML"
+  if (["g", "gm", "gram", "grams"].includes(v)) return "grams"
+  if (["each", "ea", "unit", "units"].includes(v)) return "each"
+  return "each"
+}
+
+// Strive's medication_form values for injectables all contain "inj" (e.g.
+// "Subq Inj", "IM Injection") — matching on that substring rather than an
+// exact enum avoids depending on us knowing every form string in their
+// catalog. Unknown/missing form is treated as non-injectable (keeps the
+// prior 30-day behavior) rather than guessed as injectable.
+function isInjectableForm(medicationForm: string | null | undefined): boolean {
+  return /inj/i.test(medicationForm || "")
+}
+
+// Per Strive feedback: injectables are capped at 28 days_supply_duration
+// (multi-dose vial safety window) instead of the flat 30 used for everything
+// else.
+function resolveDaysSupply(medicationForm: string | null | undefined): number {
+  return isInjectableForm(medicationForm) ? 28 : 30
+}
+
+// Per Strive feedback: quantity must match the product volume/count on the
+// catalog item itself — e.g. a 2ML vial submits quantity: 2 — not the number
+// of units the patient added to their cart. The catalog's own `quantity`
+// field (captured at mapping-pick-time, same as medication_form/quantity_units
+// above) is that number; cart quantity multiplies it only for the edge case
+// of a patient legitimately ordering more than one of the same line item.
+// Falls back to cart quantity alone when no catalog quantity was captured
+// (legacy mappings), matching the previous behavior exactly.
+function resolveQuantity(catalogQuantity: string | null | undefined, cartQuantity: number): number {
+  const parsed = catalogQuantity != null ? parseFloat(String(catalogQuantity)) : NaN
+  if (!Number.isFinite(parsed) || parsed <= 0) return cartQuantity || 1
+  return parsed * (cartQuantity || 1)
+}
+
+// Splits a free-text eligibility answer into discrete DUR entries. Only
+// splits on newlines/semicolons (deliberate item separators), never commas —
+// a single condition/allergy description often contains a comma itself
+// ("Type 2 Diabetes, well controlled"), and splitting on it would fragment
+// one entry into garbled pieces. Guarantees at least one entry whenever the
+// caller determined there's real content, per RxVortex's schema requirement
+// that entries be non-empty when the matching has_known_* flag is true.
+function toClinicalEntries(text: string): { description: string }[] {
+  const parts = text.split(/[\n;]+/).map(s => s.trim()).filter(Boolean)
+  const list = parts.length > 0 ? parts : [text.trim()]
+  return list.map(description => ({ description }))
+}
+
+// Strive requires a separate `clinical` body (for pharmacist Drug Utilization
+// Review), structured per their documented schema
+// (https://docs.rxvortex.net/api/operations/rxvortexweborderscontrollercreate/)
+// as three nested objects — allergies/diseases/medications — each with its
+// own has_known_* boolean and an `entries` array of {description} required
+// whenever that boolean is true. Booleans are explicitly False when the data
+// isn't known/wasn't checked, never guessed true. Sourced from the same
+// eligibility answers already collected at checkout (order-placed.ts stores
+// "None" as the empty sentinel, matched here the same way).
+function buildClinicalBody(eligibility: Record<string, any>): Record<string, any> {
+  const hasValue = (v: any) => typeof v === "string" && v.trim() !== "" && v.trim() !== "None"
+  const hasAllergies = hasValue(eligibility.allergies)
+  const hasDiseases = hasValue(eligibility.medicalHistory)
+  const hasMedications = hasValue(eligibility.currentMedications)
+  return {
+    allergies: {
+      has_known_allergies: hasAllergies,
+      ...(hasAllergies ? { entries: toClinicalEntries(eligibility.allergies) } : {}),
+    },
+    diseases: {
+      has_known_diseases: hasDiseases,
+      ...(hasDiseases ? { entries: toClinicalEntries(eligibility.medicalHistory) } : {}),
+    },
+    medications: {
+      has_known_medications: hasMedications,
+      ...(hasMedications ? { entries: toClinicalEntries(eligibility.currentMedications) } : {}),
+    },
+  }
+}
+
 export async function getRxVortexToken(baseUrl: string, clientId: string, clientSecret: string): Promise<string> {
   const res = await fetch(`${baseUrl}/api/v1/generate-access-token`, {
     method: "POST",
@@ -138,6 +226,7 @@ export async function submitToRxVortex(
     ? new Date(eligibility.dob).toISOString().split("T")[0]
     : "1990-01-01"
   const gender = eligibility.sex === "female" ? "female" : "male"
+  const clinical = buildClinicalBody(eligibility)
 
   const dosages = Array.isArray(treatmentDosages) ? treatmentDosages : []
 
@@ -170,6 +259,9 @@ export async function submitToRxVortex(
   const productTreatmentMap: Record<string, number> = {}
   const productInstructionMap: Record<string, string> = {}
   const productSplitCountMap: Record<string, number> = {}
+  const productMedFormMap: Record<string, string> = {}
+  const productQtyUnitsMap: Record<string, string> = {}
+  const productQtyMap: Record<string, string> = {}
   if (lineItems.length > 0 && tenantDomain) {
     const productIds = lineItems.map((li: any) => li.product_id).filter(Boolean)
     if (productIds.length > 0) {
@@ -177,7 +269,8 @@ export async function submitToRxVortex(
       // tenant_domain — mappings are stored under clinic.domains[0] which may differ
       // from the order's tenant_domain (e.g. spaderx.com vs spaderx.local).
       const mappingResult = await pg.raw(`
-        SELECT product_id, treatment_id, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count
+        SELECT product_id, treatment_id, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count,
+               rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity
         FROM product_treatment_map
         WHERE product_id = ANY(?)
           AND tenant_domain IN (
@@ -197,6 +290,9 @@ export async function submitToRxVortex(
           productInstructionMap[row.product_id] = row.rxvortex_instructions
         }
         productSplitCountMap[row.product_id] = Number(row.order_split_count) || 0
+        if (row.rxvortex_medication_form) productMedFormMap[row.product_id] = row.rxvortex_medication_form
+        if (row.rxvortex_quantity_units) productQtyUnitsMap[row.product_id] = row.rxvortex_quantity_units
+        if (row.rxvortex_quantity) productQtyMap[row.product_id] = row.rxvortex_quantity
       }
     }
   }
@@ -215,6 +311,9 @@ export async function submitToRxVortex(
   // the single per-product catalog ID above when a match exists.
   const dosageCatalogMap: Record<string, string> = {}
   const dosageInstructionMap: Record<string, string> = {}
+  const dosageMedFormMap: Record<string, string> = {}
+  const dosageQtyUnitsMap: Record<string, string> = {}
+  const dosageQtyMap: Record<string, string> = {}
   // Treatments that have ANY row in treatment_dosage_catalog_map are treated
   // as dosage-driven — a single "default" catalog ID can't be clinically
   // correct for a drug that's titrated, so these must resolve strictly via
@@ -222,11 +321,12 @@ export async function submitToRxVortex(
   const treatmentsWithDosageMapping = new Set<number>()
   // Ordered dosage tiers per treatment (sorted by dosage_key's month number),
   // used to resolve split orders — the next tier up from the approved dose.
-  const dosageTiersByTreatment: Record<number, { dosage: string; dosageKey: string | null; catalogId: string; instructions: string | null }[]> = {}
+  const dosageTiersByTreatment: Record<number, { dosage: string; dosageKey: string | null; catalogId: string; instructions: string | null; medicationForm: string | null; quantityUnits: string | null; quantity: string | null }[]> = {}
   const treatmentIds = [...new Set(Object.keys(dosageByTreatmentId).map(Number))]
   if (treatmentIds.length > 0 && tenantDomain) {
     const dosageMappingResult = await pg.raw(`
-      SELECT treatment_id, dosage, dosage_key, rxvortex_preset_catalog_id, rxvortex_instructions
+      SELECT treatment_id, dosage, dosage_key, rxvortex_preset_catalog_id, rxvortex_instructions,
+             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity
       FROM treatment_dosage_catalog_map
       WHERE treatment_id = ANY(?)
         AND deleted_at IS NULL
@@ -243,6 +343,9 @@ export async function submitToRxVortex(
       const key = `${tid}::${normalizeDosage(row.dosage)}`
       dosageCatalogMap[key] = row.rxvortex_preset_catalog_id
       if (row.rxvortex_instructions) dosageInstructionMap[key] = row.rxvortex_instructions
+      if (row.rxvortex_medication_form) dosageMedFormMap[key] = row.rxvortex_medication_form
+      if (row.rxvortex_quantity_units) dosageQtyUnitsMap[key] = row.rxvortex_quantity_units
+      if (row.rxvortex_quantity) dosageQtyMap[key] = row.rxvortex_quantity
       treatmentsWithDosageMapping.add(tid)
 
       if (!dosageTiersByTreatment[tid]) dosageTiersByTreatment[tid] = []
@@ -251,6 +354,9 @@ export async function submitToRxVortex(
         dosageKey: row.dosage_key,
         catalogId: row.rxvortex_preset_catalog_id,
         instructions: row.rxvortex_instructions,
+        medicationForm: row.rxvortex_medication_form || null,
+        quantityUnits: row.rxvortex_quantity_units || null,
+        quantity: row.rxvortex_quantity || null,
       })
     }
     for (const tid of Object.keys(dosageTiersByTreatment)) {
@@ -271,7 +377,10 @@ export async function submitToRxVortex(
     patientPhone = normalizePhone(custResult.rows[0]?.phone) || ""
   }
 
-  const shipTo = clinic.pharmacy_ship_type === "ship_to_clinic" ? "clinic" : "patient"
+  // "practice"/"patient" per RxVortex's documented enum for order.ship_to
+  // (https://docs.rxvortex.net/api/operations/rxvortexweborderscontrollercreate/)
+  // — "clinic" isn't a valid value there.
+  const shipTo = clinic.pharmacy_ship_type === "ship_to_clinic" ? "practice" : "patient"
 
   const basePatient = {
     first_name: (order.first_name || "Patient").trim(),
@@ -300,8 +409,20 @@ export async function submitToRxVortex(
       postal_code: clinic.pharmacy_prescriber_zip || "",
     },
   }
+  // recipient_first_name/last_name/phone are required by RxVortex's shipment
+  // schema (recipient_type isn't a real field there at all — dropped). When
+  // shipping to the practice, the recipient is the prescriber; otherwise the
+  // patient, matching who order.ship_to/bill_to already designate.
   const baseShipment = {
-    recipient_type: shipTo,
+    recipient_first_name: shipTo === "practice"
+      ? (clinic.pharmacy_doctor_first_name || "Provider").trim()
+      : (order.first_name || "Patient").trim(),
+    recipient_last_name: shipTo === "practice"
+      ? (clinic.pharmacy_doctor_last_name || ".").trim()
+      : (order.last_name || ".").trim(),
+    recipient_phone: shipTo === "practice"
+      ? (normalizePhone(clinic.pharmacy_prescriber_phone) || patientPhone)
+      : patientPhone,
     address: {
       line1: order.address_1 || "",
       city: order.city || "",
@@ -334,6 +455,7 @@ export async function submitToRxVortex(
       patient: basePatient, prescriber: basePrescriber,
       order: { bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "practice" : "patient", ship_to: shipTo, sender_order_id: rxNumber },
       shipment: baseShipment,
+      clinical,
       medication_requests: [fallback],
     }
     console.log(`[PharmacySubmit-RxVortex] Sending payload:`, JSON.stringify(payload, null, 2))
@@ -406,11 +528,22 @@ export async function submitToRxVortex(
           const presetCatalogId = isDosageDriven
             ? ((dosageKey && dosageCatalogMap[dosageKey]) || null)
             : ((li.product_id && productCatalogMap[li.product_id]) || clinicFallbackCatalogId || null)
+          const medicationForm = isDosageDriven
+            ? ((dosageKey && dosageMedFormMap[dosageKey]) || null)
+            : ((li.product_id && productMedFormMap[li.product_id]) || null)
+          const quantityUnits = isDosageDriven
+            ? ((dosageKey && dosageQtyUnitsMap[dosageKey]) || null)
+            : ((li.product_id && productQtyUnitsMap[li.product_id]) || null)
+          const catalogQuantity = isDosageDriven
+            ? ((dosageKey && dosageQtyMap[dosageKey]) || null)
+            : ((li.product_id && productQtyMap[li.product_id]) || null)
 
           const request: Record<string, any> = {
             type: "new", refills: 0,
             sender_med_request_id: `${rxNumber}-${idx + 1}`,
-            quantity: li.quantity || 1, quantity_units: "each", days_supply_duration: 30,
+            quantity: resolveQuantity(catalogQuantity, li.quantity || 1),
+            quantity_units: normalizeQuantityUnits(quantityUnits),
+            days_supply_duration: resolveDaysSupply(medicationForm),
             instructions, authored_on_datetime: new Date().toISOString(),
           }
           if (note) request.note = note
@@ -435,6 +568,7 @@ export async function submitToRxVortex(
           patient: basePatient, prescriber: basePrescriber,
           order: { bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "practice" : "patient", ship_to: shipTo, sender_order_id: rxNumber },
           shipment: baseShipment,
+          clinical,
           medication_requests: medicationRequests,
         }
         console.log(`[PharmacySubmit-RxVortex] Sending payload (bundled):`, JSON.stringify(payload, null, 2))
@@ -504,7 +638,9 @@ export async function submitToRxVortex(
         const medicationRequest: Record<string, any> = {
           type: "new", refills: 0,
           sender_med_request_id: `${splitSenderOrderId}-1`,
-          quantity: li.quantity || 1, quantity_units: "each", days_supply_duration: 30,
+          quantity: resolveQuantity(tier.quantity, li.quantity || 1),
+          quantity_units: normalizeQuantityUnits(tier.quantityUnits),
+          days_supply_duration: resolveDaysSupply(tier.medicationForm),
           instructions: `${baseInstruction} — ${tier.dosage}`,
           note: `Prescribed dosage: ${tier.dosage} (split ${i + 1} of ${li.splitCount})`,
           authored_on_datetime: new Date().toISOString(),
@@ -515,6 +651,7 @@ export async function submitToRxVortex(
           patient: basePatient, prescriber: basePrescriber,
           order: { bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "practice" : "patient", ship_to: shipTo, sender_order_id: splitSenderOrderId },
           shipment: baseShipment,
+          clinical,
           medication_requests: [medicationRequest],
         }
         console.log(`[PharmacySubmit-RxVortex] Sending payload (split ${i + 1}/${li.splitCount}):`, JSON.stringify(payload, null, 2))

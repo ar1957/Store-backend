@@ -15,7 +15,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const result = await pgConnection.raw(`
       SELECT id, tenant_domain, treatment_id, treatment_name, dosage, dosage_key,
-             rxvortex_preset_catalog_id, rxvortex_instructions, created_at
+             rxvortex_preset_catalog_id, rxvortex_instructions,
+             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, created_at
       FROM treatment_dosage_catalog_map
       WHERE tenant_domain = ? AND deleted_at IS NULL
       ORDER BY treatment_id, created_at
@@ -48,14 +49,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     await pgConnection.raw(`
       INSERT INTO treatment_dosage_catalog_map
-        (id, tenant_domain, treatment_id, treatment_name, dosage, dosage_key, rxvortex_preset_catalog_id, rxvortex_instructions, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (id, tenant_domain, treatment_id, treatment_name, dosage, dosage_key, rxvortex_preset_catalog_id, rxvortex_instructions, rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       ON CONFLICT (tenant_domain, treatment_id, dosage)
       DO UPDATE SET
         rxvortex_preset_catalog_id = EXCLUDED.rxvortex_preset_catalog_id,
         rxvortex_instructions = EXCLUDED.rxvortex_instructions,
         treatment_name = EXCLUDED.treatment_name,
         dosage_key = EXCLUDED.dosage_key,
+        rxvortex_medication_form = EXCLUDED.rxvortex_medication_form,
+        rxvortex_quantity_units = EXCLUDED.rxvortex_quantity_units,
+        rxvortex_quantity = EXCLUDED.rxvortex_quantity,
         deleted_at = NULL,
         updated_at = NOW()
     `, [
@@ -67,6 +71,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       body.dosage_key || null,
       body.rxvortex_preset_catalog_id,
       body.rxvortex_instructions || null,
+      body.rxvortex_medication_form || null,
+      body.rxvortex_quantity_units || null,
+      body.rxvortex_quantity != null ? String(body.rxvortex_quantity) : null,
     ])
 
     return res.json({ mapping: { id, tenant_domain: tenantDomain, ...body } })
