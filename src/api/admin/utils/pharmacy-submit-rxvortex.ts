@@ -79,6 +79,17 @@ function parseMonthNumber(dosageKey: string | null | undefined): number {
   return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER
 }
 
+// Extracts the leading numeric dose from a dosage string ("14 mg (x4)" -> 14).
+// Used only to decide whether an unmapped dose is a continuation PAST the
+// highest configured tier (safe to reuse that tier's vial, same "Month 6+
+// stays on this dose" convention already used for split orders) vs.
+// genuinely unmapped for some other reason (e.g. below the lowest tier) —
+// never safe to guess a vial for that case, so it still fails closed.
+function parseDoseNumber(dosage: string | null | undefined): number | null {
+  const m = (dosage || "").match(/(\d+(?:\.\d+)?)/)
+  return m ? parseFloat(m[1]) : null
+}
+
 // RxVortex requires quantity_units to be exactly "each" / "ML" / "grams".
 // The value stored on the mapping comes straight from their own catalog
 // item (captured when the admin picked it in provider-settings), so this
@@ -511,7 +522,21 @@ export async function submitToRxVortex(
     } else {
       try {
         const medicationRequests = bundledLineItems.map((li: any, idx: number) => {
-          const treatmentId = li.product_id ? productTreatmentMap[li.product_id] : undefined
+          const mappedTreatmentId = li.product_id ? productTreatmentMap[li.product_id] : undefined
+          // The product's statically-mapped treatment_id can go stale — MHC's
+          // provider system sometimes supersedes a treatment with a renamed/
+          // renumbered one (mirrors how the product itself gets renamed), and
+          // an order's own treatment_dosages snapshot then carries the OLD
+          // treatment_id forever, even after product_treatment_map is updated
+          // to point at the new one. When the mapped id has no corresponding
+          // entry in this order's own dosage data, but the order carries
+          // exactly one treatment record, there's no ambiguity about which
+          // line item it belongs to — trust the order's own treatment_id
+          // instead of the (possibly stale) static mapping. Multi-treatment
+          // orders keep the strict/fail-closed behavior unchanged.
+          const treatmentId = (mappedTreatmentId !== undefined && dosageByTreatmentId[mappedTreatmentId] !== undefined)
+            ? mappedTreatmentId
+            : (dosages.length === 1 && dosages[0]?.treatmentId ? Number(dosages[0].treatmentId) : mappedTreatmentId)
           const matchedDosage = treatmentId
             ? (dosageByTreatmentId[treatmentId] || "")
             : (dosages[idx]?.dosage || dosages[0]?.dosage || "")
@@ -525,18 +550,39 @@ export async function submitToRxVortex(
           const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
 
           const isDosageDriven = treatmentId ? treatmentsWithDosageMapping.has(treatmentId) : false
-          const presetCatalogId = isDosageDriven
+          let presetCatalogId = isDosageDriven
             ? ((dosageKey && dosageCatalogMap[dosageKey]) || null)
             : ((li.product_id && productCatalogMap[li.product_id]) || clinicFallbackCatalogId || null)
-          const medicationForm = isDosageDriven
+          let medicationForm = isDosageDriven
             ? ((dosageKey && dosageMedFormMap[dosageKey]) || null)
             : ((li.product_id && productMedFormMap[li.product_id]) || null)
-          const quantityUnits = isDosageDriven
+          let quantityUnits = isDosageDriven
             ? ((dosageKey && dosageQtyUnitsMap[dosageKey]) || null)
             : ((li.product_id && productQtyUnitsMap[li.product_id]) || null)
-          const catalogQuantity = isDosageDriven
+          let catalogQuantity = isDosageDriven
             ? ((dosageKey && dosageQtyMap[dosageKey]) || null)
             : ((li.product_id && productQtyMap[li.product_id]) || null)
+
+          // Terminal-tier fallback: a dosage-driven treatment with no exact
+          // match for the patient's approved dose, where that dose is at or
+          // above the highest configured tier, is a titration that's
+          // continued past the last dose the pharmacy has a distinct catalog
+          // item for (e.g. Strive has no dedicated 14mg item, only up to
+          // 13mg/"Month 6+"). Reuses that terminal tier's catalog item —
+          // same convention already used for split orders — rather than
+          // failing closed on every dose increase beyond the mapped range.
+          if (isDosageDriven && !presetCatalogId && treatmentId) {
+            const tiers = dosageTiersByTreatment[treatmentId] || []
+            const terminal = tiers[tiers.length - 1]
+            const approvedNum = parseDoseNumber(matchedDosage)
+            const terminalNum = terminal ? parseDoseNumber(terminal.dosage) : null
+            if (terminal && approvedNum !== null && terminalNum !== null && approvedNum >= terminalNum) {
+              presetCatalogId = terminal.catalogId
+              medicationForm = terminal.medicationForm
+              quantityUnits = terminal.quantityUnits
+              catalogQuantity = terminal.quantity
+            }
+          }
 
           const request: Record<string, any> = {
             type: "new", refills: 0,
