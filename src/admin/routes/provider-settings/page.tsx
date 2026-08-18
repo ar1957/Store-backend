@@ -2120,6 +2120,7 @@ function OrdersTab({
   const [tracking, setTracking] = useState({ number: "", carrier: "UPS" })
   const [processing, setProcessing] = useState(false)
   const [orderToDelete, setOrderToDelete] = useState<Order | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [commentOrder, setCommentOrder] = useState<Order | null>(null)
   const [reminderSending, setReminderSending] = useState<string | null>(null)
   const [reminderMsg, setReminderMsg] = useState<{ orderId: string; ok: boolean; text: string } | null>(null)
@@ -2168,13 +2169,30 @@ function OrdersTab({
   const deleteOrder = async () => {
     if (!orderToDelete) return
     setProcessing(true)
+    setDeleteError(null)
     try {
-      await fetch(`/admin/orders/${orderToDelete.order_id}/cancel`, { method: "POST", credentials: "include", headers: adminHeaders() })
-      await fetch(`/admin/clinics/${clinic.id}/orders/${orderToDelete.order_id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() })
+      // The clinic-scoped DELETE route now handles cancellation + a real
+      // gateway refund itself (see utils/issue-refund.ts) — it must be the
+      // only call here. Medusa's native /admin/orders/:id/cancel doesn't
+      // actually refund pp_system_default payments (same reason the custom
+      // refund route exists), and calling it first would flip order.status
+      // to canceled before the DELETE route runs, making it think there's
+      // nothing left to refund and silently skip the real refund.
+      const res = await fetch(`/admin/clinics/${clinic.id}/orders/${orderToDelete.order_id}`, {
+        method: "DELETE", credentials: "include", headers: adminHeaders(),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setDeleteError(data.message || "Failed to delete order")
+        return
+      }
       setOrderToDelete(null)
       loadOrders()
-    } catch {}
-    finally { setProcessing(false) }
+    } catch (e: any) {
+      setDeleteError(e.message || "Failed to delete order")
+    } finally {
+      setProcessing(false)
+    }
   }
 
   const updateTrackingNumber = async () => {
@@ -2255,7 +2273,7 @@ function OrdersTab({
                     {/* Comment button — all roles */}
                     <button onClick={() => setCommentOrder(o)} style={{ ...s.btnAction, color: "#6b7280" }} title="Add comment">💬</button>
                     {canDelete && (
-                      <button onClick={() => setOrderToDelete(o)} style={{ ...s.btnDanger, padding: "4px 8px" }} title="Delete">🗑</button>
+                      <button onClick={() => { setOrderToDelete(o); setDeleteError(null) }} style={{ ...s.btnDanger, padding: "4px 8px" }} title="Delete">🗑</button>
                     )}
                   </td>
                 </tr>
@@ -2278,21 +2296,26 @@ function OrdersTab({
 
       {/* Delete Modal */}
       {orderToDelete && (
-        <Modal onClose={() => setOrderToDelete(null)}>
+        <Modal onClose={() => { setOrderToDelete(null); setDeleteError(null) }}>
           <h3 style={s.modalTitle}>Delete Order</h3>
-          <p style={s.modalSubtitle}>This will cancel and permanently remove this order.</p>
+          <p style={s.modalSubtitle}>This will refund the payment in full, cancel the order, and remove its workflow.</p>
           <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 12, marginBottom: 16 }}>
             <div style={{ fontSize: 13, color: "#dc2626" }}>
               <strong>Order:</strong> {orderToDelete.order_id?.slice(0, 20)}…<br />
               <strong>Status:</strong> {STATUS_META[orderToDelete.status]?.label || orderToDelete.status}
             </div>
           </div>
-          <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 16 }}>⚠️ This cannot be undone.</p>
+          <p style={{ fontSize: 13, color: "#6b7280", marginBottom: 16 }}>⚠️ This cannot be undone. Blocked if the order has already shipped.</p>
+          {deleteError && (
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13, color: "#dc2626" }}>
+              {deleteError}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={deleteOrder} disabled={processing} style={{ ...s.btnPrimary, background: "#dc2626" }}>
               {processing ? "Deleting…" : "🗑 Yes, Delete"}
             </button>
-            <button onClick={() => setOrderToDelete(null)} style={s.btnOutline}>Cancel</button>
+            <button onClick={() => { setOrderToDelete(null); setDeleteError(null) }} style={s.btnOutline}>Cancel</button>
           </div>
         </Modal>
       )}

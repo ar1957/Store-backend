@@ -16,6 +16,10 @@ import orderPlacedHandler from "../../../../subscribers/order-placed"
 
 // Mirrors order-placed.ts's own isPaid check: zero-total, or a payment
 // session that actually completed (authorized/captured).
+// Excludes canceled orders — a canceled order intentionally has no workflow
+// (or had its workflow deliberately removed) and must never be "recovered"
+// back into an active clinic/pharmacy pipeline just because it looks like a
+// paid order missing its workflow row.
 const FIND_MISSING_SQL = `
   SELECT o.id AS order_id, o.display_id, o.email, o.created_at
   FROM "order" o
@@ -27,6 +31,7 @@ const FIND_MISSING_SQL = `
   LEFT JOIN order_workflow ow ON ow.order_id = o.id AND ow.deleted_at IS NULL
   WHERE o.deleted_at IS NULL
     AND o.is_draft_order = false
+    AND o.status <> 'canceled'
     AND ow.id IS NULL
     AND (COALESCE(pc.amount, 0) = 0 OR ps.status IN ('authorized', 'captured'))
   ORDER BY o.created_at DESC
