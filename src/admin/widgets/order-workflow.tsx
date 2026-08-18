@@ -111,6 +111,8 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
   const [pharmacyPayout, setPharmacyPayout] = useState<{
     status: string; amount: number | null; reference: string | null; paid_at: string | null; notes: string | null
   } | null>(null)
+  const [recovering, setRecovering] = useState(false)
+  const [recoverResult, setRecoverResult] = useState<string | null>(null)
 
   const role = myStaff?.role || "super_admin"
 
@@ -125,6 +127,15 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
 
   const init = async () => {
     setLoading(true)
+    // Reset per-order state explicitly — this widget's zone can stay mounted
+    // across a client-side navigation between orders (Medusa Admin is an
+    // SPA, no full page reload), so without this a previous order's
+    // workflow would still be showing while this effect resolves the new
+    // one, and — worse — would keep showing if the new order genuinely has
+    // no workflow at all, silently hiding the "no workflow" state entirely.
+    setWorkflow(null)
+    setClinicId(null)
+    setRecoverResult(null)
     try {
       // 1. Get current user
       const userRes = await fetch("/admin/users/me", { credentials: "include" })
@@ -423,6 +434,28 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
     }
   }
 
+  const recoverWorkflow = async () => {
+    setRecovering(true)
+    setRecoverResult(null)
+    try {
+      const res = await fetch(`/admin/orders/${order.id}/recover-workflow`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setRecoverResult(`✓ Workflow created (status: ${data.workflow?.status || "unknown"}). Refresh the page to see it.`)
+      } else {
+        setRecoverResult(`✗ ${data.message || "Recovery failed — check server logs."}`)
+      }
+    } catch (e: any) {
+      setRecoverResult(`✗ Error: ${e.message}`)
+    } finally {
+      setRecovering(false)
+    }
+  }
+
   if (loading) {
     return (
       <div style={ws.container}>
@@ -437,6 +470,23 @@ function OrderWorkflowWidget({ data: order }: DetailWidgetProps<HttpTypes.AdminO
       <div style={ws.container}>
         <div style={ws.header}>🏥 Clinic Workflow</div>
         <div style={{ color: "#9ca3af", fontSize: 13, marginBottom: 16 }}>No clinic workflow found for this order.</div>
+        {(role === "super_admin" || role === "clinic_admin") && (
+          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: "#92400e", marginBottom: 8 }}>
+              ⚠ If this order was paid but never got a GFE/pharmacy workflow (e.g. the order.placed event was lost during a
+              server restart), you can retry that processing here. This makes a real call to the provider API — safe to
+              run since it re-checks for an existing workflow before doing anything.
+            </div>
+            <button onClick={recoverWorkflow} disabled={recovering} style={{ ...ws.btnPrimary, opacity: recovering ? 0.6 : 1 }}>
+              {recovering ? "Recovering…" : "🔧 Recover Workflow"}
+            </button>
+            {recoverResult && (
+              <div style={{ marginTop: 8, fontSize: 12, color: recoverResult.startsWith("✓") ? "#166534" : "#dc2626" }}>
+                {recoverResult}
+              </div>
+            )}
+          </div>
+        )}
         {/* Still show comments */}
         {clinicId && (
           <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 16 }}>
