@@ -66,7 +66,7 @@ interface Clinic {
 
 interface Staff { id: string; email: string; full_name: string; role: string }
 interface Treatment { id: number; name: string }
-interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number; clinic_pharmacy_id?: string | null; rxvortex_medication_form?: string | null; rxvortex_quantity_units?: string | null; rxvortex_quantity?: string | null }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number; clinic_pharmacy_id?: string | null; rxvortex_medication_form?: string | null; rxvortex_quantity_units?: string | null; rxvortex_quantity?: string | null; rxvortex_catalog_instruction?: string | null }
 interface Product { id: string; title: string }
 interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
 interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
@@ -1262,7 +1262,7 @@ function catalogItemSearchHaystack(item: RxVortexCatalogItem): string {
   return `${item.medication_name} ${item.medication_strength} ${item.medication_form} ${item.instruction} ${item.quantity} ${item.quantity_units} ${item.days_supply}`.toLowerCase()
 }
 
-function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, hasDosageMapping, pharmacies, onDelete }: {
+function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, catalogError, hasDosageMapping, pharmacies, treatments, onDelete }: {
   mapping: Mapping
   clinicId: string
   showRxVortex: boolean
@@ -1271,6 +1271,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   catalogError: string
   hasDosageMapping: boolean
   pharmacies: { id: string; name: string; pharmacy_type: string; is_default: boolean }[]
+  treatments: Treatment[]
   onDelete: () => void
 }) {
   const [catalogId, setCatalogId] = useState(mapping.rxvortex_preset_catalog_id || "")
@@ -1324,7 +1325,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
     finally { setSplitSaving(false) }
   }
 
-  const saveCatalogId = async (newId: string, medicationForm?: string | null, quantityUnits?: string | null, quantity?: string | number | null) => {
+  const saveCatalogId = async (newId: string, medicationForm?: string | null, quantityUnits?: string | null, quantity?: string | number | null, catalogInstruction?: string | null) => {
     setSaving(true)
     setSaved(false)
     try {
@@ -1337,6 +1338,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
           rxvortex_medication_form: medicationForm || null,
           rxvortex_quantity_units: quantityUnits || null,
           rxvortex_quantity: quantity ?? null,
+          rxvortex_catalog_instruction: catalogInstruction || null,
         }),
       })
       setSaved(true)
@@ -1387,7 +1389,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
     setQuery(catalogItemLabel(item))
     setCatalogId(item.catalog_id)
     setOpen(false)
-    saveCatalogId(item.catalog_id, item.medication_form, item.quantity_units, item.quantity)
+    saveCatalogId(item.catalog_id, item.medication_form, item.quantity_units, item.quantity, item.instruction)
   }
 
   return (
@@ -1398,7 +1400,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
           return htmlProps ? <span {...htmlProps} /> : getRichTitleChildren(mapping.product_title)
         })() : mapping.product_id}
       </td>
-      <td style={s.td}>{mapping.treatment_name || mapping.treatment_id}</td>
+      <td style={s.td}>{treatments.find(t => t.id === mapping.treatment_id)?.name || mapping.treatment_name || mapping.treatment_id}</td>
       <td style={s.td}>
         <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: mapping.requires_eligibility ? "#dbeafe" : "#f3f4f6", color: mapping.requires_eligibility ? "#1e40af" : "#6b7280" }}>
           {mapping.requires_eligibility ? "Yes" : "No"}
@@ -1486,7 +1488,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
                 />
                 {query && (
                   <button
-                    onClick={() => { setQuery(""); setCatalogId(""); setSaved(false); saveCatalogId("", null, null, null) }}
+                    onClick={() => { setQuery(""); setCatalogId(""); setSaved(false); saveCatalogId("", null, null, null, null) }}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 16, padding: "0 2px", lineHeight: 1 }}
                     title="Clear"
                   >×</button>
@@ -1644,11 +1646,16 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       .finally(() => setTreatmentDosagesLoading(false))
   }, [clinic.id, isRxVortex, mappings])
 
-  useEffect(() => { loadMappings(); loadProducts(); loadDosageMappings(); loadPharmacies() }, [clinic.id])
+  // Treatments are auto-loaded (not just via the manual "Load Treatments
+  // from API" button, kept below as a retry affordance if this fails) so a
+  // treatment renamed on MHC's side is reflected here without requiring an
+  // extra click — the treatment_id used for actual submission never changes,
+  // but a stale displayed name is confusing on its own.
+  useEffect(() => { loadMappings(); loadProducts(); loadDosageMappings(); loadPharmacies(); loadTreatments() }, [clinic.id])
 
   const loadMappings = async () => {
     try {
-      const res = await fetch(`/admin/clinics/${clinic.id}/product-mappings`, { credentials: "include", headers: adminHeaders() })
+      const res = await fetch(`/admin/clinics/${clinic.id}/product-mappings`, { credentials: "include", headers: adminHeaders(), cache: "no-store" })
       const data = await res.json()
       setMappings(data.mappings || [])
     } catch {}
@@ -1656,7 +1663,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
 
   const loadDosageMappings = async () => {
     try {
-      const res = await fetch(`/admin/clinics/${clinic.id}/dosage-mappings`, { credentials: "include", headers: adminHeaders() })
+      const res = await fetch(`/admin/clinics/${clinic.id}/dosage-mappings`, { credentials: "include", headers: adminHeaders(), cache: "no-store" })
       const data = await res.json()
       setDosageMappings(data.mappings || [])
     } catch {}
@@ -1668,7 +1675,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       const scFilter = clinic.sales_channel_id
         ? `&sales_channel_id[]=${clinic.sales_channel_id}`
         : ""
-      const res = await fetch(`/admin/products?limit=100${scFilter}`, { credentials: "include", headers: adminHeaders() })
+      const res = await fetch(`/admin/products?limit=100${scFilter}`, { credentials: "include", headers: adminHeaders(), cache: "no-store" })
       const data = await res.json()
       setProducts((data.products || []).map((p: any) => ({ id: p.id, title: p.title })))
     } catch {}
@@ -1677,7 +1684,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
   const loadTreatments = async () => {
     setLoadingTreatments(true)
     try {
-      const res = await fetch(`/admin/clinics/${clinic.id}/treatments`, { credentials: "include", headers: adminHeaders() })
+      const res = await fetch(`/admin/clinics/${clinic.id}/treatments`, { credentials: "include", headers: adminHeaders(), cache: "no-store" })
       const data = await res.json()
       setTreatments(data.treatments || [])
     } catch {}
@@ -1772,6 +1779,7 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
                 catalogError={rxCatalogError}
                 hasDosageMapping={dosageMappings.some(dm => dm.treatment_id === m.treatment_id)}
                 pharmacies={pharmacies}
+                treatments={treatments}
                 onDelete={() => { fetch(`/admin/clinics/${clinic.id}/product-mappings/${m.id}`, { method: "DELETE", credentials: "include", headers: adminHeaders() }); loadMappings() }}
               />
             ))}
@@ -1812,8 +1820,18 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       </div>
 
       {isRxVortex && (() => {
+        // treatment_name on the mapping row is a write-time snapshot from
+        // when the mapping was created — MHC can rename a treatment same as
+        // a product can be renamed, so prefer the just-fetched live name
+        // (from "Load Treatments from API") whenever it's available, only
+        // falling back to the stored snapshot when treatments hasn't been
+        // loaded this session.
         const treatmentsById = new Map<number, string>()
-        mappings.forEach(m => { if (m.treatment_id) treatmentsById.set(m.treatment_id, m.treatment_name || String(m.treatment_id)) })
+        mappings.forEach(m => {
+          if (!m.treatment_id) return
+          const liveName = treatments.find(t => t.id === m.treatment_id)?.name
+          treatmentsById.set(m.treatment_id, liveName || m.treatment_name || String(m.treatment_id))
+        })
         const dosageEligibleTreatments = [...treatmentsById.entries()]
           .filter(([treatmentId]) => (treatmentDosages[treatmentId]?.length ?? 0) > 0)
 
@@ -1867,6 +1885,7 @@ interface DosageMapping {
   rxvortex_medication_form?: string | null
   rxvortex_quantity_units?: string | null
   rxvortex_quantity?: string | null
+  rxvortex_catalog_instruction?: string | null
 }
 
 interface MhcDosage {
@@ -1990,7 +2009,7 @@ function DosageCatalogRow({
       })
     : catalog
 
-  const save = async (newCatalogId: string, medicationForm?: string | null, quantityUnits?: string | null, quantity?: string | number | null) => {
+  const save = async (newCatalogId: string, medicationForm?: string | null, quantityUnits?: string | null, quantity?: string | number | null, catalogInstruction?: string | null) => {
     setSaving(true)
     setSaved(false)
     try {
@@ -2007,6 +2026,7 @@ function DosageCatalogRow({
           rxvortex_medication_form: medicationForm || null,
           rxvortex_quantity_units: quantityUnits || null,
           rxvortex_quantity: quantity ?? null,
+          rxvortex_catalog_instruction: catalogInstruction || null,
         }),
       })
       setSaved(true)
@@ -2020,7 +2040,7 @@ function DosageCatalogRow({
     setQuery(catalogItemLabel(item))
     setCatalogId(item.catalog_id)
     setOpen(false)
-    save(item.catalog_id, item.medication_form, item.quantity_units, item.quantity)
+    save(item.catalog_id, item.medication_form, item.quantity_units, item.quantity, item.instruction)
   }
 
   return (
