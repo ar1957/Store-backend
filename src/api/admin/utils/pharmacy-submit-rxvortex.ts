@@ -135,6 +135,27 @@ function resolveQuantity(catalogQuantity: string | null | undefined, cartQuantit
   return parsed * (cartQuantity || 1)
 }
 
+// Per Strive: when submitting with preset_catalog_id, whatever is sent in
+// `instructions` OVERRIDES their catalog template's own instruction text —
+// sending a generic placeholder caused a real order to get flagged for
+// pharmacist clarification (see request log for RX-86-896367). Priority:
+// 1. An admin's manually-typed override (rxvortex_instructions), with the
+//    patient's dose appended — preserves the existing, documented behavior
+//    for clinics that deliberately want custom wording.
+// 2. The catalog item's own instruction template (rxvortex_catalog_instruction,
+//    captured verbatim from Strive's GET /preset-catalog-items at mapping-pick
+//    time) — sent as-is, since it's already Strive's own clinically-correct
+//    phrasing for that exact dose/vial; appending our own dose label on top
+//    would just reintroduce the same "two different dose descriptions"
+//    confusion this fix exists to prevent.
+// 3. Generic "Take as directed — {dose}" fallback, only when neither of the
+//    above was ever captured (legacy mapping).
+function resolveInstructions(manualOverride: string | null | undefined, catalogInstruction: string | null | undefined, dose: string): string {
+  if (manualOverride) return dose ? `${manualOverride} — ${dose}` : manualOverride
+  if (catalogInstruction) return catalogInstruction
+  return dose ? `Take as directed — ${dose}` : "Take as directed"
+}
+
 // Splits a free-text eligibility answer into discrete DUR entries. Only
 // splits on newlines/semicolons (deliberate item separators), never commas —
 // a single condition/allergy description often contains a comma itself
@@ -273,6 +294,13 @@ export async function submitToRxVortex(
   const productMedFormMap: Record<string, string> = {}
   const productQtyUnitsMap: Record<string, string> = {}
   const productQtyMap: Record<string, string> = {}
+  // The RxVortex catalog item's OWN instruction template (e.g. "Inject 140
+  // units (1.4 mL) subcutaneously once weekly for 4 weeks") — distinct from
+  // productInstructionMap above, which is an admin's manually-typed override.
+  // Per Strive: whatever is sent in `instructions` overrides their template
+  // entirely, so this is preferred verbatim (no dose text appended) whenever
+  // no manual override is set — see resolveInstructions below.
+  const productCatalogInstructionMap: Record<string, string> = {}
   if (lineItems.length > 0 && tenantDomain) {
     const productIds = lineItems.map((li: any) => li.product_id).filter(Boolean)
     if (productIds.length > 0) {
@@ -281,7 +309,7 @@ export async function submitToRxVortex(
       // from the order's tenant_domain (e.g. spaderx.com vs spaderx.local).
       const mappingResult = await pg.raw(`
         SELECT product_id, treatment_id, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count,
-               rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity
+               rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, rxvortex_catalog_instruction
         FROM product_treatment_map
         WHERE product_id = ANY(?)
           AND tenant_domain IN (
@@ -304,6 +332,7 @@ export async function submitToRxVortex(
         if (row.rxvortex_medication_form) productMedFormMap[row.product_id] = row.rxvortex_medication_form
         if (row.rxvortex_quantity_units) productQtyUnitsMap[row.product_id] = row.rxvortex_quantity_units
         if (row.rxvortex_quantity) productQtyMap[row.product_id] = row.rxvortex_quantity
+        if (row.rxvortex_catalog_instruction) productCatalogInstructionMap[row.product_id] = row.rxvortex_catalog_instruction
       }
     }
   }
@@ -325,6 +354,7 @@ export async function submitToRxVortex(
   const dosageMedFormMap: Record<string, string> = {}
   const dosageQtyUnitsMap: Record<string, string> = {}
   const dosageQtyMap: Record<string, string> = {}
+  const dosageCatalogInstructionMap: Record<string, string> = {}
   // Treatments that have ANY row in treatment_dosage_catalog_map are treated
   // as dosage-driven — a single "default" catalog ID can't be clinically
   // correct for a drug that's titrated, so these must resolve strictly via
@@ -332,12 +362,12 @@ export async function submitToRxVortex(
   const treatmentsWithDosageMapping = new Set<number>()
   // Ordered dosage tiers per treatment (sorted by dosage_key's month number),
   // used to resolve split orders — the next tier up from the approved dose.
-  const dosageTiersByTreatment: Record<number, { dosage: string; dosageKey: string | null; catalogId: string; instructions: string | null; medicationForm: string | null; quantityUnits: string | null; quantity: string | null }[]> = {}
+  const dosageTiersByTreatment: Record<number, { dosage: string; dosageKey: string | null; catalogId: string; instructions: string | null; medicationForm: string | null; quantityUnits: string | null; quantity: string | null; catalogInstruction: string | null }[]> = {}
   const treatmentIds = [...new Set(Object.keys(dosageByTreatmentId).map(Number))]
   if (treatmentIds.length > 0 && tenantDomain) {
     const dosageMappingResult = await pg.raw(`
       SELECT treatment_id, dosage, dosage_key, rxvortex_preset_catalog_id, rxvortex_instructions,
-             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity
+             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, rxvortex_catalog_instruction
       FROM treatment_dosage_catalog_map
       WHERE treatment_id = ANY(?)
         AND deleted_at IS NULL
@@ -357,6 +387,7 @@ export async function submitToRxVortex(
       if (row.rxvortex_medication_form) dosageMedFormMap[key] = row.rxvortex_medication_form
       if (row.rxvortex_quantity_units) dosageQtyUnitsMap[key] = row.rxvortex_quantity_units
       if (row.rxvortex_quantity) dosageQtyMap[key] = row.rxvortex_quantity
+      if (row.rxvortex_catalog_instruction) dosageCatalogInstructionMap[key] = row.rxvortex_catalog_instruction
       treatmentsWithDosageMapping.add(tid)
 
       if (!dosageTiersByTreatment[tid]) dosageTiersByTreatment[tid] = []
@@ -368,6 +399,7 @@ export async function submitToRxVortex(
         medicationForm: row.rxvortex_medication_form || null,
         quantityUnits: row.rxvortex_quantity_units || null,
         quantity: row.rxvortex_quantity || null,
+        catalogInstruction: row.rxvortex_catalog_instruction || null,
       })
     }
     for (const tid of Object.keys(dosageTiersByTreatment)) {
@@ -543,10 +575,6 @@ export async function submitToRxVortex(
 
           const dosageKey = treatmentId ? `${treatmentId}::${normalizeDosage(matchedDosage)}` : ""
 
-          const baseInstruction = (dosageKey && dosageInstructionMap[dosageKey])
-            || (li.product_id && productInstructionMap[li.product_id])
-            || "Take as directed"
-          const instructions = matchedDosage ? `${baseInstruction} — ${matchedDosage}` : baseInstruction
           const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
 
           const isDosageDriven = treatmentId ? treatmentsWithDosageMapping.has(treatmentId) : false
@@ -562,6 +590,9 @@ export async function submitToRxVortex(
           let catalogQuantity = isDosageDriven
             ? ((dosageKey && dosageQtyMap[dosageKey]) || null)
             : ((li.product_id && productQtyMap[li.product_id]) || null)
+          let catalogInstruction = isDosageDriven
+            ? ((dosageKey && dosageCatalogInstructionMap[dosageKey]) || null)
+            : ((li.product_id && productCatalogInstructionMap[li.product_id]) || null)
 
           // Terminal-tier fallback: a dosage-driven treatment with no exact
           // match for the patient's approved dose, where that dose is at or
@@ -581,8 +612,14 @@ export async function submitToRxVortex(
               medicationForm = terminal.medicationForm
               quantityUnits = terminal.quantityUnits
               catalogQuantity = terminal.quantity
+              catalogInstruction = terminal.catalogInstruction
             }
           }
+
+          const manualInstruction = (dosageKey && dosageInstructionMap[dosageKey])
+            || (li.product_id && productInstructionMap[li.product_id])
+            || null
+          const instructions = resolveInstructions(manualInstruction, catalogInstruction, matchedDosage)
 
           const request: Record<string, any> = {
             type: "new", refills: 0,
@@ -680,14 +717,15 @@ export async function submitToRxVortex(
 
       try {
         const splitSenderOrderId = `${rxNumber}-S${splitIndex}`
-        const baseInstruction = tier.instructions || (li.product_id && productInstructionMap[li.product_id]) || "Take as directed"
+        const manualInstruction = tier.instructions || (li.product_id && productInstructionMap[li.product_id]) || null
+        const instructions = resolveInstructions(manualInstruction, tier.catalogInstruction, tier.dosage)
         const medicationRequest: Record<string, any> = {
           type: "new", refills: 0,
           sender_med_request_id: `${splitSenderOrderId}-1`,
           quantity: resolveQuantity(tier.quantity, li.quantity || 1),
           quantity_units: normalizeQuantityUnits(tier.quantityUnits),
           days_supply_duration: resolveDaysSupply(tier.medicationForm),
-          instructions: `${baseInstruction} — ${tier.dosage}`,
+          instructions,
           note: `Prescribed dosage: ${tier.dosage} (split ${i + 1} of ${li.splitCount})`,
           authored_on_datetime: new Date().toISOString(),
           preset_catalog_id: tier.catalogId,

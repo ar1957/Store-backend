@@ -715,6 +715,13 @@ const steps = [
     `,
   },
   {
+    name: "Migration20240101000027 - rxvortex catalog item's own instruction template text",
+    sql: `
+      ALTER TABLE "product_treatment_map" ADD COLUMN IF NOT EXISTS "rxvortex_catalog_instruction" TEXT;
+      ALTER TABLE "treatment_dosage_catalog_map" ADD COLUMN IF NOT EXISTS "rxvortex_catalog_instruction" TEXT;
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -742,7 +749,8 @@ const steps = [
       ('Migration20240101000023'),
       ('Migration20240101000024'),
       ('Migration20240101000025'),
-      ('Migration20240101000026')
+      ('Migration20240101000026'),
+      ('Migration20240101000027')
       ON CONFLICT DO NOTHING`,
   },
 ]

@@ -2,25 +2,27 @@
  * scripts/backfill-rxvortex-catalog-fields.js
  *
  * Migration20240101000026 added rxvortex_medication_form / rxvortex_quantity_units
- * / rxvortex_quantity to product_treatment_map and treatment_dosage_catalog_map,
- * but only fills them in going forward — every mapping an admin picked in
- * provider-settings *before* that migration has these columns NULL, so
- * pharmacy-submit-rxvortex.ts silently falls back to the old flat defaults
- * ("each" / 30 days / cart quantity) for them instead of the correct
- * per-medication values. This is a plain standalone script (not `medusa exec`)
- * for the same reason as manual-migrate.js/recover-order-workflow.js:
- * production doesn't have ts-node installed.
+ * / rxvortex_quantity, and Migration20240101000027 added
+ * rxvortex_catalog_instruction, to product_treatment_map and
+ * treatment_dosage_catalog_map — but both only fill in going forward, every
+ * mapping an admin picked in provider-settings *before* those migrations has
+ * these columns NULL, so pharmacy-submit-rxvortex.ts silently falls back to
+ * the old flat defaults ("each" / 30 days / cart quantity / generic "Take as
+ * directed" instructions) instead of the correct per-medication values. This
+ * is a plain standalone script (not `medusa exec`) for the same reason as
+ * manual-migrate.js/recover-order-workflow.js: production doesn't have
+ * ts-node installed.
  *
  * For every clinic_pharmacy of pharmacy_type='rxvortex', fetches that
  * pharmacy's live preset catalog and backfills any mapping row whose
- * rxvortex_preset_catalog_id matches a catalog item, but only where
- * rxvortex_medication_form is still NULL — never overwrites a value an
- * admin (or a prior run of this script) already set. Catalog IDs are
- * RxVortex-generated UUIDs, effectively globally unique, so catalogs from
- * multiple pharmacies are safely merged into one lookup.
+ * rxvortex_preset_catalog_id matches a catalog item, filling in only
+ * whichever of these columns is still NULL on that row (COALESCE) — never
+ * overwrites a value an admin (or a prior run of this script) already set.
+ * Catalog IDs are RxVortex-generated UUIDs, effectively globally unique, so
+ * catalogs from multiple pharmacies are safely merged into one lookup.
  *
- * Safe to re-run — idempotent (only touches NULL rows), and read-only against
- * RxVortex (GET catalog only, no orders submitted).
+ * Safe to re-run — idempotent (COALESCE only fills genuinely-NULL columns),
+ * and read-only against RxVortex (GET catalog only, no orders submitted).
  *
  * Usage (on the server):
  *   export DATABASE_URL=$(/opt/elasticbeanstalk/bin/get-config environment --key DATABASE_URL)
@@ -71,7 +73,7 @@ async function main() {
     )
     console.log(`Found ${pharmacies.length} RxVortex pharmacy configs.`)
 
-    // catalog_id -> { medication_form, quantity_units, quantity }
+    // catalog_id -> { medication_form, quantity_units, quantity, catalog_instruction }
     const catalogLookup = new Map()
     for (const pharmacy of pharmacies) {
       try {
@@ -82,6 +84,7 @@ async function main() {
             medication_form: item.medication_form || null,
             quantity_units: item.quantity_units || null,
             quantity: item.quantity != null ? String(item.quantity) : null,
+            catalog_instruction: item.instruction || null,
           })
         }
         console.log(`  [${pharmacy.name}] fetched ${items.length} catalog items.`)
@@ -98,7 +101,7 @@ async function main() {
       const { rows } = await client.query(
         `SELECT ${idCol}, rxvortex_preset_catalog_id FROM ${table}
          WHERE rxvortex_preset_catalog_id IS NOT NULL AND rxvortex_preset_catalog_id <> ''
-           AND rxvortex_medication_form IS NULL
+           AND (rxvortex_medication_form IS NULL OR rxvortex_catalog_instruction IS NULL)
            ${table === "treatment_dosage_catalog_map" ? "AND deleted_at IS NULL" : ""}`
       )
       let updated = 0
@@ -107,8 +110,14 @@ async function main() {
         const fields = catalogLookup.get(row.rxvortex_preset_catalog_id)
         if (!fields) { unmatched++; continue }
         await client.query(
-          `UPDATE ${table} SET rxvortex_medication_form = $1, rxvortex_quantity_units = $2, rxvortex_quantity = $3, updated_at = NOW() WHERE ${idCol} = $4`,
-          [fields.medication_form, fields.quantity_units, fields.quantity, row[idCol]]
+          `UPDATE ${table} SET
+             rxvortex_medication_form = COALESCE(rxvortex_medication_form, $1),
+             rxvortex_quantity_units = COALESCE(rxvortex_quantity_units, $2),
+             rxvortex_quantity = COALESCE(rxvortex_quantity, $3),
+             rxvortex_catalog_instruction = COALESCE(rxvortex_catalog_instruction, $4),
+             updated_at = NOW()
+           WHERE ${idCol} = $5`,
+          [fields.medication_form, fields.quantity_units, fields.quantity, fields.catalog_instruction, row[idCol]]
         )
         updated++
       }

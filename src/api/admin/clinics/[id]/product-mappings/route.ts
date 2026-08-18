@@ -13,15 +13,24 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const tenantDomain = clinic.domains?.[0] || clinic.slug
 
+    // product_title is captured once at mapping-creation time and never
+    // updated again — renaming the product in the core Products admin left
+    // every existing mapping permanently showing the old name. Prefer the
+    // live product title via a join, falling back to the stored snapshot
+    // only if the product itself was since deleted.
     const result = await pgConnection.raw(`
-      SELECT id, tenant_domain, product_id, product_title, variant_id,
-             treatment_id, treatment_name, requires_eligibility,
-             rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count,
-             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity,
-             clinic_pharmacy_id, created_at
-      FROM product_treatment_map
-      WHERE tenant_domain = ?
-      ORDER BY created_at DESC
+      SELECT ptm.id, ptm.tenant_domain, ptm.product_id,
+             COALESCE(p.title, ptm.product_title) AS product_title,
+             ptm.variant_id,
+             ptm.treatment_id, ptm.treatment_name, ptm.requires_eligibility,
+             ptm.rxvortex_preset_catalog_id, ptm.rxvortex_instructions, ptm.order_split_count,
+             ptm.rxvortex_medication_form, ptm.rxvortex_quantity_units, ptm.rxvortex_quantity,
+             ptm.rxvortex_catalog_instruction,
+             ptm.clinic_pharmacy_id, ptm.created_at
+      FROM product_treatment_map ptm
+      LEFT JOIN product p ON p.id = ptm.product_id AND p.deleted_at IS NULL
+      WHERE ptm.tenant_domain = ?
+      ORDER BY ptm.created_at DESC
     `, [tenantDomain])
 
     return res.json({ mappings: result.rows })
@@ -46,8 +55,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     await pgConnection.raw(`
       INSERT INTO product_treatment_map
-        (id, tenant_domain, product_id, product_title, treatment_id, treatment_name, requires_eligibility, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count, clinic_pharmacy_id, rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        (id, tenant_domain, product_id, product_title, treatment_id, treatment_name, requires_eligibility, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count, clinic_pharmacy_id, rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, rxvortex_catalog_instruction, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
     `, [
       id,
       tenantDomain,
@@ -63,6 +72,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       body.rxvortex_medication_form || null,
       body.rxvortex_quantity_units || null,
       body.rxvortex_quantity != null ? String(body.rxvortex_quantity) : null,
+      body.rxvortex_catalog_instruction || null,
     ])
 
     return res.json({ mapping: { id, tenant_domain: tenantDomain, ...body } })
