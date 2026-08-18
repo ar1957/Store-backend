@@ -66,7 +66,7 @@ interface Clinic {
 
 interface Staff { id: string; email: string; full_name: string; role: string }
 interface Treatment { id: number; name: string }
-interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number; clinic_pharmacy_id?: string | null }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number; clinic_pharmacy_id?: string | null; rxvortex_medication_form?: string | null; rxvortex_quantity_units?: string | null; rxvortex_quantity?: string | null }
 interface Product { id: string; title: string }
 interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
 interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
@@ -1324,7 +1324,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
     finally { setSplitSaving(false) }
   }
 
-  const saveCatalogId = async (newId: string) => {
+  const saveCatalogId = async (newId: string, medicationForm?: string | null, quantityUnits?: string | null, quantity?: string | number | null) => {
     setSaving(true)
     setSaved(false)
     try {
@@ -1332,7 +1332,12 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
         method: "PATCH",
         credentials: "include",
         headers: adminHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ rxvortex_preset_catalog_id: newId.trim() || null }),
+        body: JSON.stringify({
+          rxvortex_preset_catalog_id: newId.trim() || null,
+          rxvortex_medication_form: medicationForm || null,
+          rxvortex_quantity_units: quantityUnits || null,
+          rxvortex_quantity: quantity ?? null,
+        }),
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -1382,7 +1387,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
     setQuery(catalogItemLabel(item))
     setCatalogId(item.catalog_id)
     setOpen(false)
-    saveCatalogId(item.catalog_id)
+    saveCatalogId(item.catalog_id, item.medication_form, item.quantity_units, item.quantity)
   }
 
   return (
@@ -1481,7 +1486,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
                 />
                 {query && (
                   <button
-                    onClick={() => { setQuery(""); setCatalogId(""); setSaved(false); saveCatalogId("") }}
+                    onClick={() => { setQuery(""); setCatalogId(""); setSaved(false); saveCatalogId("", null, null, null) }}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 16, padding: "0 2px", lineHeight: 1 }}
                     title="Clear"
                   >×</button>
@@ -1859,6 +1864,9 @@ interface DosageMapping {
   dosage_key: string | null
   rxvortex_preset_catalog_id: string
   rxvortex_instructions: string | null
+  rxvortex_medication_form?: string | null
+  rxvortex_quantity_units?: string | null
+  rxvortex_quantity?: string | null
 }
 
 interface MhcDosage {
@@ -1982,7 +1990,7 @@ function DosageCatalogRow({
       })
     : catalog
 
-  const save = async (newCatalogId: string) => {
+  const save = async (newCatalogId: string, medicationForm?: string | null, quantityUnits?: string | null, quantity?: string | number | null) => {
     setSaving(true)
     setSaved(false)
     try {
@@ -1996,6 +2004,9 @@ function DosageCatalogRow({
           dosage: dosageValue,
           dosage_key: dosageKey,
           rxvortex_preset_catalog_id: newCatalogId,
+          rxvortex_medication_form: medicationForm || null,
+          rxvortex_quantity_units: quantityUnits || null,
+          rxvortex_quantity: quantity ?? null,
         }),
       })
       setSaved(true)
@@ -2009,7 +2020,7 @@ function DosageCatalogRow({
     setQuery(catalogItemLabel(item))
     setCatalogId(item.catalog_id)
     setOpen(false)
-    save(item.catalog_id)
+    save(item.catalog_id, item.medication_form, item.quantity_units, item.quantity)
   }
 
   return (
