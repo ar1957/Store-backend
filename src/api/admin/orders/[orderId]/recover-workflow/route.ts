@@ -31,6 +31,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       })
     }
 
+    // A canceled order intentionally has no workflow (or had it deliberately
+    // removed) — never recreate one just because it's missing.
+    const orderCheck = await pg.raw(`SELECT status FROM "order" WHERE id = ? LIMIT 1`, [orderId])
+    if (orderCheck.rows[0]?.status === "canceled") {
+      return res.status(400).json({
+        message: "This order is canceled — refusing to recover a workflow for it.",
+      })
+    }
+
     await orderPlacedHandler({
       event: { data: { id: orderId } },
       container: req.scope,
