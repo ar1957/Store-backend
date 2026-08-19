@@ -17,7 +17,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       SELECT id, tenant_domain, treatment_id, treatment_name, dosage, dosage_key,
              rxvortex_preset_catalog_id, rxvortex_instructions,
              rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity,
-             rxvortex_catalog_instruction, created_at
+             rxvortex_catalog_instruction, rxvortex_quantity_override, created_at
       FROM treatment_dosage_catalog_map
       WHERE tenant_domain = ? AND deleted_at IS NULL
       ORDER BY treatment_id, created_at

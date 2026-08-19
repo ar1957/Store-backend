@@ -722,6 +722,13 @@ const steps = [
     `,
   },
   {
+    name: "Migration20240101000028 - admin quantity override on catalog mapping tables",
+    sql: `
+      ALTER TABLE "product_treatment_map" ADD COLUMN IF NOT EXISTS "rxvortex_quantity_override" VARCHAR(50);
+      ALTER TABLE "treatment_dosage_catalog_map" ADD COLUMN IF NOT EXISTS "rxvortex_quantity_override" VARCHAR(50);
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -750,7 +757,8 @@ const steps = [
       ('Migration20240101000024'),
       ('Migration20240101000025'),
       ('Migration20240101000026'),
-      ('Migration20240101000027')
+      ('Migration20240101000027'),
+      ('Migration20240101000028')
       ON CONFLICT DO NOTHING`,
   },
 ]
