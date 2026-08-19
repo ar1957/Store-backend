@@ -1570,7 +1570,7 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
           {/* Instructions field — shown whenever RxVortex column is visible */}
           <div style={{ marginTop: 8 }}>
             <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>
-              Instructions <span style={{ color: "#9ca3af" }}>(dosage appended automatically)</span>
+              Instructions <span style={{ color: "#9ca3af" }}>(sent exactly as typed — overrides Strive's catalog text)</span>
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input

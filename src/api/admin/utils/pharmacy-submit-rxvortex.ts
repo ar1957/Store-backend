@@ -154,19 +154,21 @@ function resolveQuantity(manualOverride: string | null | undefined, catalogQuant
 // `instructions` OVERRIDES their catalog template's own instruction text —
 // sending a generic placeholder caused a real order to get flagged for
 // pharmacist clarification (see request log for RX-86-896367). Priority:
-// 1. An admin's manually-typed override (rxvortex_instructions), with the
-//    patient's dose appended — preserves the existing, documented behavior
-//    for clinics that deliberately want custom wording.
+// 1. An admin's manually-typed override (rxvortex_instructions) — sent
+//    verbatim, exactly as typed. Originally this had the patient's dose
+//    appended, but an admin typing a full, precise instruction (matching
+//    Strive's own phrasing convention, e.g. "Inject 140 units (1.4 mL)
+//    subcutaneously once weekly for 4 weeks") doesn't need or want a
+//    redundant "— 14 mg (x4)" tacked on — that's the same class of "extra
+//    text confusing pharmacists" problem this whole fix exists to prevent.
 // 2. The catalog item's own instruction template (rxvortex_catalog_instruction,
 //    captured verbatim from Strive's GET /preset-catalog-items at mapping-pick
-//    time) — sent as-is, since it's already Strive's own clinically-correct
-//    phrasing for that exact dose/vial; appending our own dose label on top
-//    would just reintroduce the same "two different dose descriptions"
-//    confusion this fix exists to prevent.
+//    time) — also sent as-is, same reasoning.
 // 3. Generic "Take as directed — {dose}" fallback, only when neither of the
-//    above was ever captured (legacy mapping).
+//    above was ever captured (legacy mapping) — the dose is appended here
+//    only because the placeholder text alone is meaningless without it.
 function resolveInstructions(manualOverride: string | null | undefined, catalogInstruction: string | null | undefined, dose: string): string {
-  if (manualOverride) return dose ? `${manualOverride} — ${dose}` : manualOverride
+  if (manualOverride) return manualOverride
   if (catalogInstruction) return catalogInstruction
   return dose ? `Take as directed — ${dose}` : "Take as directed"
 }
