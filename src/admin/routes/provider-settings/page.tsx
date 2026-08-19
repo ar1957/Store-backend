@@ -66,7 +66,7 @@ interface Clinic {
 
 interface Staff { id: string; email: string; full_name: string; role: string }
 interface Treatment { id: number; name: string }
-interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number; clinic_pharmacy_id?: string | null; rxvortex_medication_form?: string | null; rxvortex_quantity_units?: string | null; rxvortex_quantity?: string | null; rxvortex_catalog_instruction?: string | null }
+interface Mapping { id: string; product_id: string; product_title: string; treatment_id: number; treatment_name: string; requires_eligibility: boolean; rxvortex_preset_catalog_id?: string; rxvortex_instructions?: string; order_split_count?: number; clinic_pharmacy_id?: string | null; rxvortex_medication_form?: string | null; rxvortex_quantity_units?: string | null; rxvortex_quantity?: string | null; rxvortex_catalog_instruction?: string | null; rxvortex_quantity_override?: string | null }
 interface Product { id: string; title: string }
 interface TreatmentDosage { treatmentId: number; treatmentName: string; dosage: string | null }
 interface Order { id: string; order_id: string; display_id: number; patient_name: string; patient_email: string; status: string; patient_id: number; provider_name: string; tracking_number: string; carrier: string; created_at: string; treatment_dosages?: TreatmentDosage[] }
@@ -1280,6 +1280,9 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
   const [saved, setSaved] = useState(false)
   const [instrSaving, setInstrSaving] = useState(false)
   const [instrSaved, setInstrSaved] = useState(false)
+  const [quantityOverride, setQuantityOverride] = useState(mapping.rxvortex_quantity_override || "")
+  const [qtyOverrideSaving, setQtyOverrideSaving] = useState(false)
+  const [qtyOverrideSaved, setQtyOverrideSaved] = useState(false)
   const [splitCount, setSplitCount] = useState(mapping.order_split_count ?? 0)
   const [splitSaving, setSplitSaving] = useState(false)
   const [splitSaved, setSplitSaved] = useState(false)
@@ -1361,6 +1364,22 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
       setTimeout(() => setInstrSaved(false), 2000)
     } catch {}
     finally { setInstrSaving(false) }
+  }
+
+  const saveQuantityOverride = async (value: string) => {
+    setQtyOverrideSaving(true)
+    setQtyOverrideSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ rxvortex_quantity_override: value.trim() || null }),
+      })
+      setQtyOverrideSaved(true)
+      setTimeout(() => setQtyOverrideSaved(false), 2000)
+    } catch {}
+    finally { setQtyOverrideSaving(false) }
   }
 
   // Combobox state
@@ -1564,6 +1583,28 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
               />
               {instrSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
               {instrSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+            </div>
+          </div>
+          {/* Quantity override — reuse this catalog item's vial at a different
+              total volume than its own default, e.g. for a dose that needs
+              more mL than any single labeled vial size. Leave blank to use
+              the catalog item's own quantity. */}
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>
+              Quantity override{mapping.rxvortex_quantity ? <span style={{ color: "#9ca3af" }}> (catalog default: {mapping.rxvortex_quantity} {mapping.rxvortex_quantity_units || ""})</span> : null}
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="number" step="any" min="0"
+                style={{ ...s.input, fontSize: 12, padding: "4px 8px", width: 100 }}
+                value={quantityOverride}
+                placeholder={mapping.rxvortex_quantity || "e.g. 4.4"}
+                onChange={e => { setQuantityOverride(e.target.value); setQtyOverrideSaved(false) }}
+                onBlur={() => saveQuantityOverride(quantityOverride)}
+                onKeyDown={e => { if (e.key === "Enter") { e.currentTarget.blur() } }}
+              />
+              {qtyOverrideSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+              {qtyOverrideSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
             </div>
           </div>
           </>)}
@@ -1886,6 +1927,7 @@ interface DosageMapping {
   rxvortex_quantity_units?: string | null
   rxvortex_quantity?: string | null
   rxvortex_catalog_instruction?: string | null
+  rxvortex_quantity_override?: string | null
 }
 
 interface MhcDosage {
@@ -1988,6 +2030,16 @@ function DosageCatalogRow({
   const [catalogId, setCatalogId] = useState(existing?.rxvortex_preset_catalog_id || "")
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [quantityOverride, setQuantityOverride] = useState(existing?.rxvortex_quantity_override || "")
+  const [qtyOverrideSaving, setQtyOverrideSaving] = useState(false)
+  const [qtyOverrideSaved, setQtyOverrideSaved] = useState(false)
+  // Per-tier manual instructions override — takes priority over this tier's
+  // own catalog instruction, checked BEFORE falling back to the product-level
+  // override (which otherwise applies to every dosage tier under this
+  // treatment, since none of them can be scoped individually without this).
+  const [instrOverride, setInstrOverride] = useState(existing?.rxvortex_instructions || "")
+  const [instrOverrideSaving, setInstrOverrideSaving] = useState(false)
+  const [instrOverrideSaved, setInstrOverrideSaved] = useState(false)
 
   const [query, setQuery] = useState(() => {
     const found = catalog.find(c => c.catalog_id === catalogId)
@@ -2041,6 +2093,46 @@ function DosageCatalogRow({
     setCatalogId(item.catalog_id)
     setOpen(false)
     save(item.catalog_id, item.medication_form, item.quantity_units, item.quantity, item.instruction)
+  }
+
+  // Independent of `save` above (which re-picks the catalog item and would
+  // otherwise clobber medication_form/quantity/instruction with `undefined`
+  // via the POST upsert's unconditional column list) — this targets the
+  // existing row directly via PATCH, which only touches the one field.
+  const saveQuantityOverride = async (value: string) => {
+    if (!existing?.id) return
+    setQtyOverrideSaving(true)
+    setQtyOverrideSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/dosage-mappings/${existing.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ rxvortex_quantity_override: value.trim() || null }),
+      })
+      setQtyOverrideSaved(true)
+      onSaved()
+      setTimeout(() => setQtyOverrideSaved(false), 2000)
+    } catch {}
+    finally { setQtyOverrideSaving(false) }
+  }
+
+  const saveInstructionsOverride = async (value: string) => {
+    if (!existing?.id) return
+    setInstrOverrideSaving(true)
+    setInstrOverrideSaved(false)
+    try {
+      await fetch(`/admin/clinics/${clinicId}/dosage-mappings/${existing.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: adminHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ rxvortex_instructions: value.trim() || null }),
+      })
+      setInstrOverrideSaved(true)
+      onSaved()
+      setTimeout(() => setInstrOverrideSaved(false), 2000)
+    } catch {}
+    finally { setInstrOverrideSaving(false) }
   }
 
   return (
@@ -2115,6 +2207,45 @@ function DosageCatalogRow({
                     </div>
                   )
                 })}
+              </div>
+            )}
+            {existing?.id && (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>
+                  Instructions override <span style={{ color: "#9ca3af" }}>(this dose only — leave blank to use the catalog item's own text)</span>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    style={{ ...s.input, fontSize: 12, padding: "4px 8px", flex: 1 }}
+                    value={instrOverride}
+                    placeholder={existing.rxvortex_catalog_instruction || "e.g. Inject 140 units (1.4 mL) subcutaneously once weekly for 4 weeks"}
+                    onChange={e => { setInstrOverride(e.target.value); setInstrOverrideSaved(false) }}
+                    onBlur={() => saveInstructionsOverride(instrOverride)}
+                    onKeyDown={e => { if (e.key === "Enter") { e.currentTarget.blur() } }}
+                  />
+                  {instrOverrideSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+                  {instrOverrideSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+                </div>
+              </div>
+            )}
+            {existing?.id && (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>
+                  Quantity override{existing.rxvortex_quantity ? <span style={{ color: "#9ca3af" }}> (catalog default: {existing.rxvortex_quantity} {existing.rxvortex_quantity_units || ""})</span> : null}
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="number" step="any" min="0"
+                    style={{ ...s.input, fontSize: 12, padding: "4px 8px", width: 100 }}
+                    value={quantityOverride}
+                    placeholder={existing.rxvortex_quantity || "e.g. 4.4"}
+                    onChange={e => { setQuantityOverride(e.target.value); setQtyOverrideSaved(false) }}
+                    onBlur={() => saveQuantityOverride(quantityOverride)}
+                    onKeyDown={e => { if (e.key === "Enter") { e.currentTarget.blur() } }}
+                  />
+                  {qtyOverrideSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
+                  {qtyOverrideSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}
+                </div>
               </div>
             )}
           </div>

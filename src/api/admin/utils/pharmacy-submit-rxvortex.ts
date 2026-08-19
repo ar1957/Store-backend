@@ -129,10 +129,25 @@ function resolveDaysSupply(medicationForm: string | null | undefined): number {
 // of a patient legitimately ordering more than one of the same line item.
 // Falls back to cart quantity alone when no catalog quantity was captured
 // (legacy mappings), matching the previous behavior exactly.
-function resolveQuantity(catalogQuantity: string | null | undefined, cartQuantity: number): number {
-  const parsed = catalogQuantity != null ? parseFloat(String(catalogQuantity)) : NaN
-  if (!Number.isFinite(parsed) || parsed <= 0) return cartQuantity || 1
-  return parsed * (cartQuantity || 1)
+//
+// manualOverride (rxvortex_quantity_override) takes priority over the
+// catalog's own quantity when set — Strive's catalog only has discrete vial
+// sizes, which don't always cover every dose on a clinic's real titration
+// schedule (e.g. an 11mg Tirzepatide dose needs 4.4mL total for a 4-week
+// supply, but no catalog item is labeled that size). This lets an admin
+// reuse a clinically-appropriate existing catalog item (right drug/form/
+// concentration) with the correct total volume, instead of requiring a new
+// Strive catalog item or a new MHC treatment for every dose that doesn't
+// land on an exact vial breakpoint. Does NOT affect days_supply_duration —
+// that stays hardcoded to 28 for injectables regardless of quantity
+// (resolveDaysSupply), independently satisfying the 28-day multi-dose vial
+// puncture rule no matter what quantity is submitted here.
+function resolveQuantity(manualOverride: string | null | undefined, catalogQuantity: string | null | undefined, cartQuantity: number): number {
+  const overrideParsed = manualOverride != null ? parseFloat(String(manualOverride)) : NaN
+  if (Number.isFinite(overrideParsed) && overrideParsed > 0) return overrideParsed * (cartQuantity || 1)
+  const catalogParsed = catalogQuantity != null ? parseFloat(String(catalogQuantity)) : NaN
+  if (!Number.isFinite(catalogParsed) || catalogParsed <= 0) return cartQuantity || 1
+  return catalogParsed * (cartQuantity || 1)
 }
 
 // Per Strive: when submitting with preset_catalog_id, whatever is sent in
@@ -301,25 +316,36 @@ export async function submitToRxVortex(
   // entirely, so this is preferred verbatim (no dose text appended) whenever
   // no manual override is set — see resolveInstructions below.
   const productCatalogInstructionMap: Record<string, string> = {}
+  const productQtyOverrideMap: Record<string, string> = {}
   if (lineItems.length > 0 && tenantDomain) {
     const productIds = lineItems.map((li: any) => li.product_id).filter(Boolean)
     if (productIds.length > 0) {
       // Look up by any domain belonging to the same clinic, not just the order's
       // tenant_domain — mappings are stored under clinic.domains[0] which may differ
       // from the order's tenant_domain (e.g. spaderx.com vs spaderx.local).
+      // Matches the clinic tolerant of a port suffix on tenantDomain (e.g.
+      // local dev's "spaderx.local:8000" vs the registered "spaderx.local")
+      // — same fallback already used in Migration20240101000025's backfill.
+      // LIMIT 1 is applied to the clinic row BEFORE unnest(), not after —
+      // unnest() in the SELECT list turns 1 clinic row into N domain rows,
+      // so a LIMIT 1 placed outside this inner subquery would silently
+      // truncate to just one of the clinic's domains instead of one clinic.
       const mappingResult = await pg.raw(`
         SELECT product_id, treatment_id, rxvortex_preset_catalog_id, rxvortex_instructions, order_split_count,
-               rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, rxvortex_catalog_instruction
+               rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, rxvortex_catalog_instruction,
+               rxvortex_quantity_override
         FROM product_treatment_map
         WHERE product_id = ANY(?)
           AND tenant_domain IN (
             SELECT unnest(cl.domains)
-            FROM clinic cl
-            WHERE ? = ANY(cl.domains)
-              AND cl.deleted_at IS NULL
-            LIMIT 1
+            FROM (
+              SELECT domains FROM clinic
+              WHERE (? = ANY(domains) OR split_part(?, ':', 1) = ANY(domains))
+                AND deleted_at IS NULL
+              LIMIT 1
+            ) cl
           )
-      `, [productIds, tenantDomain])
+      `, [productIds, tenantDomain, tenantDomain])
       for (const row of mappingResult.rows) {
         productTreatmentMap[row.product_id] = Number(row.treatment_id)
         if (row.rxvortex_preset_catalog_id) {
@@ -333,6 +359,7 @@ export async function submitToRxVortex(
         if (row.rxvortex_quantity_units) productQtyUnitsMap[row.product_id] = row.rxvortex_quantity_units
         if (row.rxvortex_quantity) productQtyMap[row.product_id] = row.rxvortex_quantity
         if (row.rxvortex_catalog_instruction) productCatalogInstructionMap[row.product_id] = row.rxvortex_catalog_instruction
+        if (row.rxvortex_quantity_override) productQtyOverrideMap[row.product_id] = row.rxvortex_quantity_override
       }
     }
   }
@@ -355,6 +382,7 @@ export async function submitToRxVortex(
   const dosageQtyUnitsMap: Record<string, string> = {}
   const dosageQtyMap: Record<string, string> = {}
   const dosageCatalogInstructionMap: Record<string, string> = {}
+  const dosageQtyOverrideMap: Record<string, string> = {}
   // Treatments that have ANY row in treatment_dosage_catalog_map are treated
   // as dosage-driven — a single "default" catalog ID can't be clinically
   // correct for a drug that's titrated, so these must resolve strictly via
@@ -362,23 +390,27 @@ export async function submitToRxVortex(
   const treatmentsWithDosageMapping = new Set<number>()
   // Ordered dosage tiers per treatment (sorted by dosage_key's month number),
   // used to resolve split orders — the next tier up from the approved dose.
-  const dosageTiersByTreatment: Record<number, { dosage: string; dosageKey: string | null; catalogId: string; instructions: string | null; medicationForm: string | null; quantityUnits: string | null; quantity: string | null; catalogInstruction: string | null }[]> = {}
+  const dosageTiersByTreatment: Record<number, { dosage: string; dosageKey: string | null; catalogId: string; instructions: string | null; medicationForm: string | null; quantityUnits: string | null; quantity: string | null; catalogInstruction: string | null; quantityOverride: string | null }[]> = {}
   const treatmentIds = [...new Set(Object.keys(dosageByTreatmentId).map(Number))]
   if (treatmentIds.length > 0 && tenantDomain) {
+    // Same port-tolerant clinic match + LIMIT-before-unnest fix as above.
     const dosageMappingResult = await pg.raw(`
       SELECT treatment_id, dosage, dosage_key, rxvortex_preset_catalog_id, rxvortex_instructions,
-             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, rxvortex_catalog_instruction
+             rxvortex_medication_form, rxvortex_quantity_units, rxvortex_quantity, rxvortex_catalog_instruction,
+             rxvortex_quantity_override
       FROM treatment_dosage_catalog_map
       WHERE treatment_id = ANY(?)
         AND deleted_at IS NULL
         AND tenant_domain IN (
           SELECT unnest(cl.domains)
-          FROM clinic cl
-          WHERE ? = ANY(cl.domains)
-            AND cl.deleted_at IS NULL
-          LIMIT 1
+          FROM (
+            SELECT domains FROM clinic
+            WHERE (? = ANY(domains) OR split_part(?, ':', 1) = ANY(domains))
+              AND deleted_at IS NULL
+            LIMIT 1
+          ) cl
         )
-    `, [treatmentIds, tenantDomain])
+    `, [treatmentIds, tenantDomain, tenantDomain])
     for (const row of dosageMappingResult.rows) {
       const tid = Number(row.treatment_id)
       const key = `${tid}::${normalizeDosage(row.dosage)}`
@@ -388,6 +420,7 @@ export async function submitToRxVortex(
       if (row.rxvortex_quantity_units) dosageQtyUnitsMap[key] = row.rxvortex_quantity_units
       if (row.rxvortex_quantity) dosageQtyMap[key] = row.rxvortex_quantity
       if (row.rxvortex_catalog_instruction) dosageCatalogInstructionMap[key] = row.rxvortex_catalog_instruction
+      if (row.rxvortex_quantity_override) dosageQtyOverrideMap[key] = row.rxvortex_quantity_override
       treatmentsWithDosageMapping.add(tid)
 
       if (!dosageTiersByTreatment[tid]) dosageTiersByTreatment[tid] = []
@@ -400,6 +433,7 @@ export async function submitToRxVortex(
         quantityUnits: row.rxvortex_quantity_units || null,
         quantity: row.rxvortex_quantity || null,
         catalogInstruction: row.rxvortex_catalog_instruction || null,
+        quantityOverride: row.rxvortex_quantity_override || null,
       })
     }
     for (const tid of Object.keys(dosageTiersByTreatment)) {
@@ -593,6 +627,9 @@ export async function submitToRxVortex(
           let catalogInstruction = isDosageDriven
             ? ((dosageKey && dosageCatalogInstructionMap[dosageKey]) || null)
             : ((li.product_id && productCatalogInstructionMap[li.product_id]) || null)
+          let quantityOverride = isDosageDriven
+            ? ((dosageKey && dosageQtyOverrideMap[dosageKey]) || null)
+            : ((li.product_id && productQtyOverrideMap[li.product_id]) || null)
 
           // Terminal-tier fallback: a dosage-driven treatment with no exact
           // match for the patient's approved dose, where that dose is at or
@@ -613,6 +650,7 @@ export async function submitToRxVortex(
               quantityUnits = terminal.quantityUnits
               catalogQuantity = terminal.quantity
               catalogInstruction = terminal.catalogInstruction
+              quantityOverride = terminal.quantityOverride
             }
           }
 
@@ -624,7 +662,7 @@ export async function submitToRxVortex(
           const request: Record<string, any> = {
             type: "new", refills: 0,
             sender_med_request_id: `${rxNumber}-${idx + 1}`,
-            quantity: resolveQuantity(catalogQuantity, li.quantity || 1),
+            quantity: resolveQuantity(quantityOverride, catalogQuantity, li.quantity || 1),
             quantity_units: normalizeQuantityUnits(quantityUnits),
             days_supply_duration: resolveDaysSupply(medicationForm),
             instructions, authored_on_datetime: new Date().toISOString(),
@@ -722,7 +760,7 @@ export async function submitToRxVortex(
         const medicationRequest: Record<string, any> = {
           type: "new", refills: 0,
           sender_med_request_id: `${splitSenderOrderId}-1`,
-          quantity: resolveQuantity(tier.quantity, li.quantity || 1),
+          quantity: resolveQuantity(tier.quantityOverride, tier.quantity, li.quantity || 1),
           quantity_units: normalizeQuantityUnits(tier.quantityUnits),
           days_supply_duration: resolveDaysSupply(tier.medicationForm),
           instructions,
