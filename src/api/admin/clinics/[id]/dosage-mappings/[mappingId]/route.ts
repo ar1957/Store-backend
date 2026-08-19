@@ -28,6 +28,7 @@ export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
     if ("rxvortex_quantity_units" in body) fields.rxvortex_quantity_units = body.rxvortex_quantity_units || null
     if ("rxvortex_quantity" in body) fields.rxvortex_quantity = body.rxvortex_quantity != null ? String(body.rxvortex_quantity) : null
     if ("rxvortex_catalog_instruction" in body) fields.rxvortex_catalog_instruction = body.rxvortex_catalog_instruction || null
+    if ("rxvortex_quantity_override" in body) fields.rxvortex_quantity_override = body.rxvortex_quantity_override != null && body.rxvortex_quantity_override !== "" ? String(body.rxvortex_quantity_override) : null
 
     if (Object.keys(fields).length === 0) {
       return res.status(400).json({ message: "No editable fields provided" })

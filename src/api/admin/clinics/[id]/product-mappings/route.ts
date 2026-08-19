@@ -25,7 +25,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
              ptm.treatment_id, ptm.treatment_name, ptm.requires_eligibility,
              ptm.rxvortex_preset_catalog_id, ptm.rxvortex_instructions, ptm.order_split_count,
              ptm.rxvortex_medication_form, ptm.rxvortex_quantity_units, ptm.rxvortex_quantity,
-             ptm.rxvortex_catalog_instruction,
+             ptm.rxvortex_catalog_instruction, ptm.rxvortex_quantity_override,
              ptm.clinic_pharmacy_id, ptm.created_at
       FROM product_treatment_map ptm
       LEFT JOIN product p ON p.id = ptm.product_id AND p.deleted_at IS NULL
