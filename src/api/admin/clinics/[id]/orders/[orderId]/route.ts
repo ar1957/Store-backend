@@ -66,7 +66,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   }
 }
 
-// Deleting the workflow now also cancels the underlying order — a stray
+// Cancels the underlying order and marks the workflow canceled — a stray
 // order_workflow row for a live, un-refunded order was the exact hazard
 // this was added to close (see [[project-order-delete-vs-cancel]]). Blocked
 // entirely if the order has already shipped (refunding/canceling a
@@ -75,6 +75,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 // on an order that isn't already canceled (rather than silently skipping
 // the refund step) — an already-canceled order's leftover workflow row is
 // the one case allowed straight through, since there's nothing left to cancel.
+//
+// Keeps the order_workflow row (status='canceled', canceled_at set) instead
+// of deleting it, preserving history/audit trail — previously this hard-
+// deleted the row entirely. Mirrors the same status the order-canceled.ts
+// subscriber applies when an order is canceled via Medusa's native "Cancel
+// order" action instead of this endpoint, so order_workflow.status means
+// the same thing regardless of which path canceled the order.
 export async function DELETE(req: MedusaRequest, res: MedusaResponse) {
   try {
     const pg = req.scope.resolve("__pg_connection__") as any
@@ -104,7 +111,7 @@ export async function DELETE(req: MedusaRequest, res: MedusaResponse) {
     }
 
     await pg.raw(
-      `DELETE FROM order_workflow WHERE order_id = ?`,
+      `UPDATE order_workflow SET status = 'canceled', canceled_at = NOW(), updated_at = NOW() WHERE order_id = ?`,
       [orderId]
     )
 
