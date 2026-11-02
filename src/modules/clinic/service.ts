@@ -206,9 +206,9 @@ class ClinicService extends MedusaService({ Clinic }) {
 
   // ── Treatments ────────────────────────────────────────────────────────────
 
-  async getTreatments(clinicId: string): Promise<any[]> {
+  async getTreatments(clinicId: string, forceRefresh = false): Promise<any[]> {
     const cached = treatmentCache[clinicId]
-    if (cached && Date.now() - cached.fetchedAt < TREAT_TTL) return cached.treatments
+    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < TREAT_TTL) return cached.treatments
 
     const clinic = await this.getClinicById(clinicId)
     if (!clinic) throw new Error(`Clinic not found: ${clinicId}`)

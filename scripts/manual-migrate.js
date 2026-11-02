@@ -729,6 +729,12 @@ const steps = [
     `,
   },
   {
+    name: "Migration20240101000029 - canceled_at on order_workflow",
+    sql: `
+      ALTER TABLE "order_workflow" ADD COLUMN IF NOT EXISTS "canceled_at" TIMESTAMPTZ;
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -758,7 +764,8 @@ const steps = [
       ('Migration20240101000025'),
       ('Migration20240101000026'),
       ('Migration20240101000027'),
-      ('Migration20240101000028')
+      ('Migration20240101000028'),
+      ('Migration20240101000029')
       ON CONFLICT DO NOTHING`,
   },
 ]

@@ -120,6 +120,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   pending_pharmacy:         { label: "Pending Pharmacy",   color: "#0e7490", bg: "#cffafe" },
   refund_issued:            { label: "Refund Issued",      color: "#991b1b", bg: "#fee2e2" },
   partial_refund_issued:    { label: "Partially Refunded", color: "#92400e", bg: "#fef3c7" },
+  canceled:                 { label: "Canceled",           color: "#374151", bg: "#f3f4f6" },
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -1722,10 +1723,10 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
     } catch {}
   }
 
-  const loadTreatments = async () => {
+  const loadTreatments = async (forceRefresh = false) => {
     setLoadingTreatments(true)
     try {
-      const res = await fetch(`/admin/clinics/${clinic.id}/treatments`, { credentials: "include", headers: adminHeaders(), cache: "no-store" })
+      const res = await fetch(`/admin/clinics/${clinic.id}/treatments${forceRefresh ? "?refresh=true" : ""}`, { credentials: "include", headers: adminHeaders(), cache: "no-store" })
       const data = await res.json()
       setTreatments(data.treatments || [])
     } catch {}
@@ -1829,12 +1830,21 @@ function MappingsTab({ clinic }: { clinic: Clinic }) {
       )}
       <div style={s.formBox}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Add Product → Treatment Mapping</div>
-        {treatments.length === 0 && (
+        {treatments.length === 0 ? (
           <div style={{ marginBottom: 12 }}>
-            <button onClick={loadTreatments} disabled={loadingTreatments} style={s.btnOutline}>
+            <button onClick={() => loadTreatments()} disabled={loadingTreatments} style={s.btnOutline}>
               {loadingTreatments ? "Loading…" : "Load Treatments from API"}
             </button>
             <span style={{ fontSize: 12, color: "#9ca3af", marginLeft: 8 }}>Requires valid API credentials</span>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 12 }}>
+            <button onClick={() => loadTreatments(true)} disabled={loadingTreatments} style={{ ...s.btnOutline, fontSize: 12, padding: "4px 10px" }}>
+              {loadingTreatments ? "Refreshing…" : "🔄 Refresh treatments from MHC"}
+            </button>
+            <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 8 }}>
+              Treatment list is cached server-side for 24h — use this to pull changes (e.g. a soft-deleted treatment) immediately
+            </span>
           </div>
         )}
         <div style={s.grid2}>

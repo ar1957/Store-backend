@@ -20,6 +20,7 @@ type WorkflowStatus =
   | "md_denied"
   | "refund_issued"
   | "partial_refund_issued"
+  | "canceled"
 
 interface TreatmentDosage {
   dosage: string
@@ -132,6 +133,11 @@ const STATUS_CONFIG: Record<WorkflowStatus, { label: string; color: string; bg: 
     label: "Pending Pharmacy",
     color: "#0E7490",
     bg: "#CFFAFE",
+  },
+  canceled: {
+    label: "Canceled",
+    color: "#374151",
+    bg: "#F3F4F6",
   },
 }
 
@@ -824,6 +830,7 @@ export default function ClinicOrdersPage() {
           <option value="md_denied">Denied</option>
           <option value="refund_issued">Refunded</option>
           <option value="partial_refund_issued">Partially Refunded</option>
+          <option value="canceled">Canceled</option>
         </select>
 
         <select
