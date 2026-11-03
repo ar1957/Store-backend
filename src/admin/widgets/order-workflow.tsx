@@ -68,6 +68,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   refund_issued:       { label: "Refund Issued",     color: "#991b1b", bg: "#fee2e2" },
   partial_refund_issued: { label: "Partially Refunded", color: "#92400e", bg: "#fef3c7" },
   provider_approved:   { label: "Provider Approved", color: "#065f46", bg: "#d1fae5" },
+  canceled:            { label: "Canceled",          color: "#374151", bg: "#f3f4f6" },
 }
 
 const ROLE_LABELS: Record<string, string> = {

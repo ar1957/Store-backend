@@ -120,6 +120,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   pending_pharmacy:         { label: "Pending Pharmacy",   color: "#0e7490", bg: "#cffafe" },
   refund_issued:            { label: "Refund Issued",      color: "#991b1b", bg: "#fee2e2" },
   partial_refund_issued:    { label: "Partially Refunded", color: "#92400e", bg: "#fef3c7" },
+  canceled:                 { label: "Canceled",           color: "#374151", bg: "#f3f4f6" },
 }
 
 const ROLE_LABELS: Record<string, string> = {

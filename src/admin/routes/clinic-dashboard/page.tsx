@@ -24,6 +24,7 @@ const STATUS_COLORS: Record<string, string> = {
   refund_issued:       "#6b7280",
   refunded:            "#9ca3af",
   partial_refund_issued: "#f59e0b",
+  canceled:            "#374151",
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -36,6 +37,7 @@ const STATUS_LABELS: Record<string, string> = {
   refund_issued:       "Refund Issued",
   refunded:            "Refunded",
   partial_refund_issued: "Partially Refunded",
+  canceled:            "Canceled",
 }
 
 const PALETTE = ["#6366f1","#f59e0b","#10b981","#3b82f6","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f97316","#84cc16"]
