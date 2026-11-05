@@ -735,6 +735,12 @@ const steps = [
     `,
   },
   {
+    name: "Migration20240101000030 - per-rx webhook statuses on pharmacy_sub_order",
+    sql: `
+      ALTER TABLE "pharmacy_sub_order" ADD COLUMN IF NOT EXISTS "rx_statuses" JSONB;
+    `,
+  },
+  {
     name: "record migrations as done",
     sql: `INSERT INTO mikro_orm_migrations (name) VALUES
       ('Migration20240101000001'),
@@ -765,7 +771,8 @@ const steps = [
       ('Migration20240101000026'),
       ('Migration20240101000027'),
       ('Migration20240101000028'),
-      ('Migration20240101000029')
+      ('Migration20240101000029'),
+      ('Migration20240101000030')
       ON CONFLICT DO NOTHING`,
   },
 ]

@@ -43,6 +43,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     const clinicResult = await pool.query(
       `SELECT id, name, logo_url, brand_color, contact_email,
               publishable_api_key, stripe_publishable_key,
+              stripe_mode, stripe_connect_account_id,
               payment_provider, paypal_client_id, paypal_mode,
               authorizenet_api_login_id, authorizenet_public_client_key, authorizenet_mode,
               is_translation_allowed,
@@ -103,7 +104,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         nav_links:       uiConfig.nav_links || [],
         footer_links:    uiConfig.footer_links || [],
         get_started_url: uiConfig.get_started_url || "/store",
-        stripe_publishable_key: clinic.stripe_publishable_key || "",
+        stripe_publishable_key: clinic.stripe_mode === "connect" && clinic.stripe_connect_account_id
+          ? (process.env.STRIPE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_STRIPE_KEY || "")
+          : (clinic.stripe_publishable_key || ""),
+        stripe_mode: clinic.stripe_mode || "direct",
         payment_provider: clinic.payment_provider || "stripe",
         paypal_client_id: clinic.paypal_client_id || "",
         paypal_mode: clinic.paypal_mode || "sandbox",
