@@ -10,20 +10,22 @@
  *
  * Split orders:
  *   A product's order_split_count (set in product_treatment_map) controls
- *   whether it submits as one bundled order (0, default — unchanged behavior)
- *   or as N separate pharmacy orders, one per month, each at the next dosage
- *   tier up from the provider-approved starting dose. Each split is its own
- *   RxVortex order (own sender_order_id, own tracking) rather than just its
- *   own line item within one order, because the pharmacy staggers shipping
- *   per order, not per line item. Dosage tiers for a split come entirely from
- *   treatment_dosage_catalog_map (never a live MHC call at submission time),
- *   so every tier picked is guaranteed to already have a mapped catalog ID.
- *   Every attempted order (bundled or split) gets a row in pharmacy_sub_order;
- *   retries are idempotent — a split that already has a pharmacy_queue_id is
- *   skipped, only unsubmitted ones are retried.
+ *   how many monthly prescriptions the product expands into (0 = one rx at
+ *   the approved dose). With N > 0 it becomes N medication_requests, one per
+ *   month, each at the next dosage tier up from the approved starting dose.
+ *   Since 2026-11 (Strive's request) ALL of an order's prescriptions — regular
+ *   items and every split month — go in ONE RxVortex order so they ship
+ *   together; previously each split month was its own RxVortex order.
+ *   Dosage tiers come entirely from treatment_dosage_catalog_map (never a
+ *   live MHC call at submission time). One pharmacy_sub_order row is written
+ *   per RxVortex order; a retry that finds it already recorded is a no-op.
  */
 import { normalizePhone } from "./normalize-phone"
-import { savePharmacySubmissionLog, saveSubOrder, getExistingSubOrderQueueIds } from "./pharmacy-submission-log"
+import { savePharmacySubmissionLog, saveSubOrder } from "./pharmacy-submission-log"
+
+// Per Strive: GLP-1 vials have a ~70-day beyond-use date, so a single order
+// can carry at most 2 months of a titrated medication.
+const MAX_TITRATED_MONTHS_PER_ORDER = 2
 
 interface RxVortexClinic {
   pharmacy_api_url: string
@@ -77,6 +79,13 @@ function parseMonthNumber(dosageKey: string | null | undefined): number {
   if (!dosageKey) return Number.MAX_SAFE_INTEGER
   const m = dosageKey.match(/(\d+)/)
   return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER
+}
+
+// True for an open-ended maintenance tier label — "Month 6+", "Month 5 +",
+// "Month 8+" — i.e. the dose a patient stays on from that month onward.
+// Only these may be reused past the end of the mapped tiers.
+function isOpenEndedTier(dosageKey: string | null | undefined): boolean {
+  return /\+\s*$/.test((dosageKey || "").trim())
 }
 
 // Extracts the leading numeric dose from a dosage string ("14 mg (x4)" -> 14).
@@ -566,7 +575,29 @@ export async function submitToRxVortex(
     return { queueId: rxNumber }
   }
 
-  // ── Partition line items: split (own orders per month) vs bundled (today's behavior) ──
+  // ── Single combined order ─────────────────────────────────────────────────
+  // Per Strive (2026-11): every prescription for this order — regular line
+  // items AND every month of a split product — goes out as ONE RxVortex
+  // order with multiple medication_requests, so the pharmacy ships them
+  // together under one tracking number. (Previously each split month was its
+  // own RxVortex order; that's no longer wanted.) order_split_count still
+  // controls how many monthly prescriptions a product expands into, and the
+  // dosage tiers are still resolved entirely from treatment_dosage_catalog_map.
+  //
+  // All-or-nothing: if any prescription can't be resolved, nothing is sent.
+
+  const errors: string[] = []
+  const medicationRequests: Record<string, any>[] = []
+  // Months of dosage-titrated medication (the treatments in
+  // treatment_dosage_catalog_map, i.e. GLP-1s) in this one order. Counted
+  // per cart unit, since cart quantity multiplies each vial's volume.
+  let titratedMonths = 0
+  let seq = 0
+  const nextMedRequestId = () => `${rxNumber}-${++seq}`
+
+  // Line items keep their original order; bundled items come first so a
+  // non-split order produces exactly the same sender_med_request_ids as
+  // before (`${rxNumber}-1`, `-2`, …).
   const splitLineItems: any[] = []
   const bundledLineItems: any[] = []
   for (const li of lineItems) {
@@ -575,157 +606,107 @@ export async function submitToRxVortex(
     else bundledLineItems.push(li)
   }
 
-  // ── Load already-submitted sub-orders for idempotent retry ────────────────
-  const existingByIndex = await getExistingSubOrderQueueIds(pg, workflowId)
+  // ── Regular (non-split) line items — one medication_request each ──────────
+  bundledLineItems.forEach((li: any, idx: number) => {
+    const mappedTreatmentId = li.product_id ? productTreatmentMap[li.product_id] : undefined
+    // The product's statically-mapped treatment_id can go stale — MHC's
+    // provider system sometimes supersedes a treatment with a renamed/
+    // renumbered one (mirrors how the product itself gets renamed), and
+    // an order's own treatment_dosages snapshot then carries the OLD
+    // treatment_id forever, even after product_treatment_map is updated
+    // to point at the new one. When the mapped id has no corresponding
+    // entry in this order's own dosage data, but the order carries
+    // exactly one treatment record, there's no ambiguity about which
+    // line item it belongs to — trust the order's own treatment_id
+    // instead of the (possibly stale) static mapping. Multi-treatment
+    // orders keep the strict/fail-closed behavior unchanged.
+    const treatmentId = (mappedTreatmentId !== undefined && dosageByTreatmentId[mappedTreatmentId] !== undefined)
+      ? mappedTreatmentId
+      : (dosages.length === 1 && dosages[0]?.treatmentId ? Number(dosages[0].treatmentId) : mappedTreatmentId)
+    const matchedDosage = treatmentId
+      ? (dosageByTreatmentId[treatmentId] || "")
+      : (dosages[idx]?.dosage || dosages[0]?.dosage || "")
 
-  const errors: string[] = []
-  let firstQueueId: string | null = null
-  let splitIndexCounter = base + (bundledLineItems.length > 0 ? 2 : 1)
+    const dosageKey = treatmentId ? `${treatmentId}::${normalizeDosage(matchedDosage)}` : ""
 
-  // ── Bundled order (index base+1) — same medication_requests logic as before ────
-  if (bundledLineItems.length > 0) {
-    const existingQueueId = existingByIndex.get(base + 1)
-    if (existingQueueId) {
-      firstQueueId = firstQueueId || existingQueueId
-    } else {
-      try {
-        const medicationRequests = bundledLineItems.map((li: any, idx: number) => {
-          const mappedTreatmentId = li.product_id ? productTreatmentMap[li.product_id] : undefined
-          // The product's statically-mapped treatment_id can go stale — MHC's
-          // provider system sometimes supersedes a treatment with a renamed/
-          // renumbered one (mirrors how the product itself gets renamed), and
-          // an order's own treatment_dosages snapshot then carries the OLD
-          // treatment_id forever, even after product_treatment_map is updated
-          // to point at the new one. When the mapped id has no corresponding
-          // entry in this order's own dosage data, but the order carries
-          // exactly one treatment record, there's no ambiguity about which
-          // line item it belongs to — trust the order's own treatment_id
-          // instead of the (possibly stale) static mapping. Multi-treatment
-          // orders keep the strict/fail-closed behavior unchanged.
-          const treatmentId = (mappedTreatmentId !== undefined && dosageByTreatmentId[mappedTreatmentId] !== undefined)
-            ? mappedTreatmentId
-            : (dosages.length === 1 && dosages[0]?.treatmentId ? Number(dosages[0].treatmentId) : mappedTreatmentId)
-          const matchedDosage = treatmentId
-            ? (dosageByTreatmentId[treatmentId] || "")
-            : (dosages[idx]?.dosage || dosages[0]?.dosage || "")
+    const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
 
-          const dosageKey = treatmentId ? `${treatmentId}::${normalizeDosage(matchedDosage)}` : ""
+    const isDosageDriven = treatmentId ? treatmentsWithDosageMapping.has(treatmentId) : false
+    if (isDosageDriven) titratedMonths += Number(li.quantity) || 1
+    let presetCatalogId = isDosageDriven
+      ? ((dosageKey && dosageCatalogMap[dosageKey]) || null)
+      : ((li.product_id && productCatalogMap[li.product_id]) || clinicFallbackCatalogId || null)
+    let medicationForm = isDosageDriven
+      ? ((dosageKey && dosageMedFormMap[dosageKey]) || null)
+      : ((li.product_id && productMedFormMap[li.product_id]) || null)
+    let quantityUnits = isDosageDriven
+      ? ((dosageKey && dosageQtyUnitsMap[dosageKey]) || null)
+      : ((li.product_id && productQtyUnitsMap[li.product_id]) || null)
+    let catalogQuantity = isDosageDriven
+      ? ((dosageKey && dosageQtyMap[dosageKey]) || null)
+      : ((li.product_id && productQtyMap[li.product_id]) || null)
+    let catalogInstruction = isDosageDriven
+      ? ((dosageKey && dosageCatalogInstructionMap[dosageKey]) || null)
+      : ((li.product_id && productCatalogInstructionMap[li.product_id]) || null)
+    let quantityOverride = isDosageDriven
+      ? ((dosageKey && dosageQtyOverrideMap[dosageKey]) || null)
+      : ((li.product_id && productQtyOverrideMap[li.product_id]) || null)
 
-          const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
-
-          const isDosageDriven = treatmentId ? treatmentsWithDosageMapping.has(treatmentId) : false
-          let presetCatalogId = isDosageDriven
-            ? ((dosageKey && dosageCatalogMap[dosageKey]) || null)
-            : ((li.product_id && productCatalogMap[li.product_id]) || clinicFallbackCatalogId || null)
-          let medicationForm = isDosageDriven
-            ? ((dosageKey && dosageMedFormMap[dosageKey]) || null)
-            : ((li.product_id && productMedFormMap[li.product_id]) || null)
-          let quantityUnits = isDosageDriven
-            ? ((dosageKey && dosageQtyUnitsMap[dosageKey]) || null)
-            : ((li.product_id && productQtyUnitsMap[li.product_id]) || null)
-          let catalogQuantity = isDosageDriven
-            ? ((dosageKey && dosageQtyMap[dosageKey]) || null)
-            : ((li.product_id && productQtyMap[li.product_id]) || null)
-          let catalogInstruction = isDosageDriven
-            ? ((dosageKey && dosageCatalogInstructionMap[dosageKey]) || null)
-            : ((li.product_id && productCatalogInstructionMap[li.product_id]) || null)
-          let quantityOverride = isDosageDriven
-            ? ((dosageKey && dosageQtyOverrideMap[dosageKey]) || null)
-            : ((li.product_id && productQtyOverrideMap[li.product_id]) || null)
-
-          // Terminal-tier fallback: a dosage-driven treatment with no exact
-          // match for the patient's approved dose, where that dose is at or
-          // above the highest configured tier, is a titration that's
-          // continued past the last dose the pharmacy has a distinct catalog
-          // item for (e.g. Strive has no dedicated 14mg item, only up to
-          // 13mg/"Month 6+"). Reuses that terminal tier's catalog item —
-          // same convention already used for split orders — rather than
-          // failing closed on every dose increase beyond the mapped range.
-          if (isDosageDriven && !presetCatalogId && treatmentId) {
-            const tiers = dosageTiersByTreatment[treatmentId] || []
-            const terminal = tiers[tiers.length - 1]
-            const approvedNum = parseDoseNumber(matchedDosage)
-            const terminalNum = terminal ? parseDoseNumber(terminal.dosage) : null
-            if (terminal && approvedNum !== null && terminalNum !== null && approvedNum >= terminalNum) {
-              presetCatalogId = terminal.catalogId
-              medicationForm = terminal.medicationForm
-              quantityUnits = terminal.quantityUnits
-              catalogQuantity = terminal.quantity
-              catalogInstruction = terminal.catalogInstruction
-              quantityOverride = terminal.quantityOverride
-            }
-          }
-
-          const manualInstruction = (dosageKey && dosageInstructionMap[dosageKey])
-            || (li.product_id && productInstructionMap[li.product_id])
-            || null
-          const instructions = resolveInstructions(manualInstruction, catalogInstruction, matchedDosage)
-
-          const request: Record<string, any> = {
-            type: "new", refills: 0,
-            sender_med_request_id: `${rxNumber}-${idx + 1}`,
-            quantity: resolveQuantity(quantityOverride, catalogQuantity, li.quantity || 1),
-            quantity_units: normalizeQuantityUnits(quantityUnits),
-            days_supply_duration: resolveDaysSupply(medicationForm),
-            instructions, authored_on_datetime: new Date().toISOString(),
-          }
-          if (note) request.note = note
-          if (presetCatalogId) {
-            request.preset_catalog_id = presetCatalogId
-          } else {
-            request._missing_catalog_id = true
-            request._product_title = li.item_title || li.product_id || "unknown"
-          }
-          return request
-        })
-
-        const missing = medicationRequests.filter((r: any) => r._missing_catalog_id)
-        if (missing.length > 0) {
-          const names = missing.map((r: any) => r._product_title).join(", ")
-          throw new Error(
-            `preset_catalog_id not set for: ${names}. Set it in the product mapping tab for this clinic.`
-          )
-        }
-
-        const payload = {
-          patient: basePatient, prescriber: basePrescriber,
-          order: { bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "practice" : "patient", ship_to: shipTo, sender_order_id: rxNumber },
-          shipment: baseShipment,
-          clinical,
-          medication_requests: medicationRequests,
-        }
-        console.log(`[PharmacySubmit-RxVortex] Sending payload (bundled):`, JSON.stringify(payload, null, 2))
-        const res = await fetch(`${baseUrl}/api/v1/orders`, {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-        const data = await res.json()
-        console.log(`[PharmacySubmit-RxVortex] Response (bundled):`, JSON.stringify(data))
-        await savePharmacySubmissionLog(pg, workflowId, payload, data)
-        if (!res.ok) {
-          const errMsg = data.message || `RxVortex API error: HTTP ${res.status}`
-          throw new Error(data.errors ? `${errMsg} — ${JSON.stringify(data.errors)}` : errMsg)
-        }
-        await saveSubOrder(pg, {
-          id: `pso_${Date.now()}_1`, workflowId, splitIndex: base + 1, splitCount: 1,
-          treatmentId: null, productId: null, dosage: null, dosageKey: null,
-          catalogId: null, queueId: rxNumber, payload, response: data,
-          clinicPharmacyId: opts?.clinicPharmacyId ?? null,
-        })
-        firstQueueId = firstQueueId || rxNumber
-      } catch (err: any) {
-        errors.push(`Order: ${err.message}`)
+    // Terminal-tier fallback: a dosage-driven treatment with no exact
+    // match for the patient's approved dose, where that dose is at or
+    // above the highest configured tier, is a titration that's
+    // continued past the last dose the pharmacy has a distinct catalog
+    // item for (e.g. Strive has no dedicated 14mg item, only up to
+    // 13mg/"Month 6+"). Reuses that terminal tier's catalog item —
+    // same convention already used for split orders — rather than
+    // failing closed on every dose increase beyond the mapped range.
+    if (isDosageDriven && !presetCatalogId && treatmentId) {
+      const tiers = dosageTiersByTreatment[treatmentId] || []
+      const terminal = tiers[tiers.length - 1]
+      const approvedNum = parseDoseNumber(matchedDosage)
+      const terminalNum = terminal ? parseDoseNumber(terminal.dosage) : null
+      // Same open-ended ("+") requirement as split orders: only reuse the
+      // last tier when it's explicitly the dose patients stay on.
+      if (terminal && isOpenEndedTier(terminal.dosageKey) && approvedNum !== null && terminalNum !== null && approvedNum >= terminalNum) {
+        presetCatalogId = terminal.catalogId
+        medicationForm = terminal.medicationForm
+        quantityUnits = terminal.quantityUnits
+        catalogQuantity = terminal.quantity
+        catalogInstruction = terminal.catalogInstruction
+        quantityOverride = terminal.quantityOverride
       }
     }
-  }
 
-  // ── Split items — one separate RxVortex order per split ───────────────────
+    if (!presetCatalogId) {
+      errors.push(
+        `${li.item_title || li.product_id || "unknown"}: preset_catalog_id not set. Set it in the product mapping tab for this clinic.`
+      )
+      return
+    }
+
+    const manualInstruction = (dosageKey && dosageInstructionMap[dosageKey])
+      || (li.product_id && productInstructionMap[li.product_id])
+      || null
+    const instructions = resolveInstructions(manualInstruction, catalogInstruction, matchedDosage)
+
+    const request: Record<string, any> = {
+      type: "new", refills: 0,
+      sender_med_request_id: nextMedRequestId(),
+      quantity: resolveQuantity(quantityOverride, catalogQuantity, li.quantity || 1),
+      quantity_units: normalizeQuantityUnits(quantityUnits),
+      days_supply_duration: resolveDaysSupply(medicationForm),
+      instructions, authored_on_datetime: new Date().toISOString(),
+      preset_catalog_id: presetCatalogId,
+    }
+    if (note) request.note = note
+    medicationRequests.push(request)
+  })
+
+  // ── Split products — one medication_request per month, same order ─────────
   for (const li of splitLineItems) {
     const treatmentId = li.product_id ? productTreatmentMap[li.product_id] : undefined
     if (!treatmentId) {
       errors.push(`${li.item_title || li.product_id}: no treatment mapping found, cannot determine dosage sequence.`)
-      splitIndexCounter += li.splitCount
       continue
     }
 
@@ -738,85 +719,143 @@ export async function submitToRxVortex(
         `${li.item_title || li.product_id}: approved dosage "${approvedDosage}" is not mapped in the dosage → catalog table for treatment ${treatmentId}. ` +
         `Map it in the product mapping tab before this order can be split and submitted.`
       )
-      splitIndexCounter += li.splitCount
       continue
     }
 
+    titratedMonths += li.splitCount * (Number(li.quantity) || 1)
     for (let i = 0; i < li.splitCount; i++) {
-      const splitIndex = splitIndexCounter++
-      const existingQueueId = existingByIndex.get(splitIndex)
-      if (existingQueueId) {
-        firstQueueId = firstQueueId || existingQueueId
+      // Tiers beyond the mapped list reuse the last tier ONLY when it's an
+      // open-ended maintenance tier ("Month 8+" = the dose the patient stays
+      // on). If the last mapped tier is a plain "Month 3", the patient is due
+      // to step UP next month and that tier simply isn't mapped yet —
+      // repeating the current dose would be a guess, so block instead.
+      const tierIdx = startIdx + i
+      if (tierIdx >= tiers.length && !isOpenEndedTier(tiers[tiers.length - 1].dosageKey)) {
+        const last = tiers[tiers.length - 1]
+        errors.push(
+          `${li.item_title || li.product_id} month ${i + 1}/${li.splitCount}: needs the next dosage level after ` +
+          `"${last.dosageKey || last.dosage}" (${last.dosage}), but none is mapped for treatment ${treatmentId}. ` +
+          `Map the next level in Dosage → Catalog Mapping (or label the last level with "+", e.g. "Month 6+", if patients stay on that dose).`
+        )
         continue
       }
-
-      // Tiers beyond the mapped list reuse the last (topped-out) tier —
-      // e.g. "Month 8+" represents the terminal dose the patient stays on.
-      const tierIdx = Math.min(startIdx + i, tiers.length - 1)
-      const tier = tiers[tierIdx]
-
-      try {
-        const splitSenderOrderId = `${rxNumber}-S${splitIndex}`
-        const manualInstruction = tier.instructions || (li.product_id && productInstructionMap[li.product_id]) || null
-        const instructions = resolveInstructions(manualInstruction, tier.catalogInstruction, tier.dosage)
-        const medicationRequest: Record<string, any> = {
-          type: "new", refills: 0,
-          sender_med_request_id: `${splitSenderOrderId}-1`,
-          quantity: resolveQuantity(tier.quantityOverride, tier.quantity, li.quantity || 1),
-          quantity_units: normalizeQuantityUnits(tier.quantityUnits),
-          days_supply_duration: resolveDaysSupply(tier.medicationForm),
-          instructions,
-          note: `Prescribed dosage: ${tier.dosage} (split ${i + 1} of ${li.splitCount})`,
-          authored_on_datetime: new Date().toISOString(),
-          preset_catalog_id: tier.catalogId,
-        }
-
-        const payload = {
-          patient: basePatient, prescriber: basePrescriber,
-          order: { bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "practice" : "patient", ship_to: shipTo, sender_order_id: splitSenderOrderId },
-          shipment: baseShipment,
-          clinical,
-          medication_requests: [medicationRequest],
-        }
-        console.log(`[PharmacySubmit-RxVortex] Sending payload (split ${i + 1}/${li.splitCount}):`, JSON.stringify(payload, null, 2))
-        const res = await fetch(`${baseUrl}/api/v1/orders`, {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-        const data = await res.json()
-        console.log(`[PharmacySubmit-RxVortex] Response (split ${i + 1}/${li.splitCount}):`, JSON.stringify(data))
-        if (!res.ok) {
-          const errMsg = data.message || `RxVortex API error: HTTP ${res.status}`
-          throw new Error(data.errors ? `${errMsg} — ${JSON.stringify(data.errors)}` : errMsg)
-        }
-        await saveSubOrder(pg, {
-          id: `pso_${Date.now()}_${splitIndex}`, workflowId, splitIndex, splitCount: li.splitCount,
-          treatmentId, productId: li.product_id, dosage: tier.dosage, dosageKey: tier.dosageKey,
-          catalogId: tier.catalogId, queueId: splitSenderOrderId, payload, response: data,
-          clinicPharmacyId: opts?.clinicPharmacyId ?? null,
-        })
-        firstQueueId = firstQueueId || splitSenderOrderId
-      } catch (err: any) {
-        errors.push(`${li.item_title || li.product_id} split ${i + 1}/${li.splitCount}: ${err.message}`)
+      const tier = tiers[Math.min(tierIdx, tiers.length - 1)]
+      if (!tier.catalogId) {
+        errors.push(`${li.item_title || li.product_id} month ${i + 1}/${li.splitCount}: dosage "${tier.dosage}" has no catalog ID mapped.`)
+        continue
       }
+      const manualInstruction = tier.instructions || (li.product_id && productInstructionMap[li.product_id]) || null
+      const instructions = resolveInstructions(manualInstruction, tier.catalogInstruction, tier.dosage)
+      medicationRequests.push({
+        type: "new", refills: 0,
+        sender_med_request_id: nextMedRequestId(),
+        quantity: resolveQuantity(tier.quantityOverride, tier.quantity, li.quantity || 1),
+        quantity_units: normalizeQuantityUnits(tier.quantityUnits),
+        days_supply_duration: resolveDaysSupply(tier.medicationForm),
+        instructions,
+        note: `Prescribed dosage: ${tier.dosage} (month ${i + 1} of ${li.splitCount})`,
+        authored_on_datetime: new Date().toISOString(),
+        preset_catalog_id: tier.catalogId,
+      })
     }
   }
 
-  // Any failure blocks marking the order as fully submitted — successful
-  // sub-orders stay recorded (real pharmacy orders were placed and can't be
-  // un-submitted) and are skipped as already-done on the next retry; only
-  // what actually failed gets attempted again.
-  if (errors.length > 0) {
-    throw new Error(`RxVortex submission incomplete — ${errors.join(" | ")}`)
+  // Strive (2026-11): GLP-1 beyond-use date is ~70 days, so one order may
+  // hold at most 2 months — a 3rd vial shipped together would expire before
+  // it's used. Fail closed; never trim the order to fit.
+  if (titratedMonths > MAX_TITRATED_MONTHS_PER_ORDER) {
+    errors.push(
+      `Order contains ${titratedMonths} months of titrated medication; Strive allows at most ` +
+      `${MAX_TITRATED_MONTHS_PER_ORDER} per order (vial beyond-use date). Check the product's order_split_count and cart quantities.`
+    )
   }
+
+  if (errors.length > 0) {
+    throw new Error(`RxVortex submission blocked — ${errors.join(" | ")}`)
+  }
+
+  // ── Idempotency / legacy guard ────────────────────────────────────────────
+  // Look at every sub-order already recorded for THIS pharmacy group's index
+  // range (multi-pharmacy groups are spaced 1000 apart by the caller).
+  //   • none                         → submit the combined order now
+  //   • they already cover every rx  → already done (retry / manual re-click)
+  //   • they cover only some rx      → an order that was partially submitted
+  //     under the OLD one-order-per-split scheme. Real pharmacy orders were
+  //     placed for some months; resending the combined order would duplicate
+  //     them. Fail closed for a human to resolve.
+  const existingResult = await pg.raw(
+    `SELECT split_index, pharmacy_queue_id, pharmacy_submission_payload
+       FROM pharmacy_sub_order
+      WHERE order_workflow_id = ? AND split_index > ? AND split_index <= ?
+        AND pharmacy_queue_id IS NOT NULL
+      ORDER BY split_index`,
+    [workflowId, base, base + 999]
+  )
+  const existingRows = existingResult.rows || []
+  if (existingRows.length > 0) {
+    const alreadySent = existingRows.reduce((sum: number, r: any) => {
+      const reqs = r.pharmacy_submission_payload?.medication_requests
+      return sum + (Array.isArray(reqs) ? reqs.length : 0)
+    }, 0)
+    if (alreadySent >= medicationRequests.length) {
+      const queueId = existingRows[0].pharmacy_queue_id
+      console.log(`[PharmacySubmit-RxVortex] Already submitted (${existingRows.length} order(s), ${alreadySent} rx) — skipping. queue id: ${queueId}`)
+      if (!opts?.skipWorkflowUpdate) {
+        await pg.raw(
+          `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = COALESCE(pharmacy_submitted_at, NOW()), pharmacy_status = COALESCE(pharmacy_status, 'submitted'), clinic_pharmacy_id = ?, updated_at = NOW() WHERE id = ?`,
+          [queueId, opts?.clinicPharmacyId ?? null, workflowId]
+        )
+      }
+      return { queueId }
+    }
+    throw new Error(
+      `RxVortex submission blocked — this order was partially submitted under the old one-order-per-split format ` +
+      `(${alreadySent} of ${medicationRequests.length} prescriptions already sent as: ${existingRows.map((r: any) => r.pharmacy_queue_id).join(", ")}). ` +
+      `Resolve the remaining prescriptions manually with the pharmacy.`
+    )
+  }
+
+  // ── Send the one combined order ───────────────────────────────────────────
+  const payload = {
+    patient: basePatient, prescriber: basePrescriber,
+    order: { bill_to: clinic.pharmacy_pay_type === "clinic_pay" ? "practice" : "patient", ship_to: shipTo, sender_order_id: rxNumber },
+    shipment: baseShipment,
+    clinical,
+    medication_requests: medicationRequests,
+  }
+  console.log(`[PharmacySubmit-RxVortex] Sending payload (${medicationRequests.length} rx in one order):`, JSON.stringify(payload, null, 2))
+  const res = await fetch(`${baseUrl}/api/v1/orders`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json()
+  console.log(`[PharmacySubmit-RxVortex] Response:`, JSON.stringify(data))
+  await savePharmacySubmissionLog(pg, workflowId, payload, data)
+  if (!res.ok) {
+    const errMsg = data.message || `RxVortex API error: HTTP ${res.status}`
+    throw new Error(data.errors ? `${errMsg} — ${JSON.stringify(data.errors)}` : errMsg)
+  }
+
+  // One pharmacy order → one pharmacy_sub_order row. Webhook / status poll /
+  // admin + customer tracking views all iterate sub-order rows generically,
+  // so they now simply show a single shipment.
+  const single = splitLineItems.length === 1 && bundledLineItems.length === 0 ? splitLineItems[0] : null
+  await saveSubOrder(pg, {
+    id: `pso_${Date.now()}_${base + 1}`, workflowId, splitIndex: base + 1, splitCount: 1,
+    treatmentId: single ? (productTreatmentMap[single.product_id] ?? null) : null,
+    productId: single ? single.product_id : null,
+    dosage: null, dosageKey: null, catalogId: null,
+    queueId: rxNumber, payload, response: data,
+    clinicPharmacyId: opts?.clinicPharmacyId ?? null,
+  })
 
   if (!opts?.skipWorkflowUpdate) {
     await pg.raw(
       `UPDATE order_workflow SET pharmacy_queue_id = ?, pharmacy_submitted_at = NOW(), pharmacy_status = 'submitted', clinic_pharmacy_id = ?, updated_at = NOW() WHERE id = ?`,
-      [firstQueueId, opts?.clinicPharmacyId ?? null, workflowId]
+      [rxNumber, opts?.clinicPharmacyId ?? null, workflowId]
     )
   }
-  console.log(`[PharmacySubmit-RxVortex] Order fully submitted. Primary pharmacy_queue_id: ${firstQueueId}`)
-  return { queueId: firstQueueId }
+  console.log(`[PharmacySubmit-RxVortex] Order submitted as one RxVortex order (${medicationRequests.length} rx). pharmacy_queue_id: ${rxNumber}`)
+  return { queueId: rxNumber }
 }

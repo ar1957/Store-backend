@@ -12,18 +12,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ message: "cartId, paymentIntentId, and domain are required" })
     }
 
-    // 1. Get clinic's Stripe key
+    // 1. Get clinic's Stripe key + Connect mode fields
     const clinicResult = await pg.raw(
-      `SELECT stripe_secret_key FROM clinic WHERE ? = ANY(domains) OR slug = ? LIMIT 1`,
+      `SELECT stripe_secret_key, stripe_mode, stripe_connect_account_id FROM clinic WHERE ? = ANY(domains) OR slug = ? LIMIT 1`,
       [domain, domain]
     )
     const clinic = clinicResult.rows[0]
-    if (!clinic?.stripe_secret_key) {
+
+    const isConnect = clinic?.stripe_mode === "connect" && clinic?.stripe_connect_account_id
+    const stripeKey = isConnect
+      ? process.env.STRIPE_API_KEY
+      : clinic?.stripe_secret_key
+
+    if (!stripeKey) {
       return res.status(400).json({ message: "Stripe not configured for this clinic" })
     }
 
-    // 2. Verify with clinic's own Stripe key
-    const stripe = new Stripe(clinic.stripe_secret_key, { apiVersion: "2024-06-20" as any })
+    // 2. Verify with the correct Stripe key (platform key in Connect mode, clinic key in Direct mode)
+    const stripe = new Stripe(stripeKey, { apiVersion: "2024-06-20" as any })
     const intent = await stripe.paymentIntents.retrieve(paymentIntentId)
     console.log("[mark-payment-authorized] intent.status:", intent.status)
 

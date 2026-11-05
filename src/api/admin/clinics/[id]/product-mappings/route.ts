@@ -51,6 +51,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     const tenantDomain = clinic.domains?.[0] || clinic.slug
     const body = req.body as any
+
+    const splitCount = Number(body.order_split_count) || 0
+    // Strive: GLP-1 beyond-use date (~70 days) allows at most 2 months per order.
+    if (!Number.isInteger(splitCount) || splitCount < 0 || splitCount > 2) {
+      return res.status(400).json({ message: "order_split_count must be 0, 1 or 2 (max 2 months per pharmacy order)." })
+    }
     const id = `ptm_${Date.now()}`
 
     await pgConnection.raw(`
@@ -67,7 +73,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       body.requires_eligibility ?? true,
       body.rxvortex_preset_catalog_id || null,
       body.rxvortex_instructions || null,
-      Number(body.order_split_count) || 0,
+      splitCount,
       body.clinic_pharmacy_id || null,
       body.rxvortex_medication_form || null,
       body.rxvortex_quantity_units || null,
