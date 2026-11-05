@@ -34,6 +34,9 @@ interface Clinic {
   redirect_url: string
   stripe_secret_key: string
   stripe_publishable_key: string
+  stripe_mode: string
+  stripe_connect_account_id: string
+  platform_fee_fixed: string
   publishable_api_key: string
   sales_channel_id: string
   pharmacy_staff_id: string
@@ -739,6 +742,9 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
         redirect_url: form.redirect_url,
         stripe_publishable_key: form.stripe_publishable_key,
         stripe_secret_key: form.stripe_secret_key,
+        stripe_mode: (form as any).stripe_mode || "direct",
+        stripe_connect_account_id: (form as any).stripe_connect_account_id || null,
+        platform_fee_fixed: (form as any).platform_fee_fixed || null,
         pharmacy_staff_id: form.pharmacy_staff_id,
         payment_provider: (form as any).payment_provider,
         paypal_client_id: (form as any).paypal_client_id,
@@ -822,19 +828,73 @@ function ApiTab({ clinic, onUpdated, role }: { clinic: Clinic; onUpdated: () => 
         </Field>
       </div>
       <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 20, marginTop: 4 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 14 }}>💳 Stripe Payment Keys</div>
-        <div style={s.grid2}>
-          <Field label="Stripe Publishable Key">
-            <input style={s.input} value={form.stripe_publishable_key || ""} onChange={e => setForm(p => ({ ...p, stripe_publishable_key: e.target.value }))} placeholder="pk_live_... or pk_test_..." />
-          </Field>
-          <Field label="Stripe Secret Key">
-            <div style={{ position: "relative" }}>
-              <input style={{ ...s.input, paddingRight: 52 }} type={showSecret ? "text" : "password"}
-                value={form.stripe_secret_key || ""} onChange={e => setForm(p => ({ ...p, stripe_secret_key: e.target.value }))} placeholder="sk_live_... or sk_test_..." />
-              <button onClick={() => setShowSecret(p => !p)} style={s.showBtn}>{showSecret ? "Hide" : "Show"}</button>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#111", marginBottom: 6 }}>💳 Stripe Configuration</div>
+
+        {/* Mode selector */}
+        <Field label="Stripe Mode">
+          <select style={s.input} value={(form as any).stripe_mode || "direct"}
+            onChange={e => setForm(p => ({ ...p, stripe_mode: e.target.value } as any))}>
+            <option value="direct">Direct — clinic's own Stripe keys</option>
+            <option value="connect">Connect — platform keys + clinic's connected account</option>
+          </select>
+          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+            {((form as any).stripe_mode || "direct") === "direct"
+              ? "Payments are charged directly through this clinic's Stripe account."
+              : "Payments go through the platform's Stripe account and are transferred to the clinic's connected account. The platform's STRIPE_API_KEY and STRIPE_PUBLISHABLE_KEY env vars must be set."}
+          </div>
+        </Field>
+
+        {/* Direct mode: own keys */}
+        {(((form as any).stripe_mode || "direct") === "direct") && (
+          <div style={{ ...s.grid2, marginTop: 14 }}>
+            <Field label="Stripe Publishable Key">
+              <input style={s.input} value={form.stripe_publishable_key || ""} onChange={e => setForm(p => ({ ...p, stripe_publishable_key: e.target.value }))} placeholder="pk_live_... or pk_test_..." />
+            </Field>
+            <Field label="Stripe Secret Key">
+              <div style={{ position: "relative" }}>
+                <input style={{ ...s.input, paddingRight: 52 }} type={showSecret ? "text" : "password"}
+                  value={form.stripe_secret_key || ""} onChange={e => setForm(p => ({ ...p, stripe_secret_key: e.target.value }))} placeholder="sk_live_... or sk_test_..." />
+                <button onClick={() => setShowSecret(p => !p)} style={s.showBtn}>{showSecret ? "Hide" : "Show"}</button>
+              </div>
+            </Field>
+          </div>
+        )}
+
+        {/* Connect mode: connected account ID */}
+        {((form as any).stripe_mode === "connect") && (
+          <div style={{ marginTop: 14 }}>
+            <Field label="Stripe Connected Account ID">
+              <input style={s.input} value={(form as any).stripe_connect_account_id || ""}
+                onChange={e => setForm(p => ({ ...p, stripe_connect_account_id: e.target.value } as any))}
+                placeholder="acct_1A2B3C4D5E6F7G8H" />
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>
+                Found in the Stripe Dashboard → Connected accounts, or provided by the clinic.
+              </div>
+            </Field>
+            <div style={{ marginTop: 10, padding: "10px 14px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, fontSize: 12, color: "#1e40af" }}>
+              ℹ️ In Connect mode the storefront automatically uses the platform's publishable key. The clinic does not need to provide their own Stripe keys — only the connected account ID above.
             </div>
-          </Field>
-        </div>
+            <div style={{ marginTop: 14 }}>
+              <Field label="Platform Usage Fee ($ fixed)">
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 14, color: "#374151" }}>$</span>
+                  <input
+                    style={{ ...s.input, maxWidth: 140 }}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={(form as any).platform_fee_fixed || ""}
+                    onChange={e => setForm(p => ({ ...p, platform_fee_fixed: e.target.value } as any))}
+                    placeholder="e.g. 10.00"
+                  />
+                </div>
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>
+                  Fixed dollar amount deducted per transaction. Stripe processing fees (2.9% + $0.30) are always passed through too. Leave blank for $0.
+                </div>
+              </Field>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Payment Provider Selection ── */}
@@ -1317,12 +1377,13 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
     setSplitSaving(true)
     setSplitSaved(false)
     try {
-      await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
+      const res = await fetch(`/admin/clinics/${clinicId}/product-mappings/${mapping.id}`, {
         method: "PATCH",
         credentials: "include",
         headers: adminHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ order_split_count: value }),
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setSplitSaved(true)
       setTimeout(() => setSplitSaved(false), 2000)
     } catch {}
@@ -1431,13 +1492,13 @@ function MappingRow({ mapping, clinicId, showRxVortex, catalog, catalogLoading, 
           <input
             type="number"
             min="0"
-            max="24"
+            max="2"
             style={{ ...s.input, width: 56, fontSize: 12, padding: "4px 6px" }}
             value={splitCount}
-            onChange={e => setSplitCount(Math.max(0, Number(e.target.value) || 0))}
+            onChange={e => setSplitCount(Math.min(2, Math.max(0, Number(e.target.value) || 0)))}
             onBlur={() => saveSplitCount(splitCount)}
             onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur() }}
-            title="0 = process as one order (default). N = submit as N separate monthly pharmacy orders, starting at the provider's approved dosage and stepping up the mapped dosage tiers below."
+            title="0 = one prescription at the approved dosage (default). 2 = two monthly prescriptions in the same pharmacy order, starting at the provider's approved dosage and stepping up the mapped dosage tiers below. Max 2: the pharmacy's GLP-1 beyond-use date (~70 days) doesn't allow a 3rd month in one shipment."
           />
           {splitSaving && <span style={{ fontSize: 11, color: "#9ca3af" }}>saving…</span>}
           {splitSaved && <span style={{ fontSize: 11, color: "#10b981" }}>✓</span>}

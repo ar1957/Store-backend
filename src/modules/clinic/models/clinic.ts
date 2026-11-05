@@ -41,6 +41,9 @@ const Clinic = model.define("clinic", {
   // Stripe
   stripe_publishable_key: model.text().nullable(),
   stripe_secret_key: model.text().nullable(),
+  // "direct" = clinic's own keys; "connect" = platform keys + connected account
+  stripe_mode: model.text().default("direct"),
+  stripe_connect_account_id: model.text().nullable(),
 
   // Pharmacy
   pharmacy_staff_id: model.text().nullable(),

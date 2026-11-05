@@ -14,12 +14,18 @@
  *   - shippingcarrier  — carrier name (e.g. FEDEX, UPS)
  *   - shipmenttrackingurl — full tracking URL
  *
- * Split orders each get their own sender_order_id, so each ships/updates
- * independently — this matches against pharmacy_sub_order first (the
- * per-order source of truth going forward) and only falls back to the
- * legacy single order_workflow.pharmacy_queue_id match for orders submitted
- * before pharmacy_sub_order existed. order_workflow.status only flips to
- * 'shipped' once every sub-order for that order has a tracking number.
+ *   - foreignrxnumber  — our sender_med_request_id; Strive sends one callback
+ *                        PER medication_request, even within one order
+ *
+ * Matches against pharmacy_sub_order first (the per-order source of truth)
+ * and only falls back to the legacy order_workflow.pharmacy_queue_id match
+ * for orders submitted before pharmacy_sub_order existed. Per-rx callbacks
+ * are stored in pharmacy_sub_order.rx_statuses and rolled up (see
+ * aggregateRxStatuses). A sub-order gets its tracking number only once every
+ * rx has shipped or been cancelled, and order_workflow.status only flips to
+ * 'shipped' once every sub-order has a tracking number. (Orders placed under
+ * the pre-2026-11 one-order-per-split scheme have "-S<n>" sender_order_ids
+ * with one rx each, and still match the same way.)
  *
  * This route lives outside /store and /admin on purpose: Medusa mounts its
  * publishable-API-key requirement unconditionally on the entire /store
@@ -30,6 +36,85 @@
  * payloads.
  */
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+
+// ── Per-rx status tracking ──────────────────────────────────────────────────
+// One RxVortex order can hold several medication_requests (e.g. 2 months of
+// a titration), and Strive sends a separate callback for each one. These are
+// stored per rx in pharmacy_sub_order.rx_statuses, and the sub-order's own
+// pharmacy_status / tracking_number are DERIVED from all of them — otherwise
+// whichever callback arrived last would win and status could go backwards
+// (e.g. month 1 "shipped" overwritten by a late month 2 "processing").
+
+const ORDER_LEVEL_KEY = "_order"
+
+interface RxStatusEntry {
+  status: string | null
+  external_status: string | null
+  tracking_number: string | null
+  carrier: string | null
+  updated_at: string
+}
+
+function isCancelled(e: RxStatusEntry): boolean {
+  return /cancel/i.test(e.external_status || "") || /cancel/i.test(e.status || "")
+}
+
+// Strive's simplified external_status: in_progress → fulfilled → completed.
+// Unknown values rank lowest so they're surfaced rather than hidden.
+function progressRank(e: RxStatusEntry): number {
+  const s = (e.external_status || "").toLowerCase()
+  if (s === "completed") return 3
+  if (s === "fulfilled") return 2
+  if (s === "in_progress") return 1
+  return 0
+}
+
+// The sender_med_request_ids we actually submitted for this order.
+function expectedRxIds(payload: any): string[] {
+  const reqs = payload?.medication_requests
+  if (!Array.isArray(reqs)) return []
+  return reqs.map((r: any) => r?.sender_med_request_id).filter(Boolean)
+}
+
+function aggregateRxStatuses(
+  rxStatuses: Record<string, RxStatusEntry>,
+  expectedIds: string[]
+): { status: string | null; trackingNumber: string | null; carrier: string | null } {
+  const orderLevel = rxStatuses[ORDER_LEVEL_KEY] || null
+  const ids = expectedIds.length > 0
+    ? expectedIds
+    : Object.keys(rxStatuses).filter(k => k !== ORDER_LEVEL_KEY)
+  // An rx with no callback of its own falls back to any order-level update
+  // (a callback without foreignrxnumber), which preserves the old behaviour
+  // if Strive ever sends order-level callbacks.
+  const perRx: (RxStatusEntry | null)[] = ids.length > 0
+    ? ids.map(id => rxStatuses[id] || orderLevel)
+    : [orderLevel]
+
+  // Shipped only when EVERY rx has tracking or was cancelled, and at least
+  // one actually shipped.
+  const allDone = perRx.every(e => e && (e.tracking_number || isCancelled(e)))
+  const shipped = perRx.find(e => e?.tracking_number) || null
+  const trackingNumber = allDone && shipped ? shipped.tracking_number : null
+  const carrier = trackingNumber ? (shipped?.carrier || null) : null
+
+  // Displayed status = the least-progressed active rx, so the order never
+  // looks further along than its slowest item.
+  const reported = perRx.filter((e): e is RxStatusEntry => !!e)
+  const active = reported.filter(e => !isCancelled(e))
+  const cancelledCount = reported.length - active.length
+  let status: string | null = null
+  if (active.length > 0) {
+    const slowest = active.reduce((a, b) => (progressRank(b) < progressRank(a) ? b : a))
+    status = slowest.status || slowest.external_status || null
+    if (status && cancelledCount > 0) {
+      status = `${status} — ${cancelledCount} of ${perRx.length} items cancelled`
+    }
+  } else if (reported.length > 0) {
+    status = reported[0].status || reported[0].external_status || null
+  }
+  return { status, trackingNumber, carrier }
+}
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
@@ -65,29 +150,60 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     if (subResult.rows.length > 0) {
       const subOrder = subResult.rows[0]
-      console.log(`[RxVortexWebhook] Matched pharmacy_sub_order ${subOrder.id} (workflow ${subOrder.order_workflow_id})`)
+      // Strive sends one callback per medication_request; foreignrxnumber is
+      // our sender_med_request_id. Absent → treat as an order-level update.
+      const rxKey: string = String(body.foreignrxnumber || body.foreignRxNumber || "").trim() || ORDER_LEVEL_KEY
+      console.log(`[RxVortexWebhook] Matched pharmacy_sub_order ${subOrder.id} (workflow ${subOrder.order_workflow_id}) rx=${rxKey}`)
 
-      if (trackingNumber) {
-        await pg.raw(
+      // Row lock so two callbacks for different rx in the same order (they
+      // tend to arrive together) can't overwrite each other's entry.
+      await pg.transaction(async (trx: any) => {
+        const locked = await trx.raw(
+          `SELECT rx_statuses, pharmacy_submission_payload, tracking_number
+           FROM pharmacy_sub_order WHERE id = ? FOR UPDATE`,
+          [subOrder.id]
+        )
+        const row = locked.rows[0] || {}
+        const rxStatuses: Record<string, RxStatusEntry> = { ...(row.rx_statuses || {}) }
+        const prev = rxStatuses[rxKey] || ({} as RxStatusEntry)
+        rxStatuses[rxKey] = {
+          status: newStatus || prev.status || null,
+          external_status: externalStatus || prev.external_status || null,
+          tracking_number: trackingNumber || prev.tracking_number || null,
+          carrier: trackingNumber ? carrier.toUpperCase() : (prev.carrier || null),
+          updated_at: new Date().toISOString(),
+        }
+
+        const agg = aggregateRxStatuses(rxStatuses, expectedRxIds(row.pharmacy_submission_payload))
+        // Tracking is only set once — when every rx in the order has shipped
+        // (or been cancelled) — and never cleared/replaced afterwards.
+        const setTracking = !row.tracking_number && agg.trackingNumber
+
+        await trx.raw(
           `UPDATE pharmacy_sub_order
-           SET tracking_number = ?, carrier = ?, shipped_at = NOW(), pharmacy_status = ?,
+           SET rx_statuses = ?::jsonb,
+               pharmacy_status = COALESCE(?, pharmacy_status),
+               tracking_number = COALESCE(tracking_number, ?),
+               carrier = CASE WHEN ? THEN ? ELSE carrier END,
+               shipped_at = CASE WHEN ? THEN NOW() ELSE shipped_at END,
                pharmacy_status_check_response = ?::jsonb, pharmacy_status_check_source = 'webhook',
                pharmacy_status_checked_at = NOW(), updated_at = NOW()
            WHERE id = ?`,
-          [trackingNumber, carrier.toUpperCase(), newStatus, JSON.stringify(body), subOrder.id]
+          [
+            JSON.stringify(rxStatuses),
+            agg.status,
+            setTracking ? agg.trackingNumber : null,
+            !!setTracking, agg.carrier,
+            !!setTracking,
+            JSON.stringify(body),
+            subOrder.id,
+          ]
         )
-        console.log(`[RxVortexWebhook] Sub-order ${subOrder.id} shipped. Tracking: ${trackingNumber} via ${carrier}`)
-      } else if (newStatus) {
-        await pg.raw(
-          `UPDATE pharmacy_sub_order
-           SET pharmacy_status = ?,
-               pharmacy_status_check_response = ?::jsonb, pharmacy_status_check_source = 'webhook',
-               pharmacy_status_checked_at = NOW(), updated_at = NOW()
-           WHERE id = ?`,
-          [newStatus, JSON.stringify(body), subOrder.id]
+        console.log(
+          `[RxVortexWebhook] Sub-order ${subOrder.id} rx ${rxKey} → ${newStatus || "(no status)"}${trackingNumber ? ` tracking ${trackingNumber}` : ""}. ` +
+          `Order status: ${agg.status || "(unchanged)"}${setTracking ? `; all rx shipped — tracking ${agg.trackingNumber}` : ""}`
         )
-        console.log(`[RxVortexWebhook] Sub-order ${subOrder.id} status updated to: ${newStatus}`)
-      }
+      })
 
       // Roll up: order_workflow only moves to 'shipped' once every sub-order
       // for this order has shipped.
