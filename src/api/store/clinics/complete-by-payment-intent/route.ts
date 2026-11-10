@@ -31,14 +31,21 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     let intent: any = null
     let clinicStripeKey: string | null = null
 
-    for (const clinic of clinicsRes.rows) {
+    // Connect-mode clinics' PaymentIntents live in the PLATFORM account
+    // (STRIPE_API_KEY), not in any clinic's own account — try that key too.
+    const candidateKeys = Array.from(new Set([
+      ...clinicsRes.rows.map((c: any) => c.stripe_secret_key as string),
+      process.env.STRIPE_API_KEY || "",
+    ].filter(Boolean)))
+
+    for (const key of candidateKeys) {
       try {
-        const stripe = new Stripe(clinic.stripe_secret_key, { apiVersion: "2024-06-20" as any })
+        const stripe = new Stripe(key, { apiVersion: "2024-06-20" as any })
         intent = await stripe.paymentIntents.retrieve(paymentIntentId)
-        clinicStripeKey = clinic.stripe_secret_key
+        clinicStripeKey = key
         break
       } catch {
-        // Not this clinic's key — try next
+        // Not this account's PI — try next
       }
     }
 

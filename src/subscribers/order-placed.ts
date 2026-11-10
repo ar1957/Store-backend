@@ -97,10 +97,14 @@ export default async function orderPlacedHandler({
     // of order processing (GFE/pharmacy submission) below.
     try {
       const clinicStripeResult = await pgConnection.raw(
-        `SELECT stripe_secret_key FROM clinic WHERE sales_channel_id = ? AND deleted_at IS NULL LIMIT 1`,
+        `SELECT stripe_secret_key, stripe_mode, stripe_connect_account_id FROM clinic WHERE sales_channel_id = ? AND deleted_at IS NULL LIMIT 1`,
         [order.sales_channel_id]
       )
-      const stripeSecretKey = clinicStripeResult.rows[0]?.stripe_secret_key
+      const clinicStripe = clinicStripeResult.rows[0]
+      // Connect-mode PaymentIntents live in the platform account, not the clinic's.
+      const stripeSecretKey = clinicStripe?.stripe_mode === "connect" && clinicStripe?.stripe_connect_account_id
+        ? process.env.STRIPE_API_KEY
+        : clinicStripe?.stripe_secret_key
       if (stripeSecretKey) {
         const piResult = await pgConnection.raw(`
           SELECT pay.data->>'id' AS pi_id

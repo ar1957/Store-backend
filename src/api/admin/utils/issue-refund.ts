@@ -139,7 +139,7 @@ export async function issueRefund(
 
   // ── 4. Get clinic credentials ────────────────────────────────────────
   const clinicResult = await pg.raw(
-    `SELECT stripe_secret_key,
+    `SELECT stripe_secret_key, stripe_mode, stripe_connect_account_id,
             authorizenet_api_login_id, authorizenet_transaction_key, authorizenet_mode,
             paypal_client_id, paypal_client_secret, paypal_mode
      FROM clinic WHERE id = ? LIMIT 1`,
@@ -311,9 +311,6 @@ export async function issueRefund(
 
   } else {
     // ── 5d. Stripe refund ───────────────────────────────────────────────
-    if (!clinic?.stripe_secret_key) {
-      return { success: false, status: 400, message: "Stripe not configured for this clinic" }
-    }
     if (!transactionId || !transactionId.startsWith("pi_")) {
       return {
         success: false, status: 400,
@@ -321,16 +318,65 @@ export async function issueRefund(
       }
     }
 
-    const stripe = new Stripe(clinic.stripe_secret_key, { apiVersion: "2024-06-20" as any })
+    // Direct-mode payments live in the clinic's own Stripe account; Connect-mode
+    // payments live in the PLATFORM account (STRIPE_API_KEY) with
+    // transfer_data.destination = the clinic's connected account. The payment
+    // record doesn't say which, and the clinic's mode may have changed since
+    // the order, so look the PaymentIntent up with each key (current mode's
+    // key first) and refund through whichever account actually owns it.
+    const isConnect = clinic?.stripe_mode === "connect" && !!clinic?.stripe_connect_account_id
+    const platformKey = process.env.STRIPE_API_KEY || ""
+    const clinicKey = clinic?.stripe_secret_key || ""
+    const candidateKeys = Array.from(new Set(
+      (isConnect ? [platformKey, clinicKey] : [clinicKey, platformKey]).filter(Boolean)
+    ))
+    if (!candidateKeys.length) {
+      return { success: false, status: 400, message: "Stripe not configured for this clinic" }
+    }
+
+    let stripe: Stripe | null = null
+    let intent: Stripe.PaymentIntent | null = null
+    for (const key of candidateKeys) {
+      const client = new Stripe(key, { apiVersion: "2024-06-20" as any })
+      try {
+        intent = await client.paymentIntents.retrieve(transactionId)
+        stripe = client
+        break
+      } catch (err: any) {
+        if (err?.code === "resource_missing") continue
+        throw err
+      }
+    }
+    if (!stripe || !intent) {
+      return {
+        success: false, status: 400,
+        message: `Cannot refund — PaymentIntent ${transactionId} was not found in the clinic's Stripe account or the platform Stripe account.`,
+      }
+    }
+
+    // Destination charge (Connect): Stripe transferred the FULL amount to the
+    // connected account and then collected application_fee_amount (Stripe fee
+    // estimate + platform fee) back from it. On refund:
+    //   reverse_transfer         — takes the transferred amount back from the clinic
+    //   refund_application_fee   — gives the clinic back the fee it paid us
+    // Both are proportional on partial refunds, so the clinic always nets $0 on
+    // the refunded portion; the platform absorbs Stripe's real processing fee
+    // (Stripe never returns it on refunds).
+    const destination = typeof intent.transfer_data?.destination === "string"
+      ? intent.transfer_data.destination
+      : (intent.transfer_data?.destination as any)?.id
     const stripeRefund = await stripe.refunds.create({
       payment_intent: transactionId,
       amount: Math.round(requestedDollars * 100),
       reason: "requested_by_customer",
+      ...(destination ? { reverse_transfer: true, refund_application_fee: true } : {}),
       metadata: { order_id: orderId, clinic_id: clinicId, internal_reason: reason.trim() },
     })
     gatewayRefundId = stripeRefund.id
-    gatewayLabel = `Stripe: ${stripeRefund.id}`
-    console.log(`[Refund] Stripe refund created: ${stripeRefund.id} status: ${stripeRefund.status}`)
+    gatewayLabel = destination
+      ? `Stripe Connect (${destination}): ${stripeRefund.id}`
+      : `Stripe: ${stripeRefund.id}`
+    console.log(`[Refund] Stripe refund created: ${stripeRefund.id} status: ${stripeRefund.status}${destination ? ` reverse_transfer + refund_application_fee for ${destination}` : ""}`)
   }
 
   // ── 6. Create refund record in Medusa DB (native unit, same as payment.amount) ──
