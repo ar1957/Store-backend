@@ -80,6 +80,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       // application_fee_amount stays with the platform; connected account receives remainder
       piParams.application_fee_amount = stripeFee + platformFee
       piParams.transfer_data = { destination: clinic.stripe_connect_account_id }
+      // `domain` stays the store the patient actually bought from; `platform`
+      // identifies the platform account that took the payment (e.g. shop.spaderx.com).
+      if (process.env.STRIPE_PLATFORM_DOMAIN) {
+        piParams.metadata = { ...piParams.metadata, platform: process.env.STRIPE_PLATFORM_DOMAIN }
+      }
     }
     const paymentIntent = await stripe.paymentIntents.create(piParams)
 
