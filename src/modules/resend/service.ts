@@ -32,6 +32,18 @@ function renderItemTitle(e: typeof React.createElement, title: string) {
   return e("div", null, title)
 }
 
+// "Questions? Contact <clinic> at <reply_to>" — gives patients a real way to
+// reach the clinic (mail with no contact route scores worse with spam filters).
+// Renders nothing when the clinic has no reply_to set.
+function ContactLine(data: any, color = "#6b7280") {
+  const email = typeof data?.reply_to === "string" ? data.reply_to.trim() : ""
+  if (!email) return null
+  return React.createElement("p", { style: { fontSize: 12, color, margin: "8px 0 0" } },
+    `Questions? Contact ${data.clinic_name || "us"} at `,
+    React.createElement("a", { href: `mailto:${email}`, style: { color } }, email),
+  )
+}
+
 function OrderConfirmationEmail({ data }: { data: any }) {
   const brand = data.brand_color || "#6d28d9"
   const items: any[] = data.line_items || []
@@ -148,6 +160,7 @@ function OrderConfirmationEmail({ data }: { data: any }) {
       e("p", { style: { fontSize: 12, color: "#9ca3af", margin: 0 } },
         data.clinic_name ? `© ${new Date().getFullYear()} ${data.clinic_name}. All rights reserved.` : ""
       ),
+      ContactLine(data, "#9ca3af"),
     ),
   )
 }
@@ -173,7 +186,8 @@ function OrderStatusEmail({ data }: { data: any }) {
       React.createElement("p", { style: { margin: 0 } }, message)
     ),
     data.md_notes && React.createElement("p", null, `Note from your physician: ${data.md_notes}`),
-    React.createElement("p", { style: { color: "#6B7280", fontSize: "12px" } }, "If you have any questions, please contact your clinic.")
+    React.createElement("p", { style: { color: "#6B7280", fontSize: "12px" } }, "If you have any questions, please contact your clinic."),
+    ContactLine(data)
   )
 }
 
@@ -187,7 +201,8 @@ function ShippedEmail({ data }: { data: any }) {
       data.tracking_number && React.createElement("p", { style: { margin: 0, fontWeight: "bold" } }, `Tracking #: ${data.tracking_number}`)
     ),
     React.createElement("p", null, "Please allow 2-5 business days for delivery."),
-    React.createElement("p", { style: { color: "#6B7280", fontSize: "12px" } }, "If you have any questions, please contact your clinic.")
+    React.createElement("p", { style: { color: "#6B7280", fontSize: "12px" } }, "If you have any questions, please contact your clinic."),
+    ContactLine(data)
   )
 }
 
@@ -227,6 +242,7 @@ function RefundEmail({ data }: { data: any }) {
       e("p", { style: { fontSize: 12, color: "#9ca3af", margin: 0 } },
         data.clinic_name ? `© ${new Date().getFullYear()} ${data.clinic_name}. All rights reserved.` : ""
       ),
+      ContactLine(data, "#9ca3af"),
     ),
   )
 }
@@ -276,6 +292,7 @@ function PendingProviderReminderEmail({ data }: { data: any }) {
       e("p", { style: { fontSize: 12, color: "#9ca3af", margin: 0 } },
         data.clinic_name ? `© ${new Date().getFullYear()} ${data.clinic_name}. All rights reserved.` : ""
       ),
+      ContactLine(data, "#9ca3af"),
     ),
   )
 }
@@ -456,7 +473,9 @@ class ResendNotificationProviderService extends AbstractNotificationProviderServ
         to,
         subject,
         html,
-        ...(replyTo ? { reply_to: replyTo } : {}),
+        // SDK v6 field is `replyTo` (it serializes it to reply_to) — passing
+        // `reply_to` directly is silently dropped and no Reply-To header is sent.
+        ...(replyTo ? { replyTo } : {}),
       })
       this.logger.info(`[Resend] Email sent to ${to} — template: ${template} — from: ${from}`)
       return result

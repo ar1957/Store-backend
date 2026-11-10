@@ -97,10 +97,14 @@ export default async function orderPlacedHandler({
     // of order processing (GFE/pharmacy submission) below.
     try {
       const clinicStripeResult = await pgConnection.raw(
-        `SELECT stripe_secret_key FROM clinic WHERE sales_channel_id = ? AND deleted_at IS NULL LIMIT 1`,
+        `SELECT stripe_secret_key, stripe_mode, stripe_connect_account_id FROM clinic WHERE sales_channel_id = ? AND deleted_at IS NULL LIMIT 1`,
         [order.sales_channel_id]
       )
-      const stripeSecretKey = clinicStripeResult.rows[0]?.stripe_secret_key
+      const clinicStripe = clinicStripeResult.rows[0]
+      // Connect-mode PaymentIntents live in the platform account, not the clinic's.
+      const stripeSecretKey = clinicStripe?.stripe_mode === "connect" && clinicStripe?.stripe_connect_account_id
+        ? process.env.STRIPE_API_KEY
+        : clinicStripe?.stripe_secret_key
       if (stripeSecretKey) {
         const piResult = await pgConnection.raw(`
           SELECT pay.data->>'id' AS pi_id
@@ -232,6 +236,22 @@ export default async function orderPlacedHandler({
     firstName = firstName || (order.email ? order.email.split("@")[0] : "Patient")
     lastName = lastName || "."
 
+    // 5a. Returning patient — append the provider dosage from their most recent
+    // previous order at this clinic to "current medications" so the provider
+    // sees what was last prescribed. Best-effort: never blocks GFE creation.
+    let currentMedsForMhc = currentMedications && currentMedications !== "None" ? currentMedications : "None"
+    try {
+      const previousDosage = await getPreviousProviderDosage(pgConnection, order.email, orderId, clinic.domains || [domain])
+      if (previousDosage) {
+        currentMedsForMhc = currentMedsForMhc === "None"
+          ? previousDosage.text
+          : `${currentMedsForMhc}; ${previousDosage.text}`
+        logger.info(`[OrderPlaced] Returning patient ${order.email} — added previous provider dosage from order #${previousDosage.displayId}: ${previousDosage.text}`)
+      }
+    } catch (e: any) {
+      logger.warn(`[OrderPlaced] Previous-dosage lookup failed for order ${orderId} (non-fatal): ${e.message}`)
+    }
+
     const patientPayload = {
       firstname: firstName,
       lastname: lastName,
@@ -240,7 +260,7 @@ export default async function orderPlacedHandler({
         "1": `BMI: ${bmi} | Height: ${heightFt}'${heightIn}" | Weight: ${weightLbs}lbs | Goal: ${goalWeightLbs}lbs`,
         "2": medicalHistory && medicalHistory !== "None" ? medicalHistory : "None",
         "3": allergies && allergies !== "None" ? allergies : "None",
-        "4": currentMedications && currentMedications !== "None" ? currentMedications : "None",
+        "4": currentMedsForMhc,
         "5": "None",
         "6": sex === "female" && pregnancy && pregnancy !== "none" ? pregnancy : "false",
       },
@@ -405,6 +425,67 @@ export default async function orderPlacedHandler({
 
 export const config = {
   event: "order.placed",
+}
+
+/**
+ * Returning-patient lookup: finds this email's most recent PREVIOUS order at
+ * this clinic (matched via order_workflow.tenant_domain against the clinic's
+ * domains — clinic_id columns are unreliable) that has a provider-set dosage,
+ * and returns it as "Tirzepatide (Subq Inj) 2 mg (x4)" — medication name with
+ * the "E-Commerce Online Order: " style prefix stripped, plus the dosage.
+ * Multiple treatments are joined with "; ". Returns null if none found.
+ */
+async function getPreviousProviderDosage(
+  pgConnection: any,
+  email: string | null,
+  currentOrderId: string,
+  clinicDomains: string[],
+): Promise<{ text: string; displayId: number } | null> {
+  if (!email || !clinicDomains.length) return null
+
+  // Some tenant_domain values carry a port (e.g. "spaderx.local:8000") — compare host only.
+  const hosts = Array.from(new Set(clinicDomains.map((d) => String(d).split(":")[0].toLowerCase()).filter(Boolean)))
+  if (!hosts.length) return null
+  const domainPlaceholders = hosts.map(() => "?").join(", ")
+  const result = await pgConnection.raw(`
+    SELECT o.display_id, ow.treatment_dosages
+    FROM order_workflow ow
+    JOIN "order" o ON o.id = ow.order_id
+    WHERE LOWER(o.email) = LOWER(?)
+      AND o.id <> ?
+      AND o.deleted_at IS NULL
+      AND ow.deleted_at IS NULL
+      AND LOWER(split_part(ow.tenant_domain, ':', 1)) IN (${domainPlaceholders})
+      AND ow.treatment_dosages IS NOT NULL
+    ORDER BY o.created_at DESC
+    LIMIT 10
+  `, [email.trim(), currentOrderId, ...hosts])
+
+  // Latest order may still be awaiting the provider (no dosage yet) — walk
+  // back to the most recent one that actually has a provider dosage.
+  for (const row of result.rows) {
+    let dosages: any = row.treatment_dosages
+    try {
+      if (typeof dosages === "string") dosages = JSON.parse(dosages)
+      if (typeof dosages === "string") dosages = JSON.parse(dosages) // double-encoded rows
+    } catch {
+      continue
+    }
+    if (!Array.isArray(dosages)) continue
+
+    const parts = dosages
+      .map((td: any) => {
+        const name = String(td?.treatmentName ?? "")
+          .replace(/^(?:E-Commerce|Pharmacy(?:\s+Returning)?)\s+Online\s+Order:\s*/i, "")
+          .trim()
+        const dosage = String(td?.dosage ?? "").trim()
+        return name && dosage ? `${name} ${dosage}` : ""
+      })
+      .filter(Boolean)
+
+    if (parts.length) return { text: parts.join("; "), displayId: row.display_id }
+  }
+  return null
 }
 
 /**
