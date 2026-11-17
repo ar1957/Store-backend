@@ -532,7 +532,7 @@ export async function submitToRxVortex(
       instructions: fallbackDosage ? `Take as directed — ${fallbackDosage}` : "Take as directed",
       authored_on_datetime: new Date().toISOString(),
     }
-    if (fallbackDosage) fallback.note = `Prescribed dosage: ${fallbackDosage}`
+    if (fallbackDosage) fallback.note = `Approved Prescribed dosage by NP: ${fallbackDosage}`
     if (clinicFallbackCatalogId) {
       fallback.preset_catalog_id = clinicFallbackCatalogId
     } else {
@@ -629,7 +629,7 @@ export async function submitToRxVortex(
 
     const dosageKey = treatmentId ? `${treatmentId}::${normalizeDosage(matchedDosage)}` : ""
 
-    const note = matchedDosage ? `Prescribed dosage: ${matchedDosage}` : ""
+    const note = matchedDosage ? `Approved Prescribed dosage by NP: ${matchedDosage}` : ""
 
     const isDosageDriven = treatmentId ? treatmentsWithDosageMapping.has(treatmentId) : false
     if (isDosageDriven) titratedMonths += Number(li.quantity) || 1
@@ -753,7 +753,7 @@ export async function submitToRxVortex(
         quantity_units: normalizeQuantityUnits(tier.quantityUnits),
         days_supply_duration: resolveDaysSupply(tier.medicationForm),
         instructions,
-        note: `Prescribed dosage: ${tier.dosage} (month ${i + 1} of ${li.splitCount})`,
+        note: `Approved Prescribed dosage by NP: ${tier.dosage} (month ${i + 1} of ${li.splitCount})`,
         authored_on_datetime: new Date().toISOString(),
         preset_catalog_id: tier.catalogId,
       })
