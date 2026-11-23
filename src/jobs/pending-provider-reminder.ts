@@ -1,6 +1,6 @@
 /**
  * Job: pending-provider-reminder
- * Runs daily at 1AM.
+ * Runs daily at 9:00 AM America/Los_Angeles (DST-aware — see config below).
  * Sends a reminder email to patients whose order is still in 'pending_provider'
  * status — i.e. they haven't connected with a provider yet.
  * Includes the track-order link so they can join their virtual visit.
@@ -9,7 +9,16 @@ import { MedusaContainer } from "@medusajs/framework"
 import { Modules } from "@medusajs/framework/utils"
 import { INotificationModuleService } from "@medusajs/framework/types"
 
+const REMINDER_HOUR_LA = 9
+
 export default async function pendingProviderReminderJob(container: MedusaContainer) {
+  // Scheduled hourly; only proceed during the 9 AM hour in Los Angeles so the
+  // send time stays at 9 AM local across PST/PDT regardless of server TZ.
+  const laHour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hourCycle: "h23" }).format(new Date())
+  )
+  if (laHour !== REMINDER_HOUR_LA) return
+
   const logger = container.resolve("logger") as any
   const pg = container.resolve("__pg_connection__") as any
 
@@ -47,6 +56,12 @@ export default async function pendingProviderReminderJob(container: MedusaContai
       )
       WHERE ow.status = 'pending_provider'
         AND ow.deleted_at IS NULL
+        -- Never remind on canceled/refunded orders, even if order_workflow.status
+        -- was never synced (legacy rows, a failed order-canceled subscriber).
+        AND ow.canceled_at IS NULL
+        AND ow.refund_issued_at IS NULL
+        AND o.status <> 'canceled'
+        AND o.canceled_at IS NULL
         AND o.email IS NOT NULL
       ORDER BY ow.created_at ASC
     `)
@@ -104,5 +119,6 @@ export default async function pendingProviderReminderJob(container: MedusaContai
 
 export const config = {
   name: "pending-provider-reminder",
-  schedule: "0 1 * * *", // 1AM every day
+  // Hourly at :00; the job body only runs during the 9 AM hour in LA.
+  schedule: "0 * * * *",
 }
